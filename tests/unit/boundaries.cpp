@@ -121,6 +121,25 @@ void check(neo_smo::DataType type, int width, int height, bool end) {
   neo_smo::process_fluxsmooth_t_plane(type, 7.0f, repair_source.data, source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
   neo_smo::process_fluxsmooth_st_plane(type, 7.0f, 7.0f, repair_source.data, source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
 }
+// Exercise every possible 16-bit 3x3 sum through the dispatched mode-20 kernel.
+void check_rg_mean() {
+  constexpr int batch = 4096, width = 3 * batch;
+  std::vector<uint16_t> src(3 * width), dst(src.size());
+  for (int first = 0; first <= 9 * 65535; first += batch) {
+    const int count = std::min(batch, 9 * 65535 + 1 - first);
+    for (int i = 0; i < count; ++i) {
+      const int sum = first + i;
+      for (int j = 0; j < 9; ++j)
+        src[(j / 3) * width + 3 * i + j % 3] = static_cast<uint16_t>(sum / 9 + (j < sum % 9));
+    }
+    neo_smo::process_remove_grain_plane(neo_smo::DataType::U16, 20, false,
+        reinterpret_cast<const uint8_t*>(src.data()), reinterpret_cast<uint8_t*>(dst.data()),
+        width, 3, width * sizeof(uint16_t), width * sizeof(uint16_t));
+    for (int i = 0; i < count; ++i)
+      if (dst[width + 3 * i + 1] != (first + i + 4) / 9)
+        throw std::runtime_error("RemoveGrain mode 20 integer mean mismatch");
+  }
+}
 int main() {
   try {
     (void)neo_smo::checked_product(std::numeric_limits<size_t>::max(), 7);
@@ -132,6 +151,7 @@ int main() {
   }
   for (int64_t target : hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
+    check_rg_mean();
     for (bool end : {false, true})
       for (int height : {1, 2, 3, 5, 7})
         for (int width : {1, 2, 3, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129}) {

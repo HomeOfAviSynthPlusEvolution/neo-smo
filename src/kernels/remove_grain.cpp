@@ -34,7 +34,6 @@ HWY_INLINE V eval_rg_int32(D d, int mode, const Grid3x3<D>& g, std::int32_t type
   const V one = hn::Set(d, 1);
   const V four = hn::Set(d, 4);
   const V eight = hn::Set(d, 8);
-  const V nine = hn::Set(d, 9);
   const V vmax = hn::Set(d, type_max);
 
   switch (mode) {
@@ -193,7 +192,9 @@ HWY_INLINE V eval_rg_int32(D d, int mode, const Grid3x3<D>& g, std::int32_t type
       const V sum8 = hn::Add(hn::Add(hn::Add(g.top_left, g.top_center), hn::Add(g.top_right, g.center_left)),
                              hn::Add(hn::Add(g.center_right, g.bottom_left), hn::Add(g.bottom_center, g.bottom_right)));
       const V sum = hn::Add(hn::Add(sum8, c), four);
-      return hn::Div(sum, nine);
+      // sum is in [4, 9 * 65535 + 4]. Multiplication by ceil(2^33 / 9)
+      // followed by a 33-bit shift gives the exact nonnegative quotient.
+      return hn::ShiftRight<1>(hn::MulHigh(sum, hn::Set(d, 0x38E38E39)));
     }
     case 21: {
       const V l1l = hn::ShiftRight<1>(hn::Add(g.top_left, g.bottom_right));
