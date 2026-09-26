@@ -62,10 +62,12 @@ void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp,
       sum = hn::Add(sum, hn::IfThenElse(n_match, n, zero));
       count = hn::Add(count, hn::IfThenElse(n_match, one, zero));
 
-      // (sum * 2 + count) / (count * 2)
-      const auto numerator = hn::Add(hn::ShiftLeft<1>(sum), count);
-      const auto denominator = hn::ShiftLeft<1>(count);
-      const auto filtered = hn::Div(numerator, denominator);
+      // count is only 1, 2 or 3. These bounded integer quotients are exact.
+      const auto rounded_sum = hn::Add(sum, one);
+      const auto average2 = hn::ShiftRight<1>(rounded_sum);
+      const auto average3 = hn::MulHigh(rounded_sum, hn::Set(d, 0x55555556));
+      const auto filtered = hn::IfThenElse(hn::Eq(count, hn::Set(d, 3)), average3,
+          hn::IfThenElse(hn::Eq(count, hn::Set(d, 2)), average2, c));
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
