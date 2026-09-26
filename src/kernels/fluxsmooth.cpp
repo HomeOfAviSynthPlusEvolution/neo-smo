@@ -23,31 +23,25 @@ void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp,
                            T* dstp, int width, int height, std::size_t prev_stride,
                            std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
   hn::ScalableTag<std::int32_t> d;
+  const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh = hn::Set(d, static_cast<std::int32_t>(temporal_threshold));
   const auto one = hn::Set(d, 1);
   const auto zero = hn::Zero(d);
 
-  std::vector<std::int32_t> b_prev(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> b_curr(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> b_next(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + lanes, 0);
 
   for (int y = 0; y < height; ++y) {
     const T* p_row = prevp + static_cast<std::size_t>(y) * prev_stride;
     const T* c_row = currp + static_cast<std::size_t>(y) * curr_stride;
     const T* n_row = nextp + static_cast<std::size_t>(y) * next_stride;
-    for (int x = 0; x < width; ++x) {
-      b_prev[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(p_row[x]);
-      b_curr[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(c_row[x]);
-      b_next[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(n_row[x]);
-    }
+
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto p = hn::LoadU(d, b_prev.data() + x);
-      const auto c = hn::LoadU(d, b_curr.data() + x);
-      const auto n = hn::LoadU(d, b_next.data() + x);
+      const auto active = std::min(lanes, static_cast<std::size_t>(width) - x);
+      const auto p = hn::PromoteTo(d, hn::LoadN(ds, p_row + x, active));
+      const auto c = hn::PromoteTo(d, hn::LoadN(ds, c_row + x, active));
+      const auto n = hn::PromoteTo(d, hn::LoadN(ds, n_row + x, active));
 
       const auto prevnextless = hn::And(hn::Lt(p, c), hn::Lt(n, c));
       const auto prevnextmore = hn::And(hn::Gt(p, c), hn::Gt(n, c));
@@ -74,12 +68,9 @@ void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp,
       const auto filtered = hn::Div(numerator, denominator);
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
-      hn::StoreU(res, d, out_i32.data() + x);
+      hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
     }
 
-    for (int x = 0; x < width; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)]);
-    }
   }
 }
 
