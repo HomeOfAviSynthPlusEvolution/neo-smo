@@ -112,19 +112,26 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
 
   auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
-    for (std::int64_t x = -Radius; x < static_cast<std::int64_t>(width) + Radius; ++x) {
-      const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-      dst[x] = static_cast<std::int32_t>(srow[idx]);
-    }
+    for (int x = -Radius; x < 0; ++x) dst[x] = srow[mirror_index(x, width)];
+    for (int x = 0; x < width; ++x) dst[x] = srow[x];
+    for (int x = width; x < width + Radius; ++x) dst[x] = srow[mirror_index(x, width)];
   };
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_i32_row(rows[static_cast<std::size_t>(dy + Radius)], srcp + my * src_stride);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_i32_row(row, srcp + my * src_stride);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[static_cast<std::size_t>(dy + Radius)] = row;
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
