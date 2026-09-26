@@ -1,4 +1,5 @@
 // Included inside the per-target Highway namespace. No include guard.
+namespace hn = hwy::HWY_NAMESPACE;
 #include "common/fp16_simd.hpp"
 
 // Keep SIMD operations in named functions so each Highway target supplies

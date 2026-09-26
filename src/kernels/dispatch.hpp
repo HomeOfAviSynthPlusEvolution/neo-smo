@@ -107,4 +107,97 @@ void process_smart_median_plane(
   std::size_t dst_stride_bytes
 );
 
+void process_temporal_median_plane(
+  DataType dtype,
+  int diameter,
+  const std::uint8_t* const* srcp_planes,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t src_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_temporal_soften_plane(
+  DataType dtype,
+  int diameter,
+  float threshold,
+  const std::uint8_t* const* srcp_planes,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t src_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_temporal_repair_plane(
+  DataType dtype,
+  int mode,
+  bool chroma,
+  int bits_per_sample,
+  const std::uint8_t* srcp,
+  const std::uint8_t* prevp,
+  const std::uint8_t* currp,
+  const std::uint8_t* nextp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t src_stride_bytes,
+  std::size_t prev_stride_bytes,
+  std::size_t curr_stride_bytes,
+  std::size_t next_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_degrain_median_plane(
+  DataType dtype,
+  int mode,
+  float limit,
+  bool interlaced,
+  bool norow,
+  bool chroma,
+  int bits_per_sample,
+  const std::uint8_t* prevp,
+  const std::uint8_t* currp,
+  const std::uint8_t* nextp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t prev_stride_bytes,
+  std::size_t curr_stride_bytes,
+  std::size_t next_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_fluxsmooth_t_plane(
+  DataType dtype,
+  float temporal_threshold,
+  const std::uint8_t* prevp,
+  const std::uint8_t* currp,
+  const std::uint8_t* nextp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t prev_stride_bytes,
+  std::size_t curr_stride_bytes,
+  std::size_t next_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_fluxsmooth_st_plane(
+  DataType dtype,
+  float temporal_threshold,
+  float spatial_threshold,
+  const std::uint8_t* prevp,
+  const std::uint8_t* currp,
+  const std::uint8_t* nextp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t prev_stride_bytes,
+  std::size_t curr_stride_bytes,
+  std::size_t next_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
 } // namespace neo_smo

@@ -148,6 +148,20 @@ void check(neo_smo::DataType type, int width, int height, bool end) {
     neo_smo::process_inter_quartile_mean_plane(type, radius, source.data, dest.data, width, height, pitch, pitch);
     neo_smo::process_smart_median_plane(type, radius, 50.0f, source.data, dest.data, width, height, pitch, pitch);
   }
+
+  const uint8_t* t_planes[3] = {source.data, repair_source.data, next_source.data};
+  neo_smo::process_temporal_median_plane(type, 3, t_planes, dest.data, width, height, pitch, pitch);
+  neo_smo::process_temporal_soften_plane(type, 3, 50.0f, t_planes, dest.data, width, height, pitch, pitch);
+  for (int mode = 0; mode <= 4; ++mode) {
+    neo_smo::process_temporal_repair_plane(type, mode, false, sizeof(T) == 1 ? 8 : 16, source.data, repair_source.data, repair_source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch, pitch);
+  }
+  for (int mode = 0; mode <= 5; ++mode) {
+    for (bool interlaced : {false, true})
+      for (bool norow : {false, true})
+        neo_smo::process_degrain_median_plane(type, mode, 4.0f, interlaced, norow, false, sizeof(T) == 1 ? 8 : 16, repair_source.data, source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
+  }
+  neo_smo::process_fluxsmooth_t_plane(type, 7.0f, repair_source.data, source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
+  neo_smo::process_fluxsmooth_st_plane(type, 7.0f, 7.0f, repair_source.data, source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
 }
 int main() {
   try {

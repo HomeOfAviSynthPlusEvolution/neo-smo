@@ -22,21 +22,23 @@ const char* algorithm_name(Algorithm alg) noexcept {
       return "InterQuartileMean";
     case Algorithm::SmartMedian:
       return "SmartMedian";
+    case Algorithm::TemporalMedian:
+      return "TemporalMedian";
+    case Algorithm::TemporalSoften:
+      return "TemporalSoften";
+    case Algorithm::TemporalRepair:
+      return "TemporalRepair";
+    case Algorithm::DegrainMedian:
+      return "DegrainMedian";
+    case Algorithm::FluxSmoothT:
+      return "FluxSmoothT";
+    case Algorithm::FluxSmoothST:
+      return "FluxSmoothST";
   }
   return "neo_smo";
 }
 
 namespace {
-
-float scale_to_format(const FormatInfo& fmt, float value) {
-  if (fmt.is_float) {
-    return value / 255.0f;
-  }
-  if (fmt.bits_per_sample > 8) {
-    return value * static_cast<float>(1 << (fmt.bits_per_sample - 8));
-  }
-  return value;
-}
 
 std::array<bool, 3> normalize_planes(int num_planes, const std::vector<int>& planes_list, bool planes_specified, const std::string& prefix) {
   if (!planes_specified) {
@@ -52,6 +54,20 @@ std::array<bool, 3> normalize_planes(int num_planes, const std::vector<int>& pla
 }
 
 } // namespace
+
+std::array<float, 3> flux_thresholds(const FormatInfo& fmt, const std::vector<float>& values, bool scalep) {
+  std::array<float, 3> out{};
+  for (std::size_t i = 0; i < out.size(); ++i) {
+    if (i < values.size()) {
+      const float value = values[i];
+      require(!scalep || value < 0 || value <= 255, "FluxSmooth: scaled thresholds must be at most 255.");
+      out[i] = scalep && value >= 0 ? scale_to_format(fmt, value) : value;
+    } else {
+      out[i] = i == 0 ? scale_to_format(fmt, 7.0f) : out[i - 1];
+    }
+  }
+  return out;
+}
 
 FilterPlan build_plan(
   Algorithm alg,
@@ -205,6 +221,123 @@ FilterPlan build_plan(
     const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
     for (int i = 0; i < 3; ++i) {
       plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)] && (plan.params[static_cast<std::size_t>(i)] > 0);
+    }
+  } else if (alg == Algorithm::TemporalMedian) {
+    int r = 1;
+    if (!param_list.empty()) {
+      r = param_list[0];
+    }
+    require(r >= 1 && r <= 10, "TemporalMedian: Radius must be between 1 and 10 (inclusive)");
+    plan.params = {r, r, r};
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)];
+    }
+  } else if (alg == Algorithm::TemporalSoften) {
+    int r = 4;
+    if (!param_list.empty()) {
+      r = param_list[0];
+    }
+    require(r >= 1 && r <= 10, "TemporalSoften: Radius must be between 1 and 10 (inclusive)");
+    plan.params = {r, r, r};
+
+    const int count_th = static_cast<int>(threshold_list.size());
+    if (count_th > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count_th) {
+          const float th = threshold_list[static_cast<std::size_t>(i)];
+          require(!scalep || (th >= 0.0f && th <= 255.0f), "TemporalSoften: scaled threshold must be in 0-255.");
+          const float value = scalep ? scale_to_format(fmt, th) : th;
+          const bool chroma = fmt.is_float && fmt.color_family == 3 && i > 0;
+          const float lo = chroma ? -0.5f : 0.0f;
+          const float hi = fmt.is_float ? (chroma ? 0.5f : 1.0f) : static_cast<float>((1 << fmt.bits_per_sample) - 1);
+          require(value >= lo && value <= hi, "TemporalSoften: Invalid threshold specified.");
+          plan.thresholds[static_cast<std::size_t>(i)] = value;
+        } else {
+          plan.thresholds[static_cast<std::size_t>(i)] = plan.thresholds[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      const float def_th = scale_to_format(fmt, 4.0f);
+      plan.thresholds = {def_th, def_th, def_th};
+    }
+
+    require(fmt.color_family == 3 || plan.thresholds[0] != 0, "TemporalSoften: threshold 0 cannot be zero for RGB or Gray.");
+    require(plan.thresholds[0] != 0 || plan.thresholds[1] != 0 || plan.thresholds[2] != 0, "TemporalSoften: All thresholds cannot be 0.");
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)] && plan.thresholds[static_cast<std::size_t>(i)] > 0;
+    }
+  } else if (alg == Algorithm::TemporalRepair) {
+    const int count = static_cast<int>(param_list.size());
+    require(count <= fmt.num_planes, "TemporalRepair: Number of modes must be equal or fewer than the number of input planes.");
+    if (count > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count) {
+          const int m = param_list[static_cast<std::size_t>(i)];
+          require(m >= 0 && m <= 4, "TemporalRepair: Invalid mode specified, only modes 0-4 supported.");
+          plan.params[static_cast<std::size_t>(i)] = m;
+        } else {
+          plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      plan.params = {0, 0, 0};
+    }
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)];
+    }
+  } else if (alg == Algorithm::DegrainMedian) {
+    const int count = static_cast<int>(param_list.size());
+    require(count <= fmt.num_planes, "DegrainMedian: Number of modes must be equal or fewer than the number of input planes.");
+    if (count > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count) {
+          const int m = param_list[static_cast<std::size_t>(i)];
+          require(m >= 0 && m <= 5, "DegrainMedian: Invalid mode specified, only modes 0-5 supported.");
+          plan.params[static_cast<std::size_t>(i)] = m;
+        } else {
+          plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      plan.params = {1, 1, 1};
+    }
+
+    const int count_lim = static_cast<int>(threshold_list.size());
+    require(count_lim <= fmt.num_planes, "DegrainMedian: limit has more elements than there are planes.");
+    if (count_lim > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count_lim) {
+          const float lim = threshold_list[static_cast<std::size_t>(i)];
+          const float formatMaximum = (fmt.color_family == 3 && i > 0) ? (fmt.is_float ? 0.5f : static_cast<float>((1 << fmt.bits_per_sample) - 1))
+                                                                        : (fmt.is_float ? 1.0f : static_cast<float>((1 << fmt.bits_per_sample) - 1));
+          require(!scalep || (lim >= 0.0f && lim <= 255.0f), "DegrainMedian: scaled limit must be in 0-255.");
+          const float scaled_lim = scalep ? (formatMaximum * lim / 255.0f) : lim;
+          const float formatMinimum = fmt.is_float && fmt.color_family == 3 && i > 0 ? -0.5f : 0.0f;
+          require(scaled_lim >= formatMinimum && scaled_lim <= formatMaximum, "DegrainMedian: Invalid limit specified.");
+          plan.thresholds[static_cast<std::size_t>(i)] = scaled_lim;
+        } else {
+          plan.thresholds[static_cast<std::size_t>(i)] = plan.thresholds[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      plan.thresholds = {4.0f, 4.0f, 4.0f}; // Upstream defaults are native units, even with scalep.
+    }
+
+    require(plan.thresholds[0] != 0 || plan.thresholds[1] != 0 || plan.thresholds[2] != 0, "DegrainMedian: All limits cannot be 0.");
+
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)] && (plan.thresholds[static_cast<std::size_t>(i)] > 0);
+    }
+  } else if (alg == Algorithm::FluxSmoothT || alg == Algorithm::FluxSmoothST) {
+    plan.thresholds = flux_thresholds(fmt, threshold_list, scalep);
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[i] = i < fmt.num_planes && planes[i];
+      if (alg == Algorithm::FluxSmoothT) plan.process[i] = plan.process[i] && plan.thresholds[i] >= 0;
     }
   }
 

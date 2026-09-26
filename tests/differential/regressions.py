@@ -74,6 +74,49 @@ def main():
             checks += 1
         else:
             raise AssertionError(f'SmartMedian accepted invalid threshold {th}')
+    for r in [-1, 0, 11, 100]:
+        try:
+            core.neo_smo.TemporalMedian(base, radius=r)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f'TemporalMedian accepted radius {r}')
+    for sc in [-2, 255, 1000]:
+        try:
+            core.neo_smo.TemporalSoften(base, scenechange=sc)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f'TemporalSoften accepted invalid scenechange {sc}')
+    for m in [-1, 5, 10]:
+        try:
+            core.neo_smo.TemporalRepair(base, base, mode=[m])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f'TemporalRepair accepted invalid mode {m}')
+    for m in [-1, 6, 10]:
+        try:
+            core.neo_smo.DegrainMedian(base, mode=[m])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f'DegrainMedian accepted invalid mode {m}')
+    try:
+        core.neo_smo.DegrainMedian(base, limit=[0, 0, 0])
+    except vs.Error:
+        checks += 1
+    else:
+        raise AssertionError('DegrainMedian accepted all limits 0')
+    for name, parameter in [("TemporalSoften", "threshold"), ("DegrainMedian", "limit"),
+                            ("FluxSmoothT", "temporal_threshold"), ("FluxSmoothST", "spatial_threshold")]:
+        for value in [float("nan"), float("inf"), -float("inf")]:
+            try:
+                getattr(core.neo_smo, name)(base, **{parameter: [value]})
+            except vs.Error:
+                checks += 1
+            else:
+                raise AssertionError(f"{name} accepted non-finite {parameter}")
     print(f'{checks} invalid parameter cases rejected')
 
     count = 0

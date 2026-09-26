@@ -29,7 +29,9 @@ namespace {
 alignas(float) unsigned char src[49 * sizeof(float)]{}, dst[49 * sizeof(float)]{};
 int bytes_per_sample = 1;
 int freed = 0, errors = 0, scenario = 0;
+int fetched = 0, null_at = -1;
 const VSFrame* VS_CC get_frame(int, VSNode*, VSFrameContext*) noexcept {
+  if (fetched++ == null_at) return nullptr;
   return reinterpret_cast<const VSFrame*>(src);
 }
 VSFrame* VS_CC new_frame(const VSVideoFormat*, int, int, const VSFrame**, const int*, const VSFrame*,
@@ -159,6 +161,46 @@ int main() {
     }
   }
 
+  // New temporal callbacks must release every acquired frame on allocation
+  // failure, unexpected exceptions, and a missing source frame.
+  instance.vi.numFrames = 10;
+  instance.plan.format.bytes_per_sample = 2;
+  instance.plan.format.is_float = true;
+  instance.plan.thresholds[0] = 0.1f;
+  rep_instance.vi.numFrames = 10;
+  rep_instance.plan.format.bytes_per_sample = 2;
+  rep_instance.plan.format.is_float = true;
+  const std::array<VSFilterGetFrame, 6> callbacks{
+    neo_smo::plugin::temporal_filter_get_frame<neo_smo::Algorithm::TemporalMedian>,
+    neo_smo::plugin::temporal_filter_get_frame<neo_smo::Algorithm::TemporalSoften>,
+    neo_smo::plugin::trio_filter_get_frame<neo_smo::Algorithm::DegrainMedian>,
+    neo_smo::plugin::trio_filter_get_frame<neo_smo::Algorithm::FluxSmoothT>,
+    neo_smo::plugin::trio_filter_get_frame<neo_smo::Algorithm::FluxSmoothST>,
+    neo_smo::plugin::temporal_repair_get_frame,
+  };
+  for (std::size_t filter = 0; filter < callbacks.size(); ++filter) {
+    const int sources = filter == 5 ? 4 : 3;
+    void* data = filter == 5 ? static_cast<void*>(&rep_instance) : static_cast<void*>(&instance);
+    for (scenario = 0; scenario <= 3; ++scenario) {
+      freed = errors = fetched = 0;
+      const auto* result = callbacks[filter](2, arAllFramesReady, data, nullptr, nullptr, nullptr, &api);
+      if (scenario == 0) {
+        if (!result || freed != sources || errors) return 1;
+        api.freeFrame(result);
+      } else if (result || errors != 1 || freed != sources + (scenario != 2)) {
+        std::fprintf(stderr, "phase4 filter=%zu scenario=%d freed=%d errors=%d\n", filter, scenario, freed, errors);
+        return 1;
+      }
+    }
+    scenario = 0;
+    for (null_at = 0; null_at < sources; ++null_at) {
+      freed = errors = fetched = 0;
+      const auto* result = callbacks[filter](2, arAllFramesReady, data, nullptr, nullptr, nullptr, &api);
+      if (result || freed != fetched - 1) return 1;
+    }
+    null_at = -1;
+  }
+
   // Observe the real create callback's cache contract, including aliased inputs.
   api.mapGetNode = get_node;
   api.getVideoInfo = video_info;
@@ -184,5 +226,10 @@ int main() {
   neo_smo::plugin::clense_create<neo_smo::Algorithm::BackwardClense>(nullptr, nullptr, nullptr, nullptr, &api);
   if (dependency_count != 1 || dependencies[0].requestPattern != rpGeneral)
     return 1;
+  for (dependency_case = 0; dependency_case < 2; ++dependency_case) {
+    neo_smo::plugin::temporal_repair_create(nullptr, nullptr, nullptr, nullptr, &api);
+    if (dependency_count != dependency_case + 1 || dependencies[dependency_case].requestPattern != rpGeneral)
+      return 1;
+  }
   std::puts("VS frame ownership, exceptions and temporal dependency contracts passed");
 }

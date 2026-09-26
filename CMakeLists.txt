@@ -23,6 +23,11 @@ add_library(neo_smo_core STATIC
   src/kernels/clense.cpp
   src/kernels/inter_quartile_mean.cpp
   src/kernels/smart_median.cpp
+  src/kernels/temporal_median.cpp
+  src/kernels/temporal_soften.cpp
+  src/kernels/temporal_repair.cpp
+  src/kernels/degrain_median.cpp
+  src/kernels/fluxsmooth.cpp
 )
 target_compile_features(neo_smo_core PUBLIC cxx_std_17)
 target_include_directories(neo_smo_core PUBLIC src)
@@ -51,8 +56,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
   set_property(SOURCE src/kernels/median_7x7.cpp
     src/kernels/repair_int.cpp src/kernels/repair_f16.cpp src/kernels/repair_f32.cpp
     src/kernels/inter_quartile_mean.cpp src/kernels/smart_median.cpp
+    src/kernels/temporal_median.cpp
     APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_COMPARE_SWAP>")
+  set_property(SOURCE src/kernels/degrain_median.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_MSVC_OUTLINE_DGM_EMU>")
   # Reduce integer Repair optimization cost only for the native MSVC compiler.
   set_property(SOURCE src/kernels/repair_int.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_MSVC_REPAIR_ABS_DIFF>")
@@ -67,6 +75,8 @@ endif()
 if(MSVC)
   set_property(SOURCE src/kernels/remove_grain.cpp src/kernels/repair_f16.cpp
     src/kernels/inter_quartile_mean.cpp src/kernels/smart_median.cpp
+    src/kernels/temporal_median.cpp src/kernels/temporal_soften.cpp
+    src/kernels/temporal_repair.cpp src/kernels/degrain_median.cpp src/kernels/fluxsmooth.cpp
     APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_ROUND_F16>")
 endif()
@@ -74,7 +84,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  foreach(test boundaries fp16 float_accuracy phase3)
+  foreach(test boundaries fp16 float_accuracy phase3 phase4)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)
     target_include_directories(neo_smo_${test}_tests PRIVATE tests)
     target_link_libraries(neo_smo_${test}_tests PRIVATE neo_smo_core)
@@ -149,6 +159,11 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
       --plugin "$<TARGET_FILE:neo_smo>"
       --reference "${NEO_SMO_REFERENCE_PLUGIN}")
     set_tests_properties(vs.differential.phase3 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
+    add_test(NAME vs.differential.phase4 COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/phase4.py"
+      --plugin "$<TARGET_FILE:neo_smo>"
+      --reference "${NEO_SMO_REFERENCE_PLUGIN}")
+    set_tests_properties(vs.differential.phase4 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
     add_test(NAME vs.differential.regressions COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/regressions.py"
       --plugin "$<TARGET_FILE:neo_smo>" --reference "${NEO_SMO_REFERENCE_PLUGIN}")
