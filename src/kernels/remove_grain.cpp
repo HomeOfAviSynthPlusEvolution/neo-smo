@@ -517,10 +517,12 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
   auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
-    for (std::int64_t x = -kRadius; x < static_cast<std::int64_t>(width) + kRadius; ++x) {
-      const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-      dst[x] = static_cast<std::int32_t>(srow[idx]);
+    dst[-1] = static_cast<std::int32_t>(srow[mirror_index(-1, width)]);
+    // Keep mirror indexing out of the interior so widening is a contiguous load.
+    for (int x = 0; x < width; ++x) {
+      dst[x] = static_cast<std::int32_t>(srow[x]);
     }
+    dst[width] = static_cast<std::int32_t>(srow[mirror_index(width, width)]);
   };
 
   for (int y = 0; y < height; ++y) {
