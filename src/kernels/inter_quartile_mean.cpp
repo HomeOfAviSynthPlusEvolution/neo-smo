@@ -17,7 +17,7 @@ namespace HWY_NAMESPACE {
 #include "common/fp16_rows.hpp"
 
 template <int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_iqm_int32(D d, V* vals) {
+HWY_INLINE V eval_iqm_int(D d, V* vals) {
   const V three = hn::Set(d, 3);
   const V two = hn::Set(d, 2);
 
@@ -31,7 +31,9 @@ HWY_INLINE V eval_iqm_int32(D d, V* vals) {
     return hn::Add(hn::Mul(sum, two), four);
   } else if constexpr (Radius == 2) {
 #if defined(NEO_SMO_MSVC_U16_SORT) && (HWY_TARGET == HWY_SSE2 || HWY_TARGET == HWY_SSSE3)
-    sort_u16_samples<25>(d, vals, [](auto ds, auto* v) { sort25(ds, v); });
+    if constexpr (sizeof(hn::TFromD<D>) == 4)
+      sort_u16_samples<25>(d, vals, [](auto ds, auto* v) { sort25(ds, v); });
+    else sort25(d, vals);
 #else
     sort25(d, vals);
 #endif
@@ -46,7 +48,9 @@ HWY_INLINE V eval_iqm_int32(D d, V* vals) {
     return hn::Add(hn::Mul(sum, two), twelve);
   } else {
 #if defined(NEO_SMO_MSVC_U16_SORT) && (HWY_TARGET == HWY_SSE2 || HWY_TARGET == HWY_SSSE3)
-    sort_u16_samples<49>(d, vals, [](auto ds, auto* v) { sort49(ds, v); });
+    if constexpr (sizeof(hn::TFromD<D>) == 4)
+      sort_u16_samples<49>(d, vals, [](auto ds, auto* v) { sort49(ds, v); });
+    else sort49(d, vals);
 #else
     sort49(d, vals);
 #endif
@@ -102,24 +106,25 @@ template <typename T, int Radius>
 void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src_stride, std::size_t dst_stride) {
   constexpr int kSide = 2 * Radius + 1;
   constexpr int kCount = kSide * kSide;
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
-  std::vector<std::int32_t> row_buffers(checked_product(kSide, padded_len));
-  std::array<std::int32_t*, kSide> rows{};
+  std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
+  std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
   std::array<int, kSide> cached_y;
   cached_y.fill(-1);
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> out_i32(static_cast<std::size_t>(width) + kSimdPad);
 
-  auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
+  auto fill_i32_row = [&](ComputeT* dst, const T* srow) {
     for (int x = -Radius; x < 0; ++x) dst[x] = srow[mirror_index(x, width)];
     for (int x = 0; x < width; ++x) dst[x] = srow[x];
-    for (int x = width; x < width + Radius; ++x) dst[x] = srow[mirror_index(x, width)];
+    for (std::int64_t x = width; x < static_cast<std::int64_t>(width) + Radius; ++x) dst[x] = srow[mirror_index(x, width)];
   };
 
   for (int y = 0; y < height; ++y) {
@@ -139,13 +144,13 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
       hn::Vec<decltype(d)> vals[kCount];
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
-        const std::int32_t* rptr = rows[static_cast<std::size_t>(ky)];
+        const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
         for (int kx = -Radius; kx <= Radius; ++kx) {
           vals[idx++] = hn::LoadU(d, rptr + x + kx);
         }
       }
 
-      const auto res = eval_iqm_int32<Radius>(d, vals);
+      const auto res = eval_iqm_int<Radius>(d, vals);
       hn::StoreU(res, d, out_i32.data() + x);
     }
 
