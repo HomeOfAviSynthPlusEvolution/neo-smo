@@ -333,15 +333,14 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
-  std::vector<std::int32_t> src_i32(static_cast<std::size_t>(width) + kSimdPad, 0);
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
+  const hn::Rebind<T, decltype(d)> ds;
+  std::array<int, 3> cached_y{-1, -1, -1};
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
   auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
-    for (std::int64_t x = -kRadius; x < static_cast<std::int64_t>(width) + kRadius; ++x) {
-      const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-      dst[x] = static_cast<std::int32_t>(srow[idx]);
-    }
+    dst[-1] = srow[mirror_index(-1, width)];
+    for (int x = 0; x < width; ++x) dst[x] = srow[x];
+    dst[width] = srow[mirror_index(width, width)];
   };
 
   for (int y = 0; y < height; ++y) {
@@ -350,23 +349,23 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
 
     for (int dy = -1; dy <= 1; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_i32_row(rows[static_cast<std::size_t>(dy + 1)], repairp + my * repair_stride);
-    }
-
-    for (int x = 0; x < width; ++x) {
-      src_i32[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(src_row[x]);
+      const std::size_t slot = my % 3;
+      auto* row = row_buffers.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_i32_row(row, repairp + my * repair_stride);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[static_cast<std::size_t>(dy + 1)] = row;
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
-      const auto s = hn::LoadU(d, src_i32.data() + x);
+      const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+      const auto s = hn::PromoteTo(d, hn::LoadN(ds, src_row + x, count));
       const auto res = eval_repair_int32(d, mode, s, g, type_max);
-      hn::StoreU(res, d, out_i32.data() + x);
+      hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, count);
     }
 
-    for (int x = 0; x < width; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)]);
-    }
   }
 }
 
