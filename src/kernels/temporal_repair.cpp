@@ -12,6 +12,7 @@ namespace neo_smo {
 namespace HWY_NAMESPACE {
 
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 // Saturated subtraction and addition helpers for vectors
 template <class D, class V = hn::Vec<D>>
@@ -94,30 +95,21 @@ void temporal_repair_pt_float_impl(int mode, bool chroma, const StorageT* srcp, 
                                    int width, int height, std::size_t src_stride,
                                    std::size_t prev_stride, std::size_t curr_stride,
                                    std::size_t next_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const auto format_min = hn::Set(d, chroma ? -0.5f : 0.0f);
   const auto format_max = hn::Set(d, chroma ? 0.5f : 1.0f);
 
   if constexpr (IsF16) {
-    std::vector<float> b_src(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_prev(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_curr(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_next(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_out(static_cast<std::size_t>(width) + lanes);
-
     for (int y = 0; y < height; ++y) {
-      fill_mirrored_row_fp16_to_fp32(b_src.data(), srcp + static_cast<std::size_t>(y) * src_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_prev.data(), prevp + static_cast<std::size_t>(y) * prev_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_curr.data(), currp + static_cast<std::size_t>(y) * curr_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_next.data(), nextp + static_cast<std::size_t>(y) * next_stride, width, 0);
-
       StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
       for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto s = hn::LoadU(d, b_src.data() + x);
-        const auto p = hn::LoadU(d, b_prev.data() + x);
-        const auto c = hn::LoadU(d, b_curr.data() + x);
-        const auto n = hn::LoadU(d, b_next.data() + x);
+        const auto count_lanes = std::min(lanes, static_cast<std::size_t>(width) - x);
+        const auto s = load_f16(d, srcp + static_cast<std::size_t>(y) * src_stride + x, count_lanes);
+        const auto p = load_f16(d, prevp + static_cast<std::size_t>(y) * prev_stride + x, count_lanes);
+        const auto c = load_f16(d, currp + static_cast<std::size_t>(y) * curr_stride + x, count_lanes);
+        const auto n = load_f16(d, nextp + static_cast<std::size_t>(y) * next_stride + x, count_lanes);
 
         auto res = s;
         if (mode == 0) {
@@ -143,9 +135,8 @@ void temporal_repair_pt_float_impl(int mode, bool chroma, const StorageT* srcp, 
           const auto skip_cond = hn::Or(hn::Eq(darkest_neighbor, upper), hn::Eq(brightest_neighbor, lower));
           res = hn::IfThenElse(skip_cond, c, hn::Clamp(s, lower, upper));
         }
-        hn::StoreU(res, d, b_out.data() + x);
+        store_f16(d, res, dst_row + x, count_lanes);
       }
-      convert_row_fp32_to_fp16(dst_row, b_out.data(), width);
     }
   } else {
     for (int y = 0; y < height; ++y) {
@@ -293,26 +284,27 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
                                    int width, int height, std::size_t src_stride,
                                    std::size_t prev_stride, std::size_t curr_stride,
                                    std::size_t next_stride, std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
-  const hn::ScalableTag<float> d;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto format_min = hn::Set(d, chroma ? -0.5f : 0.0f);
   const auto format_max = hn::Set(d, chroma ? 0.5f : 1.0f);
 
-  std::vector<float> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
-  std::vector<float> b_src(static_cast<std::size_t>(width) + lanes), b_out(static_cast<std::size_t>(width) + lanes);
-  std::array<float*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
-  std::array<float*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
-  std::array<float*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
+  std::vector<ComputeT> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
+  std::vector<ComputeT> b_src(static_cast<std::size_t>(width) + lanes), b_out(static_cast<std::size_t>(width) + lanes);
+  std::array<ComputeT*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
+  std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
+  std::array<ComputeT*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -1; dy <= 1; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
       if constexpr (IsF16) {
-        fill_mirrored_row_fp16_to_fp32(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
-        fill_mirrored_row_fp16_to_fp32(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
-        fill_mirrored_row_fp16_to_fp32(r_next[static_cast<std::size_t>(dy + 1)] - kRadius, nextp + my * next_stride, width, kRadius);
+        fill_mirrored_row_f16(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
+        fill_mirrored_row_f16(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
+        fill_mirrored_row_f16(r_next[static_cast<std::size_t>(dy + 1)] - kRadius, nextp + my * next_stride, width, kRadius);
       } else {
         fill_mirrored_row(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
         fill_mirrored_row(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
@@ -321,7 +313,7 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
     }
 
     if constexpr (IsF16) {
-      fill_mirrored_row_fp16_to_fp32(b_src.data(), srcp + static_cast<std::size_t>(y) * src_stride, width, 0);
+      fill_mirrored_row_f16(b_src.data(), srcp + static_cast<std::size_t>(y) * src_stride, width, 0);
     }
 
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -402,7 +394,7 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, b_out.data(), width);
+      store_row_f16(dst_row, b_out.data(), width);
     }
   }
 }

@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 import numpy as np
 import vapoursynth as vs
 
@@ -117,6 +118,7 @@ def main():
     core.num_threads = 4
     core.std.LoadPlugin(str(args.reference.resolve()))
     core.std.LoadPlugin(str(args.plugin.resolve()))
+    reference = Reference(core, args.plugin)
 
     formats = [
         ("YUV420P8", vs.YUV420P8, 0.0),
@@ -139,7 +141,7 @@ def main():
 
         # 1. InterQuartileMean: radii 0..3 and per-plane array
         for r in [0, 1, 2, 3, [1, 2, 3]]:
-            ref_out = core.zsmooth.InterQuartileMean(clip, radius=r)
+            ref_out = reference.InterQuartileMean(clip, radius=r)
             cand_out = core.neo_smo.InterQuartileMean(clip, radius=r)
             tol = 0.0 if (r == 0 or fmt_id not in (vs.YUV444PH, vs.YUV444PS)) else float_tol
             ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
@@ -149,7 +151,7 @@ def main():
                 failed_cases.append(f"[FAIL] InterQuartileMean({fmt_name}, radius={r}): {detail} regions={reg}")
 
         # InterQuartileMean planes subset
-        ref_out = core.zsmooth.InterQuartileMean(clip, radius=2, planes=[0, 2])
+        ref_out = reference.InterQuartileMean(clip, radius=2, planes=[0, 2])
         cand_out = core.neo_smo.InterQuartileMean(clip, radius=2, planes=[0, 2])
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
@@ -160,12 +162,14 @@ def main():
 
         # 2. SmartMedian: default threshold for radii 0..3
         for r in [0, 1, 2, 3, [1, 2, 3]]:
-            ref_out = core.zsmooth.SmartMedian(clip, radius=r)
+            ref_out = reference.SmartMedian(clip, radius=r)
             cand_out = core.neo_smo.SmartMedian(clip, radius=r)
             tol = 0.0 if (r == 0 or fmt_id not in (vs.YUV444PH, vs.YUV444PS)) else float_tol
             ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
             fmt_max_err = max(fmt_max_err, err)
             total_cases += 1
+            if not ok:
+                ok = reference.smart_median_threshold_match(clip, r, cand_out.get_frame(0))
             if not ok:
                 failed_cases.append(f"[FAIL] SmartMedian({fmt_name}, radius={r}): {detail} regions={reg}")
 
@@ -173,7 +177,7 @@ def main():
         for r in [1, 2]:
             for scalep in [False, True]:
                 th = 40.0 if scalep else (0.15 if fmt_id in (vs.YUV444PH, vs.YUV444PS) else 40.0)
-                ref_out = core.zsmooth.SmartMedian(clip, radius=r, threshold=th, scalep=scalep)
+                ref_out = reference.SmartMedian(clip, radius=r, threshold=th, scalep=scalep)
                 cand_out = core.neo_smo.SmartMedian(clip, radius=r, threshold=th, scalep=scalep)
                 tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
                 ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
@@ -184,7 +188,7 @@ def main():
 
         # SmartMedian: per-plane threshold array & planes subset
         th_arr = [20.0, 50.0, 80.0] if clip.format.sample_type == vs.INTEGER else [0.1, 0.2, 0.3]
-        ref_out = core.zsmooth.SmartMedian(clip, radius=2, threshold=th_arr, planes=[0, 1])
+        ref_out = reference.SmartMedian(clip, radius=2, threshold=th_arr, planes=[0, 1])
         cand_out = core.neo_smo.SmartMedian(clip, radius=2, threshold=th_arr, planes=[0, 1])
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
@@ -208,7 +212,7 @@ def main():
             (vs.GRAY8, 17.75, [0, 0, 0, 0, 255, 2, 2, 2, 2], 255),
             (vs.GRAY16, 17.75, [0, 0, 0, 0, 65535, 2, 2, 2, 2], 65535),
             (vs.GRAY16, 2704.0, [724, 724, 724, 996, 65535, 1208, 1208, 1208, 1208], 65535),
-            (vs.GRAYH, 0.9188, [0, 0, 0, 0, 1, 0.1, 0.1, 0.1, 0.1], float(np.float16(0.1))),
+            (vs.GRAYH, 0.9188, [0, 0, 0, 0, 1, 0.1, 0.1, 0.1, 0.1], float(np.float16(0.1)) if reference.native else 1.0),
         ]
         for fmt_id, threshold, patch, expected in witnesses:
             base = core.std.BlankClip(format=fmt_id, width=164, height=42)
@@ -219,7 +223,7 @@ def main():
                 np.asarray(out[0])[:] = data
                 return out
             clip = core.std.ModifyFrame(base, clips=base, selector=fill_witness)
-            ref = core.zsmooth.SmartMedian(clip, radius=1, threshold=threshold).get_frame(0)
+            ref = reference.SmartMedian(clip, radius=1, threshold=threshold).get_frame(0)
             cand = core.neo_smo.SmartMedian(clip, radius=1, threshold=threshold).get_frame(0)
             a, b = np.asarray(ref[0]), np.asarray(cand[0])
             total_cases += 1

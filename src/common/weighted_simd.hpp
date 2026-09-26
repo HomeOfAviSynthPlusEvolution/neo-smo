@@ -1,15 +1,13 @@
 // Included inside each Highway target namespace. No include guard.
 #include "common/float_arithmetic.hpp"
 
-// Loads never cross a row boundary; only FP16 conversion and mirrored borders
-// need staging. The arithmetic remains vectorized for full blocks and tails.
+// Loads never cross a row boundary. FP16 conversion and arithmetic remain
+// vectorized for full blocks and tails.
 template <bool Half, class D, class T>
 HWY_INLINE hn::Vec<D> weighted_load(D d, const T* ptr, std::size_t count) {
   const hn::Rebind<float, D> df;
   if constexpr (Half) {
-    HWY_ALIGN float values[hn::MaxLanes(df)]{};
-    for (std::size_t i = 0; i < count; ++i) values[i] = fp16_to_fp32(ptr[i]);
-    return hn::LoadU(d, values);
+    return load_f16(d, ptr, count);
   } else if constexpr (std::is_same_v<T, float>) {
     return hn::LoadN(d, ptr, count);
   } else {
@@ -30,10 +28,11 @@ HWY_INLINE hn::Vec<D> weighted_round(D d, hn::Vec<D> value) {
 
 template <bool Half, class D, class T>
 HWY_INLINE void weighted_store(D d, hn::Vec<D> value, T* ptr, std::size_t count) {
-  HWY_ALIGN hn::TFromD<D> values[hn::MaxLanes(d)];
-  hn::StoreU(value, d, values);
-  for (std::size_t i = 0; i < count; ++i) {
-    if constexpr (Half) ptr[i] = fp32_to_fp16(values[i]);
-    else ptr[i] = static_cast<T>(values[i]);
+  if constexpr (Half) {
+    store_f16(d, value, ptr, count);
+  } else {
+    HWY_ALIGN hn::TFromD<D> values[hn::MaxLanes(d)];
+    hn::StoreU(value, d, values);
+    for (std::size_t i = 0; i < count; ++i) ptr[i] = static_cast<T>(values[i]);
   }
 }

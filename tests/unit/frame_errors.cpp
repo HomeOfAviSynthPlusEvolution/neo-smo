@@ -158,7 +158,11 @@ int main() {
     void* frame_data = reinterpret_cast<void*>(1);
     const auto* result =
         neo_smo::plugin::clense_get_frame<neo_smo::Algorithm::Clense>(1, arAllFramesReady, &clense_instance, &frame_data, nullptr, nullptr, &api);
-    if (scenario == 0) {
+    // Direct FP16 blocks need no allocation after WritePtr. If the fault was
+    // never reached, require successful output and the same ownership cleanup.
+    const bool no_kernel_allocation = fail_allocation != 0;
+    fail_allocation = 0;
+    if (scenario == 0 || no_kernel_allocation) {
       if (!result || freed != 3 || errors != 0)
         return 1;
       api.freeFrame(result);
@@ -191,7 +195,9 @@ int main() {
     for (scenario = 0; scenario <= 3; ++scenario) {
       freed = errors = fetched = 0;
       const auto* result = callbacks[filter](2, arAllFramesReady, data, nullptr, nullptr, nullptr, &api);
-      if (scenario == 0) {
+      const bool no_kernel_allocation = fail_allocation != 0;
+      fail_allocation = 0;
+      if (scenario == 0 || no_kernel_allocation) {
         if (!result || freed != sources || errors) return 1;
         api.freeFrame(result);
       } else if (result || errors != 1 || freed != sources + (scenario != 2)) {

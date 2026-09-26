@@ -48,34 +48,25 @@ void clense_float_impl(const StorageT* srcp, const StorageT* prevp, const Storag
                        std::size_t width, std::size_t height,
                        std::size_t src_stride, std::size_t prev_stride,
                        std::size_t next_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
 
   if constexpr (IsF16) {
-    std::vector<float> buf_src(width + lanes, 0.0f);
-    std::vector<float> buf_prev(width + lanes, 0.0f);
-    std::vector<float> buf_next(width + lanes, 0.0f);
-    std::vector<float> buf_dst(width + lanes, 0.0f);
-
     for (std::size_t y = 0; y < height; ++y) {
       const StorageT* r_src = srcp + y * src_stride;
       const StorageT* r_prev = prevp + y * prev_stride;
       const StorageT* r_next = nextp + y * next_stride;
       StorageT* r_dst = dstp + y * dst_stride;
 
-      fill_mirrored_row_fp16_to_fp32(buf_src.data(), r_src, static_cast<int>(width), 0);
-      fill_mirrored_row_fp16_to_fp32(buf_prev.data(), r_prev, static_cast<int>(width), 0);
-      fill_mirrored_row_fp16_to_fp32(buf_next.data(), r_next, static_cast<int>(width), 0);
-
       for (std::size_t x = 0; x < width; x += lanes) {
-        const auto s = hn::LoadU(d, buf_src.data() + x);
-        const auto p = hn::LoadU(d, buf_prev.data() + x);
-        const auto n = hn::LoadU(d, buf_next.data() + x);
+        const auto count_lanes = std::min(lanes, static_cast<std::size_t>(width) - x);
+        const auto s = load_f16(d, r_src + x, count_lanes);
+        const auto p = load_f16(d, r_prev + x, count_lanes);
+        const auto n = load_f16(d, r_next + x, count_lanes);
         const auto res = median3(d, p, s, n);
-        hn::StoreU(res, d, buf_dst.data() + x);
+        store_f16(d, res, r_dst + x, count_lanes);
       }
-
-      convert_row_fp32_to_fp16(r_dst, buf_dst.data(), static_cast<int>(width));
     }
   } else {
     for (std::size_t y = 0; y < height; ++y) {
@@ -142,30 +133,23 @@ void clense_forward_backward_float_impl(const StorageT* srcp, const StorageT* re
                                         std::size_t width, std::size_t height,
                                         std::size_t src_stride, std::size_t ref1_stride,
                                         std::size_t ref2_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const auto two = hn::Set(d, 2.0f);
 
   if constexpr (IsF16) {
-    std::vector<float> buf_src(width + lanes, 0.0f);
-    std::vector<float> buf_ref1(width + lanes, 0.0f);
-    std::vector<float> buf_ref2(width + lanes, 0.0f);
-    std::vector<float> buf_dst(width + lanes, 0.0f);
-
     for (std::size_t y = 0; y < height; ++y) {
       const StorageT* r_src = srcp + y * src_stride;
       const StorageT* r_ref1 = ref1p + y * ref1_stride;
       const StorageT* r_ref2 = ref2p + y * ref2_stride;
       StorageT* r_dst = dstp + y * dst_stride;
 
-      fill_mirrored_row_fp16_to_fp32(buf_src.data(), r_src, static_cast<int>(width), 0);
-      fill_mirrored_row_fp16_to_fp32(buf_ref1.data(), r_ref1, static_cast<int>(width), 0);
-      fill_mirrored_row_fp16_to_fp32(buf_ref2.data(), r_ref2, static_cast<int>(width), 0);
-
       for (std::size_t x = 0; x < width; x += lanes) {
-        const auto s = hn::LoadU(d, buf_src.data() + x);
-        const auto ref1 = hn::LoadU(d, buf_ref1.data() + x);
-        const auto ref2 = hn::LoadU(d, buf_ref2.data() + x);
+        const auto count_lanes = std::min(lanes, static_cast<std::size_t>(width) - x);
+        const auto s = load_f16(d, r_src + x, count_lanes);
+        const auto ref1 = load_f16(d, r_ref1 + x, count_lanes);
+        const auto ref2 = load_f16(d, r_ref2 + x, count_lanes);
 
         const auto minref = hn::Min(ref1, ref2);
         const auto maxref = hn::Max(ref1, ref2);
@@ -174,10 +158,8 @@ void clense_forward_backward_float_impl(const StorageT* srcp, const StorageT* re
         const auto highref = float_sub<IsF16>(d, float_mul<IsF16>(d, maxref, two), ref2);
 
         const auto res = hn::Clamp(s, lowref, highref);
-        hn::StoreU(res, d, buf_dst.data() + x);
+        store_f16(d, res, r_dst + x, count_lanes);
       }
-
-      convert_row_fp32_to_fp16(r_dst, buf_dst.data(), static_cast<int>(width));
     }
   } else {
     for (std::size_t y = 0; y < height; ++y) {

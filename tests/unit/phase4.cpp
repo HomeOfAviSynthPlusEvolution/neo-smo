@@ -1,6 +1,7 @@
 #include "base/fp16.hpp"
 #include "kernels/dispatch.hpp"
 #include "hwy/targets.h"
+#include "hwy/per_target.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -41,7 +42,7 @@ void temporal(neo_smo::DataType type, int width) {
       float expected = values[count / 2];
       if (count % 2 == 0) {
         float sum = values[count / 2 - 1] + expected;
-        if (f16) sum = half(sum);
+        if (f16 && hwy::HaveFloat16()) sum = half(sum);
         expected = sum * 0.5f;
         if (integral) expected = std::floor(expected);
       }
@@ -51,7 +52,7 @@ void temporal(neo_smo::DataType type, int width) {
       }
     }
     const float parameter = integral ? 73.75f : 0.18337f;
-    const float threshold = integral ? std::floor(parameter) : f16 ? half(parameter) : parameter;
+    const float threshold = integral ? std::floor(parameter) : f16 && hwy::HaveFloat16() ? half(parameter) : parameter;
     neo_smo::process_temporal_soften_plane(type, count, parameter, pointers.data(), reinterpret_cast<uint8_t*>(dst.data()), width, height, pitch, pitch);
     for (size_t i = 0; i < size; ++i) {
       const float current = decode(frames[0][i]);
@@ -59,7 +60,7 @@ void temporal(neo_smo::DataType type, int width) {
       for (int j = 1; j < count; ++j) {
         const float v = decode(frames[j][i]);
         sum += std::abs(current - v) <= threshold ? v : current;
-        if (f16) sum = half(sum);
+        if (f16 && hwy::HaveFloat16()) sum = half(sum);
       }
       float expected = sum / count;
       if (integral) {

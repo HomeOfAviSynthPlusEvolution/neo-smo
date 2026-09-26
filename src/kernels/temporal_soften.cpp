@@ -71,40 +71,49 @@ template <bool IsF16, typename StorageT>
 void temporal_soften_float_impl(int diameter, float threshold, const StorageT* const* srcp_planes,
                                 StorageT* dstp, int width, int height, std::size_t src_stride,
                                 std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<float> df;
+  const hn::Rebind<ComputeT, decltype(df)> d;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh_vec = hn::Set(d, threshold);
   const auto frames_vec = hn::Set(d, static_cast<float>(diameter));
 
   if constexpr (IsF16) {
-    std::vector<float> r_bufs(static_cast<std::size_t>(diameter) * (static_cast<std::size_t>(width) + lanes));
-    std::vector<float> out_f32(static_cast<std::size_t>(width) + lanes);
-
     for (int y = 0; y < height; ++y) {
-      for (int i = 0; i < diameter; ++i) {
-        fill_mirrored_row_fp16_to_fp32(
-            r_bufs.data() + static_cast<std::size_t>(i) * (static_cast<std::size_t>(width) + lanes),
-            srcp_planes[i] + static_cast<std::size_t>(y) * src_stride, width, 0);
-      }
-
       StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
       for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto curr = hn::LoadU(d, r_bufs.data() + x);
+        const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+        const auto curr = load_f16(d, srcp_planes[0] + static_cast<std::size_t>(y) * src_stride + x, count);
         auto sum = curr;
 
         for (int i = 1; i < diameter; ++i) {
-          const auto f_val = hn::LoadU(
-              d, r_bufs.data() + static_cast<std::size_t>(i) * (static_cast<std::size_t>(width) + lanes) + x);
-          const auto diff = hn::Abs(hn::Sub(curr, f_val)); // Zig compares in f32, including f16 input.
-          const auto chosen = hn::IfThenElse(hn::Le(diff, thresh_vec), f_val, curr);
+          const auto f_val = load_f16(
+              d, srcp_planes[i] + static_cast<std::size_t>(y) * src_stride + x, count);
+          auto chosen = curr;
+#if HWY_HAVE_FLOAT16
+          if constexpr (std::is_same_v<ComputeT, hwy::float16_t>) {
+            const auto diff = hn::Abs(hn::Sub(hn::PromoteTo(df, curr), hn::PromoteTo(df, f_val)));
+            chosen = hn::DemoteTo(d, hn::IfThenElse(hn::Le(diff, hn::Set(df, threshold)),
+                                                  hn::PromoteTo(df, f_val), hn::PromoteTo(df, curr)));
+          } else
+#endif
+          {
+            const auto diff = hn::Abs(hn::Sub(curr, f_val));
+            chosen = hn::IfThenElse(hn::Le(diff, thresh_vec), f_val, curr);
+          }
           sum = float_add<true>(d, sum, chosen);
         }
 
-        const auto res = float_div<true>(d, sum, frames_vec);
-        hn::StoreU(res, d, out_f32.data() + x);
+#if HWY_HAVE_FLOAT16
+        if constexpr (std::is_same_v<ComputeT, hwy::float16_t>) {
+          const auto res = hn::Div(hn::PromoteTo(df, sum), hn::Set(df, static_cast<float>(diameter)));
+          store_f16(df, res, dst_row + x, count);
+        } else
+#endif
+        {
+          store_f16(d, hn::Div(sum, frames_vec), dst_row + x, count);
+        }
       }
-
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
     }
   } else {
     for (int y = 0; y < height; ++y) {
@@ -139,7 +148,7 @@ void dispatch_temporal_soften_target(DataType dtype, int diameter, float thresho
                                      std::size_t width, std::size_t height,
                                      std::size_t src_stride_bytes, std::size_t dst_stride_bytes) {
   if (dtype == DataType::F16) {
-    threshold = fp16_to_fp32(fp32_to_fp16(threshold));
+    if constexpr (HWY_HAVE_FLOAT16) threshold = fp16_to_fp32(fp32_to_fp16(threshold));
   }
   std::array<const std::uint16_t*, 21> u16_planes{};
   std::array<const float*, 21> f32_planes{};

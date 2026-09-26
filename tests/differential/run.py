@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 import numpy as np
 import vapoursynth as vs
 
@@ -118,6 +119,7 @@ def main():
     core.num_threads = 4
     core.std.LoadPlugin(str(args.reference.resolve()))
     core.std.LoadPlugin(str(args.plugin.resolve()))
+    reference = Reference(core, args.plugin)
 
     formats = [
         ("YUV420P8", vs.YUV420P8, 0.0),
@@ -140,7 +142,7 @@ def main():
 
         # 1. Median: radii 0..3 and per-plane combinations
         for r in [0, 1, 2, 3, [1, 2, 3]]:
-            ref_out = core.zsmooth.Median(clip, radius=r)
+            ref_out = reference.Median(clip, radius=r)
             cand_out = core.neo_smo.Median(clip, radius=r)
             # Median is a pure order-statistic filter: tolerance is strictly 0.0 even on FP16/FP32
             ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=0.0)
@@ -150,7 +152,7 @@ def main():
                 failed_cases.append(f"[FAIL] Median({fmt_name}, radius={r}): {detail} regions={reg}")
 
         # Median with planes subset
-        ref_out = core.zsmooth.Median(clip, radius=2, planes=[0, 2])
+        ref_out = reference.Median(clip, radius=2, planes=[0, 2])
         cand_out = core.neo_smo.Median(clip, radius=2, planes=[0, 2])
         ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=0.0)
         fmt_max_err = max(fmt_max_err, err)
@@ -160,7 +162,7 @@ def main():
 
         # 2. VerticalCleaner: modes 0, 1, 2, and [1, 2, 0]
         for m in [0, 1, 2, [1, 2, 0]]:
-            ref_out = core.zsmooth.VerticalCleaner(clip, mode=m)
+            ref_out = reference.VerticalCleaner(clip, mode=m)
             cand_out = core.neo_smo.VerticalCleaner(clip, mode=m)
             tol = 0.0 if m in (0, 1) else float_tol
             ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)
@@ -171,7 +173,7 @@ def main():
 
         # 3. RemoveGrain: all modes 0..24 + multi-plane mode array
         for m in list(range(0, 25)) + [[4, 12, 20]]:
-            ref_out = core.zsmooth.RemoveGrain(clip, mode=m)
+            ref_out = reference.RemoveGrain(clip, mode=m)
             cand_out = core.neo_smo.RemoveGrain(clip, mode=m)
             tol = 0.0 if (m in (0, 1, 2, 3, 4, 17)) else float_tol
             ok, err, reg, detail = compare_frames(ref_out.get_frame(0), cand_out.get_frame(0), clip.format, tol=tol)

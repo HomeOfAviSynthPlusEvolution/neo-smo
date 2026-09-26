@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 import numpy as np
 import vapoursynth as vs
 
@@ -127,6 +128,7 @@ def main():
     core.num_threads = 4
     core.std.LoadPlugin(str(args.reference.resolve()))
     core.std.LoadPlugin(str(args.plugin.resolve()))
+    reference = Reference(core, args.plugin)
 
     formats = [
         ("YUV420P8", vs.YUV420P8, 0.0),
@@ -151,7 +153,7 @@ def main():
 
         # 1. TemporalMedian: radius 1, 2 (without & with scenechange)
         for r in [1, 2]:
-            ref_out = core.zsmooth.TemporalMedian(clip, radius=r)
+            ref_out = reference.TemporalMedian(clip, radius=r)
             cand_out = core.neo_smo.TemporalMedian(clip, radius=r)
             for fn in [0, r, r + 2, 11 - r, 11]:
                 ok, err, reg, detail = compare_frames(ref_out.get_frame(fn), cand_out.get_frame(fn), clip.format, tol=0.0)
@@ -161,7 +163,7 @@ def main():
                     failed_cases.append(f"[FAIL] TemporalMedian({fmt_name}, r={r}, f={fn}): {detail}")
 
         # TemporalMedian with scenechange
-        ref_out = core.zsmooth.TemporalMedian(clip_sc, radius=2, scenechange=True)
+        ref_out = reference.TemporalMedian(clip_sc, radius=2, scenechange=True)
         cand_out = core.neo_smo.TemporalMedian(clip_sc, radius=2, scenechange=True)
         for fn in [2, 4, 7, 9]:
             ok, err, reg, detail = compare_frames(ref_out.get_frame(fn), cand_out.get_frame(fn), clip.format, tol=0.0)
@@ -172,7 +174,7 @@ def main():
 
         # 2. TemporalSoften: radius 1, 2 (without & with scenechange)
         for r in [1, 2]:
-            ref_out = core.zsmooth.TemporalSoften(clip, radius=r)
+            ref_out = reference.TemporalSoften(clip, radius=r)
             cand_out = core.neo_smo.TemporalSoften(clip, radius=r)
             tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
             for fn in [r, r + 3]:
@@ -183,7 +185,7 @@ def main():
                     failed_cases.append(f"[FAIL] TemporalSoften({fmt_name}, r={r}, f={fn}): {detail}")
 
         # TemporalSoften with scenechange
-        ref_out = core.zsmooth.TemporalSoften(clip_sc, radius=2, scenechange=-1)
+        ref_out = reference.TemporalSoften(clip_sc, radius=2, scenechange=-1)
         cand_out = core.neo_smo.TemporalSoften(clip_sc, radius=2, scenechange=-1)
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         for fn in [3, 5, 8]:
@@ -195,7 +197,7 @@ def main():
 
         # 3. TemporalRepair: modes 0..4
         for m in [0, 1, 2, 3, 4, [2, 2, 2]]:
-            ref_out = core.zsmooth.TemporalRepair(clip, rep_clip, mode=m)
+            ref_out = reference.TemporalRepair(clip, rep_clip, mode=m)
             cand_out = core.neo_smo.TemporalRepair(clip, rep_clip, mode=m)
             tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
             for fn in [0, 1, 5, 11]:
@@ -207,7 +209,7 @@ def main():
 
         # 4. DegrainMedian: modes 0..5, norow, interlaced
         for m in [0, 1, 2, 3, 4, 5]:
-            ref_out = core.zsmooth.DegrainMedian(clip, mode=m)
+            ref_out = reference.DegrainMedian(clip, mode=m)
             cand_out = core.neo_smo.DegrainMedian(clip, mode=m)
             tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
             ok, err, reg, detail = compare_frames(ref_out.get_frame(2), cand_out.get_frame(2), clip.format, tol=tol)
@@ -217,7 +219,7 @@ def main():
                 failed_cases.append(f"[FAIL] DegrainMedian({fmt_name}, m={m}): {detail}")
 
         # DegrainMedian with norow & interlaced
-        ref_out = core.zsmooth.DegrainMedian(clip, mode=1, norow=True, interlaced=True)
+        ref_out = reference.DegrainMedian(clip, mode=1, norow=True, interlaced=True)
         cand_out = core.neo_smo.DegrainMedian(clip, mode=1, norow=True, interlaced=True)
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         ok, err, reg, detail = compare_frames(ref_out.get_frame(3), cand_out.get_frame(3), clip.format, tol=tol)
@@ -227,7 +229,7 @@ def main():
             failed_cases.append(f"[FAIL] DegrainMedian_interlaced_norow({fmt_name}): {detail}")
 
         # 5. FluxSmoothT
-        ref_out = core.zsmooth.FluxSmoothT(clip)
+        ref_out = reference.FluxSmoothT(clip)
         cand_out = core.neo_smo.FluxSmoothT(clip)
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         for fn in [0, 1, 4, 11]:
@@ -238,7 +240,7 @@ def main():
                 failed_cases.append(f"[FAIL] FluxSmoothT({fmt_name}, f={fn}): {detail}")
 
         # 6. FluxSmoothST
-        ref_out = core.zsmooth.FluxSmoothST(clip)
+        ref_out = reference.FluxSmoothST(clip)
         cand_out = core.neo_smo.FluxSmoothST(clip)
         tol = 0.0 if fmt_id not in (vs.YUV444PH, vs.YUV444PS) else float_tol
         for fn in [0, 1, 4, 11]:
@@ -252,7 +254,7 @@ def main():
         def check_case(name, source, kwargs, frames):
             nonlocal total_cases
             try:
-                ref = getattr(core.zsmooth, name)(source, **kwargs)
+                ref = getattr(reference, name)(source, **kwargs)
                 cand = getattr(core.neo_smo, name)(source, **kwargs)
                 for frame in frames:
                     total_cases += 1
@@ -309,7 +311,7 @@ def main():
         # behavior against separate scalar-mode calls instead of copying that bug.
         mixed = core.neo_smo.TemporalRepair(clip, rep_clip, mode=[0, 2, 4]).get_frame(5)
         for plane, mode in enumerate((0, 2, 4)):
-            expected = core.zsmooth.TemporalRepair(clip, rep_clip, mode=mode).get_frame(5)
+            expected = reference.TemporalRepair(clip, rep_clip, mode=mode).get_frame(5)
             aa = np.asarray(expected[plane]).astype(np.float64)
             bb = np.asarray(mixed[plane]).astype(np.float64)
             total_cases += 1

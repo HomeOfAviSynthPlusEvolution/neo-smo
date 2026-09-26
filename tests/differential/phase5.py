@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 import numpy as np
 import vapoursynth as vs
 
@@ -100,6 +101,7 @@ def main():
     core.num_threads = 2
     core.std.LoadPlugin(path=str(args.zsmooth_dll.resolve()))
     core.std.LoadPlugin(path=str(args.neo_smo_dll.resolve()))
+    reference = Reference(core, args.neo_smo_dll)
 
     formats = [
         ("YUV420P8", vs.YUV420P8, 0.0),
@@ -121,7 +123,7 @@ def main():
             nonlocal total_cases, fmt_max_err
             total_cases += 1
             try:
-                ref_out = getattr(core.zsmooth, name)(clip_obj, **kwargs)
+                ref_out = getattr(reference, name)(clip_obj, **kwargs)
                 cand_out = getattr(core.neo_smo, name)(clip_obj, **kwargs)
                 ok, err, detail = compare_frames(ref_out.get_frame(frame_num), cand_out.get_frame(frame_num), clip_obj.format, tol=tol)
                 fmt_max_err = max(fmt_max_err, err)
@@ -196,7 +198,7 @@ def main():
     # passthrough on unrelated random frames. Keep the matrix small and bounded.
     def directed(name, source, kwargs, tol, frames=(11,)):
         nonlocal total_cases
-        ref_out = getattr(core.zsmooth, name)(source, **kwargs)
+        ref_out = getattr(reference, name)(source, **kwargs)
         cand_out = getattr(core.neo_smo, name)(source, **kwargs)
         for n in frames:
             total_cases += 1

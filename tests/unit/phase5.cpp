@@ -2,6 +2,7 @@
 #include "base/fp16.hpp"
 #include "guarded.hpp"
 #include "hwy/targets.h"
+#include "hwy/per_target.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -25,7 +26,7 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
   std::array<uint8_t*, 3> dst{};
   auto decode = [&](T v) { return half ? neo_smo::fp16_to_fp32(static_cast<uint16_t>(v)) : double(v); };
   auto encode = [&](double v) { return half ? T(neo_smo::fp32_to_fp16(float(v))) : T(v); };
-  auto round = [&](double v) { return half ? double(neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(float(v)))) : integer ? v : double(float(v)); };
+  auto round = [&](double v) { return half && hwy::HaveFloat16() ? double(neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(float(v)))) : integer ? v : double(float(v)); };
   for (int frame = 0; frame < 3; ++frame) for (int p = 0; p < 3; ++p) {
     storage.push_back(std::make_unique<Guarded>(size*sizeof(T), end));
     src[frame*3+p] = storage.back()->data;
@@ -70,7 +71,10 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
       for(int p=rgb?0:1;p<3;++p) {
         double expected = integer ? std::round(float(totals[p])/float(accepted)) : round(totals[p]/accepted);
         const double got=decode(reinterpret_cast<T*>(dst[p])[y*width+x]);
-        if(std::abs(got-decode(encode(expected)))>(integer||half?0:1e-6)) {
+        // FP32 reciprocal/FMA rounding can cross a final binary16 midpoint.
+        const double tolerance = integer || (half && hwy::HaveFloat16()) ? 0 :
+            half ? std::max(std::abs(expected) * 0x1p-10, 0x1p-24) : 1e-6;
+        if(std::abs(got-decode(encode(expected))) > tolerance) {
           std::fprintf(stderr,"CCD type=%d rgb=%d radius=%d width=%d xy=%d,%d got=%g expected=%g\n",int(type),rgb,radius,width,x,y,got,expected);
           throw std::runtime_error("CCD scalar oracle mismatch");
         }

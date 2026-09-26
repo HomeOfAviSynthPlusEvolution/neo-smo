@@ -14,6 +14,7 @@ namespace HWY_NAMESPACE {
 #include "common/sorting_networks.hpp"
 #include "common/u16_sort.hpp"
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 template <int Radius, class D, class V = hn::Vec<D>>
 HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
@@ -180,19 +181,20 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
 template <bool IsF16, typename StorageT, int Radius>
 void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* dstp, int width, int height,
                              std::size_t src_stride, std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kSide = 2 * Radius + 1;
   constexpr int kCount = kSide * kSide;
   constexpr int kEvenCount = kCount - 1;
   constexpr int kCenterOffset = kCount / 2;
 
-  hn::ScalableTag<float> d;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
-  std::vector<float> row_buffers(checked_product(kSide, padded_len));
-  std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
-  std::array<float*, kSide> rows{};
+  std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
+  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
@@ -202,7 +204,7 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
     for (int dy = -Radius; dy <= Radius; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
       if constexpr (IsF16) {
-        fill_mirrored_row_fp16_to_fp32(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
+        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
                                        srcp + my * src_stride, width, Radius);
       } else {
         fill_mirrored_row(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
@@ -218,7 +220,7 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
       int val_idx = 0;
 
       for (int ky = 0; ky < kSide; ++ky) {
-        const float* rptr = rows[static_cast<std::size_t>(ky)];
+        const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
         for (int kx = -Radius; kx <= Radius; ++kx) {
           const auto val = hn::LoadU(d, rptr + x + kx);
           if (flat_idx == kCenterOffset) {
@@ -235,7 +237,7 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
+      store_row_f16(dst_row, out_f32.data(), width);
     } else {
       std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }
@@ -262,7 +264,7 @@ void dispatch_smart_median_target(DataType dtype, int radius, float threshold, c
     else if (radius == 3) smart_median_int_impl<std::uint16_t, 3>(th, s, d, w, h, src_stride_bytes / 2, dst_stride_bytes / 2);
   } else if (dtype == DataType::F16) {
     // The reference converts the parameter to the plane's sample type first.
-    threshold = fp16_to_fp32(fp32_to_fp16(threshold));
+    if constexpr (HWY_HAVE_FLOAT16) threshold = fp16_to_fp32(fp32_to_fp16(threshold));
     auto* s = reinterpret_cast<const std::uint16_t*>(srcp);
     auto* d = reinterpret_cast<std::uint16_t*>(dstp);
     if (radius == 1) smart_median_float_impl<true, std::uint16_t, 1>(threshold, s, d, w, h, src_stride_bytes / 2, dst_stride_bytes / 2);

@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 import numpy as np
 import vapoursynth as vs
 
@@ -117,6 +118,7 @@ def main():
     core.num_threads = 4
     core.std.LoadPlugin(str(args.reference.resolve()))
     core.std.LoadPlugin(str(args.plugin.resolve()))
+    reference = Reference(core, args.plugin)
 
     formats = [
         ("YUV420P8", vs.YUV420P8, 0.0),
@@ -140,7 +142,7 @@ def main():
 
         # 1. Repair: all modes 0..24 + multi-plane mode array
         for m in list(range(0, 25)) + [[2, 10, 18], [1, 24, 0]]:
-            ref_out = core.zsmooth.Repair(clip, repair_clip, mode=m)
+            ref_out = reference.Repair(clip, repair_clip, mode=m)
             cand_out = core.neo_smo.Repair(clip, repair_clip, mode=m)
             # Modes 0, 1, 2, 3, 4, 11, 12, 13, 14, 17 are pure sorting/min/max; others involve diffs/clamping
             tol = 0.0 if (m in (0, 1, 2, 3, 4, 11, 12, 13, 14, 17)) else float_tol
@@ -151,7 +153,7 @@ def main():
                 failed_cases.append(f"[FAIL] Repair({fmt_name}, mode={m}): {detail} regions={reg}")
 
         # 2. Clense: standard (prev/next = clip) across multiple frames (frame 0, 1, 3, 6)
-        ref_out = core.zsmooth.Clense(clip)
+        ref_out = reference.Clense(clip)
         cand_out = core.neo_smo.Clense(clip)
         for frame_idx in (0, 1, 3, 6):
             ok, err, reg, detail = compare_frames(ref_out.get_frame(frame_idx), cand_out.get_frame(frame_idx), clip.format, tol=0.0)
@@ -163,7 +165,7 @@ def main():
         # Clense with explicit previous & next clips
         prev_clip = make_test_clip(core, fmt_id, width=164, height=42, length=7, seed=700 + int(fmt_id))
         next_clip = make_test_clip(core, fmt_id, width=164, height=42, length=7, seed=900 + int(fmt_id))
-        ref_out = core.zsmooth.Clense(clip, previous=prev_clip, next=next_clip, planes=[0, 1])
+        ref_out = reference.Clense(clip, previous=prev_clip, next=next_clip, planes=[0, 1])
         cand_out = core.neo_smo.Clense(clip, previous=prev_clip, next=next_clip, planes=[0, 1])
         for frame_idx in (0, 2, 6):
             ok, err, reg, detail = compare_frames(ref_out.get_frame(frame_idx), cand_out.get_frame(frame_idx), clip.format, tol=0.0)
@@ -173,7 +175,7 @@ def main():
                 failed_cases.append(f"[FAIL] Clense_explicit({fmt_name}, frame={frame_idx}): {detail} regions={reg}")
 
         # 3. ForwardClense: across frames (0, 1, 4, 5, 6)
-        ref_out = core.zsmooth.ForwardClense(clip)
+        ref_out = reference.ForwardClense(clip)
         cand_out = core.neo_smo.ForwardClense(clip)
         for frame_idx in (0, 1, 4, 5, 6):
             ok, err, reg, detail = compare_frames(ref_out.get_frame(frame_idx), cand_out.get_frame(frame_idx), clip.format, tol=float_tol)
@@ -183,7 +185,7 @@ def main():
                 failed_cases.append(f"[FAIL] ForwardClense({fmt_name}, frame={frame_idx}): {detail} regions={reg}")
 
         # ForwardClense with planes subset
-        ref_out = core.zsmooth.ForwardClense(clip, planes=[0])
+        ref_out = reference.ForwardClense(clip, planes=[0])
         cand_out = core.neo_smo.ForwardClense(clip, planes=[0])
         ok, err, reg, detail = compare_frames(ref_out.get_frame(2), cand_out.get_frame(2), clip.format, tol=float_tol)
         fmt_max_err = max(fmt_max_err, err)
@@ -192,7 +194,7 @@ def main():
             failed_cases.append(f"[FAIL] ForwardClense_planes({fmt_name}): {detail} regions={reg}")
 
         # 4. BackwardClense: across frames (0, 1, 2, 5, 6)
-        ref_out = core.zsmooth.BackwardClense(clip)
+        ref_out = reference.BackwardClense(clip)
         cand_out = core.neo_smo.BackwardClense(clip)
         for frame_idx in (0, 1, 2, 5, 6):
             ok, err, reg, detail = compare_frames(ref_out.get_frame(frame_idx), cand_out.get_frame(frame_idx), clip.format, tol=float_tol)
@@ -202,7 +204,7 @@ def main():
                 failed_cases.append(f"[FAIL] BackwardClense({fmt_name}, frame={frame_idx}): {detail} regions={reg}")
 
         # BackwardClense with planes subset
-        ref_out = core.zsmooth.BackwardClense(clip, planes=[1])
+        ref_out = reference.BackwardClense(clip, planes=[1])
         cand_out = core.neo_smo.BackwardClense(clip, planes=[1])
         ok, err, reg, detail = compare_frames(ref_out.get_frame(3), cand_out.get_frame(3), clip.format, tol=float_tol)
         fmt_max_err = max(fmt_max_err, err)
@@ -226,7 +228,7 @@ def main():
             for name, kwargs in [('Repair', {'repairclip': other, 'mode': 20}),
                                  ('Clense', {'previous': other, 'next': other}),
                                  ('Clense', {'previous': clip, 'next': other})]:
-                ref_out = getattr(core.zsmooth, name)(clip, **kwargs)
+                ref_out = getattr(reference, name)(clip, **kwargs)
                 cand_out = getattr(core.neo_smo, name)(clip, **kwargs)
                 for frame_idx in (6, 2, 0, 5, 1, 3):
                     ok, err, reg, detail = compare_frames(ref_out.get_frame(frame_idx),

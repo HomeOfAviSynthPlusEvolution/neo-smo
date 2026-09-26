@@ -14,6 +14,7 @@ namespace HWY_NAMESPACE {
 #include "common/grid.hpp"
 
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 template <typename T>
 void vertical_cleaner_int_impl(int mode, int bits_per_sample, const T* srcp, T* dstp, int width, int height,
@@ -86,13 +87,14 @@ void vertical_cleaner_int_impl(int mode, int bits_per_sample, const T* srcp, T* 
 template <bool IsF16, typename StorageT>
 void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, StorageT* dstp, int width, int height,
                                  std::size_t src_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
 
-  auto load_row_f32 = [&](std::vector<float>& buf, const StorageT* row_ptr) {
+  auto load_row_f32 = [&](std::vector<ComputeT>& buf, const StorageT* row_ptr) HWY_ATTR {
     if constexpr (IsF16) {
-      fill_mirrored_row_fp16_to_fp32(buf.data(), row_ptr, width, 0);
+      fill_mirrored_row_f16(buf.data(), row_ptr, width, 0);
     } else {
       std::memcpy(buf.data(), row_ptr, static_cast<std::size_t>(width) * sizeof(float));
     }
@@ -100,10 +102,10 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
 
   if (mode == 1) {
     copy_first_n_lines(dstp, srcp, static_cast<std::size_t>(width), dst_stride, src_stride, 1);
-    std::vector<float> r_top(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> r_cur(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> r_bot(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> r_top(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> r_cur(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> r_bot(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
 
     for (int y = 1; y < height - 1; ++y) {
       load_row_f32(r_top, srcp + static_cast<std::size_t>(y - 1) * src_stride);
@@ -119,7 +121,7 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
       }
 
       if constexpr (IsF16) {
-        convert_row_fp32_to_fp16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
+        store_row_f16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
       } else {
         std::memcpy(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(),
                     static_cast<std::size_t>(width) * sizeof(float));
@@ -134,12 +136,12 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
     const auto vmin = hn::Set(d, min_s);
     const auto vmax = hn::Set(d, max_s);
 
-    std::vector<float> rp2(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> rp1(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> rc(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> rn1(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> rn2(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> rp2(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> rp1(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> rc(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> rn1(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> rn2(static_cast<std::size_t>(width) + kSimdPad);
+    std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
 
     for (int y = 2; y < height - 2; ++y) {
       load_row_f32(rp2, srcp + static_cast<std::size_t>(y - 2) * src_stride);
@@ -168,7 +170,7 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
       }
 
       if constexpr (IsF16) {
-        convert_row_fp32_to_fp16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
+        store_row_f16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
       } else {
         std::memcpy(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(),
                     static_cast<std::size_t>(width) * sizeof(float));

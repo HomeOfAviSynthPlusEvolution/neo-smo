@@ -5,6 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from isolated import run, suppress_crash_ui
 suppress_crash_ui()
+from fp16_reference import Reference
 
 
 def main():
@@ -22,6 +23,7 @@ def main():
     core.num_threads = 4
     core.std.LoadPlugin(str(args.plugin.resolve()))
     core.std.LoadPlugin(str(args.reference.resolve()))
+    reference = Reference(core, args.plugin)
     base = core.std.BlankClip(format=vs.GRAY8, width=164, height=42)
     checks = 0
     for name, key, maximum in [('Median', 'radius', 3), ('RemoveGrain', 'mode', 24), ('VerticalCleaner', 'mode', 2)]:
@@ -258,7 +260,7 @@ def main():
             clip = core.std.ModifyFrame(base, clips=base, selector=fill)
             for name, key, modes in [('Median', 'radius', range(4)), ('RemoveGrain', 'mode', range(25)), ('VerticalCleaner', 'mode', range(3))]:
                 for mode in modes:
-                    ref = getattr(core.zsmooth, name)(clip, **{key: mode}).get_frame(0)
+                    ref = getattr(reference, name)(clip, **{key: mode}).get_frame(0)
                     cand = getattr(core.neo_smo, name)(clip, **{key: mode}).get_frame(0)
                     a, b = np.asarray(ref[0]), np.asarray(cand[0])
                     if clip.format.sample_type == vs.FLOAT:
@@ -282,7 +284,7 @@ def main():
                 return out
             rep_clip = core.std.ModifyFrame(rep_base, clips=rep_base, selector=fill_rep)
             for mode in range(25):
-                ref = core.zsmooth.Repair(clip, rep_clip, mode=mode).get_frame(0)
+                ref = reference.Repair(clip, rep_clip, mode=mode).get_frame(0)
                 cand = core.neo_smo.Repair(clip, rep_clip, mode=mode).get_frame(0)
                 a, b = np.asarray(ref[0]), np.asarray(cand[0])
                 if clip.format.sample_type == vs.FLOAT:

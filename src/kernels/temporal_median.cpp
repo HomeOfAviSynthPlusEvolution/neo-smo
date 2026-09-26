@@ -458,32 +458,20 @@ void temporal_median_int_impl(int diameter, const T* const* srcp_planes, T* dstp
 template <bool IsF16, typename StorageT>
 void temporal_median_float_impl(int diameter, const StorageT* const* srcp_planes, StorageT* dstp,
                                 int width, int height, std::size_t src_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
 
   if constexpr (IsF16) {
-    std::vector<float> r_bufs(static_cast<std::size_t>(diameter) * (static_cast<std::size_t>(width) + lanes));
-    std::vector<float> out_f32(static_cast<std::size_t>(width) + lanes);
-
     for (int y = 0; y < height; ++y) {
-      for (int i = 0; i < diameter; ++i) {
-        fill_mirrored_row_fp16_to_fp32(
-            r_bufs.data() + static_cast<std::size_t>(i) * (static_cast<std::size_t>(width) + lanes),
-            srcp_planes[i] + static_cast<std::size_t>(y) * src_stride, width, 0);
-      }
-
       StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
       for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+        const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
         hn::Vec<decltype(d)> vals[21];
-        for (int i = 0; i < diameter; ++i) {
-          vals[i] = hn::LoadU(
-              d, r_bufs.data() + static_cast<std::size_t>(i) * (static_cast<std::size_t>(width) + lanes) + x);
-        }
-        const auto med = eval_temporal_median_float<true>(d, vals, diameter);
-        hn::StoreU(med, d, out_f32.data() + x);
+        for (int i = 0; i < diameter; ++i)
+          vals[i] = load_f16(d, srcp_planes[i] + static_cast<std::size_t>(y) * src_stride + x, count);
+        store_f16(d, eval_temporal_median_float<true>(d, vals, diameter), dst_row + x, count);
       }
-
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
     }
   } else {
     for (int y = 0; y < height; ++y) {

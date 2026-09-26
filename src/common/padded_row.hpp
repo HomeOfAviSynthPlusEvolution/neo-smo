@@ -39,18 +39,4 @@ inline void fill_mirrored_row(T* dst, const T* src_row, int width, int radius) n
   }
 }
 
-// Fill a float padded row buffer from an IEEE-754 FP16 (`uint16_t`) source row.
-inline void fill_mirrored_row_fp16_to_fp32(float* dst, const std::uint16_t* src_row, int width, int radius) noexcept {
-  for (std::int64_t x = -radius; x < static_cast<std::int64_t>(width) + radius; ++x) {
-    const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-    dst[radius + x] = fp16_to_fp32(src_row[idx]);
-  }
-}
-
-inline void convert_row_fp32_to_fp16(std::uint16_t* dst_row, const float* src_row, int width) noexcept {
-  for (int x = 0; x < width; ++x) {
-    dst_row[x] = fp32_to_fp16(src_row[x]);
-  }
-}
-
 } // namespace neo_smo

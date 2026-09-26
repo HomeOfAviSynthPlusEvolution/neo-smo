@@ -14,6 +14,7 @@ namespace HWY_NAMESPACE {
 #include "common/sorting_networks.hpp"
 #include "common/u16_sort.hpp"
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 template <int Radius, class D, class V = hn::Vec<D>>
 HWY_INLINE V eval_iqm_int32(D d, V* vals) {
@@ -150,16 +151,17 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
 template <bool IsF16, typename StorageT, int Radius>
 void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height, std::size_t src_stride,
                     std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kSide = 2 * Radius + 1;
   constexpr int kCount = kSide * kSide;
-  hn::ScalableTag<float> d;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
-  std::vector<float> row_buffers(checked_product(kSide, padded_len));
-  std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
-  std::array<float*, kSide> rows{};
+  std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
+  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
@@ -168,7 +170,7 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
     for (int dy = -Radius; dy <= Radius; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
       if constexpr (IsF16) {
-        fill_mirrored_row_fp16_to_fp32(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
+        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
                                        srcp + my * src_stride, width, Radius);
       } else {
         fill_mirrored_row(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
@@ -181,7 +183,7 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
       hn::Vec<decltype(d)> vals[kCount];
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
-        const float* rptr = rows[static_cast<std::size_t>(ky)];
+        const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
         for (int kx = -Radius; kx <= Radius; ++kx) {
           vals[idx++] = hn::LoadU(d, rptr + x + kx);
         }
@@ -192,7 +194,7 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
+      store_row_f16(dst_row, out_f32.data(), width);
     } else {
       std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }

@@ -14,6 +14,7 @@ namespace HWY_NAMESPACE {
 #include "common/grid.hpp"
 
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 inline bool rg_should_skip_line(int mode, int line) noexcept {
   if (mode == 13 || mode == 15) {
@@ -550,18 +551,19 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
 template <bool IsF16, typename StorageT>
 void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, StorageT* dstp, int width, int height,
                              std::size_t src_stride, std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
-  hn::ScalableTag<float> d;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + kSimdPad;
-  std::vector<float> row_buffers(checked_product(3, padded_len));
-  std::array<float*, 3> rows{
+  std::vector<ComputeT> row_buffers(checked_product(3, padded_len));
+  std::array<ComputeT*, 3> rows{
       row_buffers.data() + 0 * padded_len + kRadius,
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
-  std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
 
   for (int y = 0; y < height; ++y) {
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -574,7 +576,7 @@ void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, Storag
     for (int dy = -1; dy <= 1; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
       if constexpr (IsF16) {
-        fill_mirrored_row_fp16_to_fp32(rows[static_cast<std::size_t>(dy + 1)] - kRadius, srcp + my * src_stride, width,
+        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + 1)] - kRadius, srcp + my * src_stride, width,
                                        kRadius);
       } else {
         fill_mirrored_row(rows[static_cast<std::size_t>(dy + 1)] - kRadius, srcp + my * src_stride, width, kRadius);
@@ -588,7 +590,7 @@ void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, Storag
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
+      store_row_f16(dst_row, out_f32.data(), width);
     } else {
       std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }

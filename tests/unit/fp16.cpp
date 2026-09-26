@@ -1,5 +1,8 @@
 #include "base/fp16.hpp"
+#include "guarded.hpp"
 #include "hwy/targets.h"
+#include "hwy/per_target.h"
+#include <cstring>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -7,9 +10,15 @@
 
 namespace test_fp16 {
 void run(const float* in, float* out, size_t count);
+void decode(const std::uint16_t* in, float* out, size_t count);
+void encode(const float* in, std::uint16_t* out, size_t count);
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::strcmp(argv[1], "--capability") == 0) {
+    std::puts(hwy::HaveFloat16() ? "native" : "fp32");
+    return 0;
+  }
   std::vector<float> inputs, expected;
   const auto add = [&](float v, float e) {
     inputs.push_back(v);
@@ -36,6 +45,37 @@ int main() {
   std::vector<float> out(inputs.size());
   for (int64_t target : hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
+    std::vector<std::uint16_t> codes(65536), encoded(inputs.size());
+    std::vector<float> decoded(65536);
+    for (size_t i = 0; i < codes.size(); ++i) codes[i] = static_cast<std::uint16_t>(i);
+    test_fp16::decode(codes.data(), decoded.data(), codes.size());
+    for (size_t i = 0; i < codes.size(); ++i) {
+      const auto e = neo_smo::fp16_to_fp32(codes[i]);
+      if (!(std::isnan(e) ? std::isnan(decoded[i]) :
+            decoded[i] == e && std::signbit(decoded[i]) == std::signbit(e))) {
+        std::fprintf(stderr, "%s decode half=%04x failed\n", hwy::TargetName(target), unsigned(i));
+        return 1;
+      }
+    }
+    test_fp16::encode(inputs.data(), encoded.data(), inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+      const auto h = encoded[i];
+      const bool ok = std::isnan(inputs[i]) ? ((h & 0x7c00) == 0x7c00 && (h & 0x3ff))
+                                           : h == neo_smo::fp32_to_fp16(inputs[i]);
+      if (!ok) {
+        std::fprintf(stderr, "%s encode input=%a half=%04x failed\n", hwy::TargetName(target), inputs[i], unsigned(h));
+        return 1;
+      }
+    }
+    for (bool end : {false, true}) for (size_t n : {1, 3, 7, 15, 16, 17, 31, 33, 65}) {
+      Guarded half(n * sizeof(std::uint16_t), end), floats(n * sizeof(float), end);
+      auto* hp = reinterpret_cast<std::uint16_t*>(half.data);
+      auto* fp = reinterpret_cast<float*>(floats.data);
+      for (size_t i = 0; i < n; ++i) hp[i] = static_cast<std::uint16_t>(i + 1);
+      test_fp16::decode(hp, fp, n);
+      test_fp16::encode(fp, hp, n);
+      for (size_t i = 0; i < n; ++i) if (hp[i] != i + 1) return 1;
+    }
     test_fp16::run(inputs.data(), out.data(), inputs.size());
     size_t inexact = 0;
     float max_error = 0.0f;

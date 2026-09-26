@@ -1,6 +1,7 @@
 // Included inside the per-target Highway namespace. No include guard.
 #include "common/grid.hpp"
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 // Evaluate Repair mode on floating-point lanes
 template <bool IsF16, class D, class V = hn::Vec<D>>
@@ -301,19 +302,20 @@ template <bool IsF16, typename StorageT>
 void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const StorageT* repairp, StorageT* dstp,
                        int width, int height, std::size_t src_stride, std::size_t repair_stride,
                        std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
-  hn::ScalableTag<float> d;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + kSimdPad;
-  std::vector<float> row_buffers(checked_product(3, padded_len));
-  std::array<float*, 3> rows{
+  std::vector<ComputeT> row_buffers(checked_product(3, padded_len));
+  std::array<ComputeT*, 3> rows{
       row_buffers.data() + 0 * padded_len + kRadius,
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
-  std::vector<float> src_f32(static_cast<std::size_t>(width) + kSimdPad, 0.0f);
-  std::vector<float> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> src_f32(static_cast<std::size_t>(width) + kSimdPad, ComputeT(0));
+  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
 
   const float max_val = chroma ? 0.5f : 1.0f;
   const float min_val = chroma ? -0.5f : 0.0f;
@@ -327,7 +329,7 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
     for (int dy = -1; dy <= 1; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
       if constexpr (IsF16) {
-        fill_mirrored_row_fp16_to_fp32(rows[static_cast<std::size_t>(dy + 1)] - kRadius,
+        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + 1)] - kRadius,
                                        repairp + my * repair_stride, width, kRadius);
       } else {
         fill_mirrored_row(rows[static_cast<std::size_t>(dy + 1)] - kRadius,
@@ -336,7 +338,7 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
     }
 
     if constexpr (IsF16) {
-      fill_mirrored_row_fp16_to_fp32(src_f32.data(), src_row, width, 0);
+      fill_mirrored_row_f16(src_f32.data(), src_row, width, 0);
     } else {
       std::memcpy(src_f32.data(), src_row, static_cast<std::size_t>(width) * sizeof(float));
     }
@@ -349,7 +351,7 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, out_f32.data(), width);
+      store_row_f16(dst_row, out_f32.data(), width);
     } else {
       std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }

@@ -13,6 +13,7 @@ namespace HWY_NAMESPACE {
 
 #include "common/grid.hpp"
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 // Avoid expanding the repeated scalar fallback neighbor checks in native MSVC.
 // Hardware SIMD and other compilers retain their existing inlining.
@@ -293,8 +294,9 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
                                const StorageT* currp, const StorageT* nextp, StorageT* dstp,
                                int width, int height, std::size_t prev_stride,
                                std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
-  const hn::ScalableTag<float> d;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto pixel_min = hn::Set(d, chroma ? -0.5f : 0.0f);
@@ -309,25 +311,25 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, skip_rows);
 
-  std::vector<float> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
-  std::vector<float> b_out(static_cast<std::size_t>(width) + lanes);
-  std::array<float*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
-  std::array<float*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
-  std::array<float*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
+  std::vector<ComputeT> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
+  std::vector<ComputeT> b_out(static_cast<std::size_t>(width) + lanes);
+  std::array<ComputeT*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
+  std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
+  std::array<ComputeT*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
 
   for (int y = skip_rows; y < height - skip_rows; ++y) {
     if constexpr (IsF16) {
-      fill_mirrored_row_fp16_to_fp32(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_prev[2] - kRadius, prevp + static_cast<std::size_t>(y + skip_rows) * prev_stride, width, kRadius);
+      fill_mirrored_row_f16(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
+      fill_mirrored_row_f16(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
+      fill_mirrored_row_f16(r_prev[2] - kRadius, prevp + static_cast<std::size_t>(y + skip_rows) * prev_stride, width, kRadius);
 
-      fill_mirrored_row_fp16_to_fp32(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - skip_rows) * curr_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + skip_rows) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - skip_rows) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + skip_rows) * curr_stride, width, kRadius);
 
-      fill_mirrored_row_fp16_to_fp32(r_next[0] - kRadius, nextp + static_cast<std::size_t>(y - skip_rows) * next_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_next[1] - kRadius, nextp + static_cast<std::size_t>(y) * next_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_next[2] - kRadius, nextp + static_cast<std::size_t>(y + skip_rows) * next_stride, width, kRadius);
+      fill_mirrored_row_f16(r_next[0] - kRadius, nextp + static_cast<std::size_t>(y - skip_rows) * next_stride, width, kRadius);
+      fill_mirrored_row_f16(r_next[1] - kRadius, nextp + static_cast<std::size_t>(y) * next_stride, width, kRadius);
+      fill_mirrored_row_f16(r_next[2] - kRadius, nextp + static_cast<std::size_t>(y + skip_rows) * next_stride, width, kRadius);
     } else {
       fill_mirrored_row(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
       fill_mirrored_row(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
@@ -360,7 +362,7 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, b_out.data(), width);
+      store_row_f16(dst_row, b_out.data(), width);
     }
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
     dst_row[width - 1] = currp[static_cast<std::size_t>(y) * curr_stride + width - 1];
@@ -376,7 +378,7 @@ void dispatch_degrain_median_target(DataType dtype, int mode, float limit, bool 
                                     std::size_t prev_stride_bytes, std::size_t curr_stride_bytes,
                                     std::size_t next_stride_bytes, std::size_t dst_stride_bytes) {
   if (dtype == DataType::F16) {
-    limit = fp16_to_fp32(fp32_to_fp16(limit));
+    if constexpr (HWY_HAVE_FLOAT16) limit = fp16_to_fp32(fp32_to_fp16(limit));
   }
   const int w = static_cast<int>(width);
   const int h = static_cast<int>(height);

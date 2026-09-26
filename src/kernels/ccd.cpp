@@ -44,11 +44,10 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   constexpr bool integer = !Half && !std::is_same_v<T, float>;
   // Integer squared distances exceed 32 bits. Binary64 represents every integer
   // in their bounded accumulation exactly (at most 6 * 65535^2 * 21 < 2^40).
-  const hn::ScalableTag<std::conditional_t<integer, double, float>> d;
+  const hn::ScalableTag<std::conditional_t<integer, double, FloatLane<Half>>> d;
   const hn::Rebind<float, decltype(d)> df;
   const std::size_t stride = stride_bytes / sizeof(T), lanes = hn::Lanes(d);
   auto threshold_v = hn::Set(d, integer ? std::floor(threshold) : threshold);
-  if constexpr (Half) threshold_v = round_f16(d, threshold_v);
   const auto div = hn::Set(d, radius * 2 + 1);
   T* destinations[3] = {reinterpret_cast<T*>(dst_r), reinterpret_cast<T*>(dst_g), reinterpret_cast<T*>(dst_b)};
   for (int y = 0; y < height; ++y) {
@@ -79,7 +78,6 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
             ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
           } else {
             auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
-            if constexpr (Half) { wp = round_f16(d, wp); wn = round_f16(d, wn); }
             ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
           }
         }

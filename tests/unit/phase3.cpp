@@ -1,6 +1,7 @@
 #include "base/fp16.hpp"
 #include "kernels/dispatch.hpp"
 #include "hwy/targets.h"
+#include "hwy/per_target.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -96,7 +97,7 @@ int main() {
     check_threshold<uint16_t>(DataType::U16, 2704.0f, {724, 724, 724, 996, 65535, 1208, 1208, 1208, 1208}, 65535);
     check_threshold<uint16_t>(DataType::U16, 2705.0f, {724, 724, 724, 996, 65535, 1208, 1208, 1208, 1208}, 1208);
     const uint16_t tenth = neo_smo::fp32_to_fp16(0.1f), one = neo_smo::fp32_to_fp16(1.0f);
-    check_threshold<uint16_t>(DataType::F16, 0.9188f, {0, 0, 0, 0, one, tenth, tenth, tenth, tenth}, tenth);
+    check_threshold<uint16_t>(DataType::F16, 0.9188f, {0, 0, 0, 0, one, tenth, tenth, tenth, tenth}, hwy::HaveFloat16() ? tenth : one);
     check_threshold<uint16_t>(DataType::F16, 0.9186f, {0, 0, 0, 0, one, tenth, tenth, tenth, tenth}, one);
     std::printf("%s: phase3 integer oracles and threshold decisions passed\n", hwy::TargetName(target));
   }

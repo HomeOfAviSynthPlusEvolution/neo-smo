@@ -13,6 +13,7 @@ namespace HWY_NAMESPACE {
 
 #include "common/grid.hpp"
 #include "common/float_arithmetic.hpp"
+#include "common/fp16_rows.hpp"
 
 // ---------------------------------------------------------------------------
 // FluxSmoothT
@@ -87,28 +88,21 @@ void fluxsmooth_t_float_impl(float temporal_threshold, const StorageT* prevp, co
                              const StorageT* nextp, StorageT* dstp, int width, int height,
                              std::size_t prev_stride, std::size_t curr_stride,
                              std::size_t next_stride, std::size_t dst_stride) {
-  const hn::ScalableTag<float> d;
+  using ComputeT = FloatLane<IsF16>;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh = hn::Set(d, temporal_threshold);
   const auto one = hn::Set(d, 1.0f);
   const auto zero = hn::Zero(d);
 
   if constexpr (IsF16) {
-    std::vector<float> b_prev(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_curr(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_next(static_cast<std::size_t>(width) + lanes);
-    std::vector<float> b_out(static_cast<std::size_t>(width) + lanes);
-
     for (int y = 0; y < height; ++y) {
-      fill_mirrored_row_fp16_to_fp32(b_prev.data(), prevp + static_cast<std::size_t>(y) * prev_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_curr.data(), currp + static_cast<std::size_t>(y) * curr_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_next.data(), nextp + static_cast<std::size_t>(y) * next_stride, width, 0);
-
       StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
       for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto p = hn::LoadU(d, b_prev.data() + x);
-        const auto c = hn::LoadU(d, b_curr.data() + x);
-        const auto n = hn::LoadU(d, b_next.data() + x);
+        const auto count_lanes = std::min(lanes, static_cast<std::size_t>(width) - x);
+        const auto p = load_f16(d, prevp + static_cast<std::size_t>(y) * prev_stride + x, count_lanes);
+        const auto c = load_f16(d, currp + static_cast<std::size_t>(y) * curr_stride + x, count_lanes);
+        const auto n = load_f16(d, nextp + static_cast<std::size_t>(y) * next_stride + x, count_lanes);
 
         const auto prevnextless = hn::And(hn::Lt(p, c), hn::Lt(n, c));
         const auto prevnextmore = hn::And(hn::Gt(p, c), hn::Gt(n, c));
@@ -132,9 +126,8 @@ void fluxsmooth_t_float_impl(float temporal_threshold, const StorageT* prevp, co
         const auto filtered = float_div<true>(d, sum, count);
         const auto res = hn::IfThenElse(mask_either, filtered, c);
 
-        hn::StoreU(res, d, b_out.data() + x);
+        store_f16(d, res, dst_row + x, count_lanes);
       }
-      convert_row_fp32_to_fp16(dst_row, b_out.data(), width);
     }
   } else {
     for (int y = 0; y < height; ++y) {
@@ -279,8 +272,9 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
                              const StorageT* prevp, const StorageT* currp, const StorageT* nextp,
                              StorageT* dstp, int width, int height, std::size_t prev_stride,
                              std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
+  using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
-  const hn::ScalableTag<float> d;
+  const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto t_thresh = hn::Set(d, temporal_threshold);
@@ -290,23 +284,23 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, 1);
 
-  std::vector<float> b_curr(3 * padded_len);
-  std::array<float*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius,
+  std::vector<ComputeT> b_curr(3 * padded_len);
+  std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius,
                               b_curr.data() + 1 * padded_len + kRadius,
                               b_curr.data() + 2 * padded_len + kRadius};
 
-  std::vector<float> b_prev(static_cast<std::size_t>(width) + lanes);
-  std::vector<float> b_next(static_cast<std::size_t>(width) + lanes);
-  std::vector<float> b_out(static_cast<std::size_t>(width) + lanes);
+  std::vector<ComputeT> b_prev(static_cast<std::size_t>(width) + lanes);
+  std::vector<ComputeT> b_next(static_cast<std::size_t>(width) + lanes);
+  std::vector<ComputeT> b_out(static_cast<std::size_t>(width) + lanes);
 
   for (int y = 1; y < height - 1; ++y) {
     if constexpr (IsF16) {
-      fill_mirrored_row_fp16_to_fp32(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - 1) * curr_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
-      fill_mirrored_row_fp16_to_fp32(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + 1) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - 1) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
+      fill_mirrored_row_f16(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + 1) * curr_stride, width, kRadius);
 
-      fill_mirrored_row_fp16_to_fp32(b_prev.data(), prevp + static_cast<std::size_t>(y) * prev_stride, width, 0);
-      fill_mirrored_row_fp16_to_fp32(b_next.data(), nextp + static_cast<std::size_t>(y) * next_stride, width, 0);
+      fill_mirrored_row_f16(b_prev.data(), prevp + static_cast<std::size_t>(y) * prev_stride, width, 0);
+      fill_mirrored_row_f16(b_next.data(), nextp + static_cast<std::size_t>(y) * next_stride, width, 0);
     } else {
       fill_mirrored_row(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - 1) * curr_stride, width, kRadius);
       fill_mirrored_row(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
@@ -374,7 +368,7 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
     }
 
     if constexpr (IsF16) {
-      convert_row_fp32_to_fp16(dst_row, b_out.data(), width);
+      store_row_f16(dst_row, b_out.data(), width);
     }
 
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
@@ -390,7 +384,7 @@ void dispatch_fluxsmooth_t_target(DataType dtype, float temporal_threshold, cons
                                   std::size_t prev_stride_bytes, std::size_t curr_stride_bytes,
                                   std::size_t next_stride_bytes, std::size_t dst_stride_bytes) {
   if (dtype == DataType::F16) {
-    temporal_threshold = fp16_to_fp32(fp32_to_fp16(temporal_threshold));
+    if constexpr (HWY_HAVE_FLOAT16) temporal_threshold = fp16_to_fp32(fp32_to_fp16(temporal_threshold));
   }
   const int w = static_cast<int>(width);
   const int h = static_cast<int>(height);
@@ -427,9 +421,9 @@ void dispatch_fluxsmooth_st_target(DataType dtype, float temporal_threshold, flo
                                    std::size_t height, std::size_t prev_stride_bytes,
                                    std::size_t curr_stride_bytes, std::size_t next_stride_bytes,
                                    std::size_t dst_stride_bytes) {
-  if (dtype == DataType::F16) spatial_threshold = fp16_to_fp32(fp32_to_fp16(spatial_threshold));
+  if (dtype == DataType::F16 && HWY_HAVE_FLOAT16) spatial_threshold = fp16_to_fp32(fp32_to_fp16(spatial_threshold));
   if (dtype == DataType::F16) {
-    temporal_threshold = fp16_to_fp32(fp32_to_fp16(temporal_threshold));
+    if constexpr (HWY_HAVE_FLOAT16) temporal_threshold = fp16_to_fp32(fp32_to_fp16(temporal_threshold));
   }
   const int w = static_cast<int>(width);
   const int h = static_cast<int>(height);
