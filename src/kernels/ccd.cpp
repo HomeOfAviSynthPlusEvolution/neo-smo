@@ -42,9 +42,10 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
     float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
   constexpr bool integer = !Half && !std::is_same_v<T, float>;
-  // Integer squared distances exceed 32 bits. Binary64 represents every integer
-  // in their bounded accumulation exactly (at most 6 * 65535^2 * 21 < 2^40).
-  const hn::ScalableTag<std::conditional_t<integer, double, FloatLane<Half>>> d;
+  // U8 squared-distance accumulation is bounded by 6 * 255^2 * 21 < 2^23,
+  // so FP32 represents each integer exactly. U16 still requires binary64.
+  constexpr bool wide_integer = integer && sizeof(T) > 1;
+  const hn::ScalableTag<std::conditional_t<wide_integer, double, FloatLane<Half>>> d;
   const hn::Rebind<float, decltype(d)> df;
   const std::size_t stride = stride_bytes / sizeof(T), lanes = hn::Lanes(d);
   auto threshold_v = hn::Set(d, integer ? std::floor(threshold) : threshold);
@@ -73,9 +74,15 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
           const int prev = radius - 1 - i, next = radius + 1 + i;
           const auto a = distance(prev), b = distance(next);
           if constexpr (integer) {
-            const auto term = hn::Add(hn::Mul(hn::DemoteTo(df, a), hn::Set(df, weights[prev])),
-                                      hn::Mul(hn::DemoteTo(df, b), hn::Set(df, weights[next])));
-            ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
+            if constexpr (wide_integer) {
+              const auto term = hn::Add(hn::Mul(hn::DemoteTo(df, a), hn::Set(df, weights[prev])),
+                                        hn::Mul(hn::DemoteTo(df, b), hn::Set(df, weights[next])));
+              ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
+            } else {
+              const auto term = hn::Add(hn::Mul(a, hn::Set(d, weights[prev])),
+                                        hn::Mul(b, hn::Set(d, weights[next])));
+              ssd = hn::Add(ssd, weighted_round(d, term));
+            }
           } else {
             auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
             ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
