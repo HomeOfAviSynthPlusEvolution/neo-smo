@@ -20,7 +20,8 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
     copy_plane(dstp, srcp_planes[0], width, height, dst_stride, src_stride);
     return;
   }
-  const hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  const hn::ScalableTag<ComputeT> d;
   const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh = hn::Set(d, threshold);
@@ -40,10 +41,8 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
         sum = hn::Add(sum, hn::IfThenElse(hn::Le(hn::AbsDiff(curr, value), thresh), value, curr));
       }
       const auto value = hn::Add(sum, rounding);
-      auto result = hn::Zero(d);
       // Preserve the upstream fixed-point reciprocal, including its truncation.
-      if constexpr (sizeof(T) == 1) result = hn::BitCast(d, hn::ShiftRight<16>(hn::Mul(hn::BitCast(du, value), multiplier)));
-      else result = hn::BitCast(d, hn::MulHigh(hn::BitCast(du, value), multiplier));
+      const auto result = hn::BitCast(d, hn::MulHigh(hn::BitCast(du, value), multiplier));
       hn::StoreN(hn::DemoteTo(ds, result), ds, dst_row + x, count);
     }
   }
