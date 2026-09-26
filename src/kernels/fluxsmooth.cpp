@@ -213,7 +213,7 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
-    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+    auto block = [&](std::size_t x) HWY_ATTR {
       const auto active = std::min(lanes, static_cast<std::size_t>(width) - x);
       const auto p = hn::PromoteTo(d, hn::LoadN(ds, prevp + static_cast<std::size_t>(y) * prev_stride + x, active));
       const auto n = hn::PromoteTo(d, hn::LoadN(ds, nextp + static_cast<std::size_t>(y) * next_stride + x, active));
@@ -261,7 +261,12 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
+    };
+    std::size_t x = 0;
+    for (; x + 2 * lanes <= static_cast<std::size_t>(width); x += 2 * lanes) {
+      block(x); block(x + lanes);
     }
+    for (; x < static_cast<std::size_t>(width); x += lanes) block(x);
 
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
     dst_row[width - 1] = currp[static_cast<std::size_t>(y) * curr_stride + width - 1];
