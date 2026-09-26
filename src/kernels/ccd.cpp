@@ -13,9 +13,12 @@ namespace neo_smo {
 namespace HWY_NAMESPACE {
 #include "common/weighted_simd.hpp"
 
-template <bool Half, class D, class T>
+template <bool Half, bool Interior, class D, class T>
 HWY_INLINE hn::Vec<D> ccd_load(D d, const T* plane, std::size_t stride,
                               int width, int height, int x, int y, std::size_t count) {
+  if constexpr (Interior) {
+    return weighted_load<Half>(d, plane + static_cast<std::size_t>(y) * stride + x, hn::Lanes(d));
+  }
   const auto* row = plane + neo_smo::mirror_index(y, height) * stride;
   if (x >= 0 && static_cast<std::size_t>(x) + count <= static_cast<std::size_t>(width))
     return weighted_load<Half>(d, row + x, count);
@@ -51,14 +54,20 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   auto threshold_v = hn::Set(d, integer ? std::floor(threshold) : threshold);
   const auto div = hn::Set(d, radius * 2 + 1);
   T* destinations[3] = {reinterpret_cast<T*>(dst_r), reinterpret_cast<T*>(dst_g), reinterpret_cast<T*>(dst_b)};
+  int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+  for (int p = 0; p < num_points; ++p) {
+    min_x = std::min(min_x, points[p].x); max_x = std::max(max_x, points[p].x);
+    min_y = std::min(min_y, points[p].y); max_y = std::max(max_y, points[p].y);
+  }
   for (int y = 0; y < height; ++y) {
-    for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+    auto block = [&](int x, auto interior_tag) HWY_ATTR {
+      constexpr bool Interior = decltype(interior_tag)::value;
       const auto count = std::min(lanes, static_cast<std::size_t>(width - x));
       auto load_ref = [&](int frame, int plane, int px, int py) HWY_ATTR {
-        return ccd_load<Half>(d, reinterpret_cast<const T*>(ref[frame * 3 + plane]), stride, width, height, px, py, count);
+        return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(ref[frame * 3 + plane]), stride, width, height, px, py, count);
       };
       auto load_src = [&](int plane, int px, int py) HWY_ATTR {
-        return ccd_load<Half>(d, reinterpret_cast<const T*>(src[radius * 3 + plane]), stride, width, height, px, py, count);
+        return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(src[radius * 3 + plane]), stride, width, height, px, py, count);
       };
       const auto ca = load_ref(radius, 0, x, y), cb = load_ref(radius, 1, x, y), cc = load_ref(radius, 2, x, y);
       auto ta = hn::Zero(d), tb = load_src(1, x, y), tc = load_src(2, x, y);
@@ -111,6 +120,13 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
       };
       if constexpr (RGB) store(ta, 0);
       store(tb, 1); store(tc, 2);
+    };
+    for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+      const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
+          static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
+          static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
+      if (interior) block(x, std::true_type{});
+      else block(x, std::false_type{});
     }
   }
 }
