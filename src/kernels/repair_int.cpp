@@ -25,7 +25,12 @@ HWY_INLINE V repair_abs_diff32(V a, V b) {
 
 // Evaluate Repair mode on 32-bit signed integer lanes (covers both u8 and u16 without overflow)
 template <class D, class V = hn::Vec<D>>
-HWY_NOINLINE V eval_repair_int32(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_max) {
+#if defined(_MSC_VER) && !defined(__clang__)
+HWY_NOINLINE
+#else
+HWY_INLINE
+#endif
+V eval_repair_int32(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_max) {
   const V c = g.center_center;
   const V zero = hn::Zero(d);
   const V vmax = hn::Set(d, type_max);
