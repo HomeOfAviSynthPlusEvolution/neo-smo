@@ -178,6 +178,7 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
                             std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
   constexpr int kRadius = 1;
   hn::ScalableTag<std::int32_t> d;
+  const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto t_thresh = hn::Set(d, static_cast<std::int32_t>(temporal_threshold));
@@ -187,36 +188,35 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, 1);
 
-  std::vector<std::int32_t> b_prev(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> b_next(static_cast<std::size_t>(width) + lanes, 0);
   std::vector<std::int32_t> b_curr(3 * padded_len, 0);
   std::array<std::int32_t*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius,
                                       b_curr.data() + 1 * padded_len + kRadius,
                                       b_curr.data() + 2 * padded_len + kRadius};
 
   auto fill_i32 = [&](std::int32_t* dst, const T* srow) {
-    for (std::int64_t x = -kRadius; x < static_cast<std::int64_t>(width) + kRadius; ++x) {
-      const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-      dst[x] = static_cast<std::int32_t>(srow[idx]);
-    }
+    dst[-1] = srow[mirror_index(-1, width)];
+    for (int x = 0; x < width; ++x) dst[x] = srow[x];
+    dst[width] = srow[mirror_index(width, width)];
   };
 
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + lanes);
+  std::array<int, 3> cached_y{-1, -1, -1};
 
   for (int y = 1; y < height - 1; ++y) {
-    fill_i32(r_curr[0], currp + static_cast<std::size_t>(y - 1) * curr_stride);
-    fill_i32(r_curr[1], currp + static_cast<std::size_t>(y) * curr_stride);
-    fill_i32(r_curr[2], currp + static_cast<std::size_t>(y + 1) * curr_stride);
-
-    for (int x = 0; x < width; ++x) {
-      b_prev[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(prevp[static_cast<std::size_t>(y) * prev_stride + x]);
-      b_next[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(nextp[static_cast<std::size_t>(y) * next_stride + x]);
+    for (int dy = -1; dy <= 1; ++dy) {
+      const int sy = y + dy, slot = sy % 3;
+      auto* row = b_curr.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != sy) {
+        fill_i32(row, currp + static_cast<std::size_t>(sy) * curr_stride);
+        cached_y[slot] = sy;
+      }
+      r_curr[dy + 1] = row;
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto p = hn::LoadU(d, b_prev.data() + x);
-      const auto n = hn::LoadU(d, b_next.data() + x);
+      const auto active = std::min(lanes, static_cast<std::size_t>(width) - x);
+      const auto p = hn::PromoteTo(d, hn::LoadN(ds, prevp + static_cast<std::size_t>(y) * prev_stride + x, active));
+      const auto n = hn::PromoteTo(d, hn::LoadN(ds, nextp + static_cast<std::size_t>(y) * next_stride + x, active));
       const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
       const auto c = gc.center_center;
 
@@ -254,13 +254,10 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
       const auto filtered = hn::Div(numerator, denominator);
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
-      hn::StoreU(res, d, out_i32.data() + x);
+      hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
     }
 
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
-    for (int x = 1; x < width - 1; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)]);
-    }
     dst_row[width - 1] = currp[static_cast<std::size_t>(y) * curr_stride + width - 1];
   }
 
