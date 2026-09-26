@@ -25,6 +25,9 @@ enum class Algorithm {
   DegrainMedian,
   FluxSmoothT,
   FluxSmoothST,
+  TTempSmooth,
+  CCD,
+  Cnr4,
 };
 
 struct FormatInfo {

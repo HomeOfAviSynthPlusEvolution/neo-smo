@@ -34,6 +34,12 @@ const char* algorithm_name(Algorithm alg) noexcept {
       return "FluxSmoothT";
     case Algorithm::FluxSmoothST:
       return "FluxSmoothST";
+    case Algorithm::TTempSmooth:
+      return "TTempSmooth";
+    case Algorithm::CCD:
+      return "CCD";
+    case Algorithm::Cnr4:
+      return "Cnr4";
   }
   return "neo_smo";
 }

@@ -56,6 +56,12 @@ inline const char* vs_signature(Algorithm alg) noexcept {
       return "clip:vnode;temporal_threshold:float[]:opt;planes:int[]:opt;scalep:int:opt;";
     case Algorithm::FluxSmoothST:
       return "clip:vnode;temporal_threshold:float[]:opt;spatial_threshold:float[]:opt;planes:int[]:opt;scalep:int:opt;";
+    case Algorithm::TTempSmooth:
+      return "clip:vnode;maxr:int:opt;thresh:int[]:opt;mdiff:int[]:opt;strength:int:opt;scthresh:float:opt;fp:int:opt;pfclip:vnode:opt;planes:int[]:opt;";
+    case Algorithm::CCD:
+      return "clip:vnode;threshold:float:opt;temporal_radius:int:opt;points:int[]:opt;scale:float:opt;ref:vnode:opt;";
+    case Algorithm::Cnr4:
+      return "clip:vnode;mode:data:opt;radius:int:opt;sense:int[]:opt;str:int[]:opt;pow:float[]:opt;tmode:int:opt;wmode:int:opt;scenechange:int:opt;ref:vnode:opt;";
   }
   return "clip:vnode;";
 }

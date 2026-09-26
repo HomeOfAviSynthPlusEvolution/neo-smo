@@ -28,6 +28,9 @@ add_library(neo_smo_core STATIC
   src/kernels/temporal_repair.cpp
   src/kernels/degrain_median.cpp
   src/kernels/fluxsmooth.cpp
+  src/kernels/ttempsmooth.cpp
+  src/kernels/ccd.cpp
+  src/kernels/cnr4.cpp
 )
 target_compile_features(neo_smo_core PUBLIC cxx_std_17)
 target_include_directories(neo_smo_core PUBLIC src)
@@ -77,6 +80,7 @@ if(MSVC)
     src/kernels/inter_quartile_mean.cpp src/kernels/smart_median.cpp
     src/kernels/temporal_median.cpp src/kernels/temporal_soften.cpp
     src/kernels/temporal_repair.cpp src/kernels/degrain_median.cpp src/kernels/fluxsmooth.cpp
+    src/kernels/ttempsmooth.cpp src/kernels/ccd.cpp src/kernels/cnr4.cpp
     APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_ROUND_F16>")
 endif()
@@ -84,7 +88,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  foreach(test boundaries fp16 float_accuracy phase3 phase4)
+  foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)
     target_include_directories(neo_smo_${test}_tests PRIVATE tests)
     target_link_libraries(neo_smo_${test}_tests PRIVATE neo_smo_core)
@@ -121,10 +125,16 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
   target_sources(neo_smo PRIVATE src/plugin/vapoursynth.cpp)
   target_include_directories(neo_smo SYSTEM PRIVATE "${NEO_SMO_VS_INCLUDE}")
   target_link_libraries(neo_smo PRIVATE neo_smo_core DualSynth::dualsynth)
+  if(MSVC)
+    target_compile_options(neo_smo PRIVATE /EHsc)
+  endif()
   if(BUILD_TESTING)
     add_executable(neo_smo_frame_errors_tests tests/unit/frame_errors.cpp)
     target_include_directories(neo_smo_frame_errors_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated" "${NEO_SMO_VS_INCLUDE}")
     target_link_libraries(neo_smo_frame_errors_tests PRIVATE neo_smo_core)
+    if(MSVC)
+      target_compile_options(neo_smo_frame_errors_tests PRIVATE /EHsc)
+    endif()
     if(MINGW)
       target_link_options(neo_smo_frame_errors_tests PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
@@ -164,6 +174,11 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
       --plugin "$<TARGET_FILE:neo_smo>"
       --reference "${NEO_SMO_REFERENCE_PLUGIN}")
     set_tests_properties(vs.differential.phase4 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
+    add_test(NAME vs.differential.phase5 COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/phase5.py"
+      --neo-smo-dll "$<TARGET_FILE:neo_smo>"
+      --zsmooth-dll "${NEO_SMO_REFERENCE_PLUGIN}")
+    set_tests_properties(vs.differential.phase5 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
     add_test(NAME vs.differential.regressions COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/regressions.py"
       --plugin "$<TARGET_FILE:neo_smo>" --reference "${NEO_SMO_REFERENCE_PLUGIN}")

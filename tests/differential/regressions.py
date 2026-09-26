@@ -117,6 +117,119 @@ def main():
                 checks += 1
             else:
                 raise AssertionError(f"{name} accepted non-finite {parameter}")
+
+    # Phase 5 Parameter Admission Checks
+    yuv_base = core.std.BlankClip(format=vs.YUV420P8, width=164, height=42)
+    for maxr in [-1, 0, 8, 10]:
+        try:
+            core.neo_smo.TTempSmooth(yuv_base, maxr=maxr)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"TTempSmooth accepted invalid maxr {maxr}")
+    for th in [-1, 0, 257, 1000]:
+        try:
+            core.neo_smo.TTempSmooth(yuv_base, thresh=[th])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"TTempSmooth accepted invalid thresh {th}")
+    for md in [-1, 256, 1000]:
+        try:
+            core.neo_smo.TTempSmooth(yuv_base, mdiff=[md])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"TTempSmooth accepted invalid mdiff {md}")
+    for str_val in [-1, 0, 9, 100]:
+        try:
+            core.neo_smo.TTempSmooth(yuv_base, strength=str_val)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"TTempSmooth accepted invalid strength {str_val}")
+    for sc in [-2.0, 101.0, 500.0]:
+        try:
+            core.neo_smo.TTempSmooth(yuv_base, scthresh=sc)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"TTempSmooth accepted invalid scthresh {sc}")
+
+    # CCD
+    for tr in [-1, 11, 20]:
+        try:
+            core.neo_smo.CCD(yuv_base, temporal_radius=tr)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"CCD accepted invalid temporal_radius {tr}")
+    for sc in [-1.0, 0.0, 0.5, 0.99]:
+        try:
+            core.neo_smo.CCD(yuv_base, scale=sc)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"CCD accepted invalid scale {sc}")
+    for pts in [[], [1], [1, 1], [1, 1, 1, 1], [0, 0, 0]]:
+        try:
+            core.neo_smo.CCD(yuv_base, points=pts, scale=1.0)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"CCD accepted invalid points {pts}")
+
+    # Cnr4
+    for r in [-1, 0, 11, 20]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, radius=r)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid radius {r}")
+    for tm in [-1, 5, 10]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, tmode=tm)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid tmode {tm}")
+    for wm in [-1, 4, 10]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, wmode=wm)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid wmode {wm}")
+    for md in ["", "o", "ox", "oxxx", "abc", "oyo"]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, mode=md)
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid mode {md}")
+    for s_val in [-2, 256, 1000]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, sense=[s_val, 47, 47])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid sense {s_val}")
+    for st_val in [-2, 256, 1000]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, str=[st_val, 255, 255])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid str {st_val}")
+    for p_val in [-1.0, -0.5]:
+        try:
+            core.neo_smo.Cnr4(yuv_base, pow=[p_val, 1.0, 1.0])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f"Cnr4 accepted invalid pow {p_val}")
+
     print(f'{checks} invalid parameter cases rejected')
 
     count = 0

@@ -30,6 +30,7 @@ alignas(float) unsigned char src[49 * sizeof(float)]{}, dst[49 * sizeof(float)]{
 int bytes_per_sample = 1;
 int freed = 0, errors = 0, scenario = 0;
 int fetched = 0, null_at = -1;
+bool bad_access = false;
 const VSFrame* VS_CC get_frame(int, VSNode*, VSFrameContext*) noexcept {
   if (fetched++ == null_at) return nullptr;
   return reinterpret_cast<const VSFrame*>(src);
@@ -50,7 +51,8 @@ int VS_CC dimension(const VSFrame*, int) noexcept {
 ptrdiff_t VS_CC stride(const VSFrame*, int) noexcept {
   return 7 * bytes_per_sample;
 }
-const uint8_t* VS_CC read_ptr(const VSFrame*, int) noexcept {
+const uint8_t* VS_CC read_ptr(const VSFrame* frame, int) noexcept {
+  if (!frame) bad_access = true;
   return src;
 }
 uint8_t* VS_CC write_ptr(VSFrame*, int) noexcept {
@@ -58,6 +60,11 @@ uint8_t* VS_CC write_ptr(VSFrame*, int) noexcept {
   return dst;
 }
 
+const VSFrame* VS_CC add_ref(const VSFrame* frame) noexcept {
+  if (!frame) bad_access = true;
+  ++fetched;
+  return frame;
+}
 VSVideoInfo main_vi{}, ref_vi{};
 VSNode* main_node = reinterpret_cast<VSNode*>(src);
 VSNode* other_node = reinterpret_cast<VSNode*>(dst);
@@ -197,6 +204,56 @@ int main() {
       freed = errors = fetched = 0;
       const auto* result = callbacks[filter](2, arAllFramesReady, data, nullptr, nullptr, nullptr, &api);
       if (result || freed != fetched - 1) return 1;
+    }
+    null_at = -1;
+  }
+
+  // Phase5 callbacks: missing inputs and allocation failure must release every
+  // frame acquired, including Cnr4's duplicated current-frame references.
+  bytes_per_sample = 1;
+  api.addFrameRef = add_ref;
+  neo_smo::plugin::VSTTempSmoothInstance tt{};
+  neo_smo::plugin::VSCCDInstance ccd{};
+  neo_smo::plugin::VSCnr4Instance cnr{};
+  tt.vi = ccd.vi = cnr.vi = main_vi;
+  for (auto* vi : {&tt.vi, &ccd.vi, &cnr.vi}) {
+    vi->width = vi->height = 7; vi->numFrames = 10;
+    vi->format.colorFamily = cfYUV;
+    vi->format.numPlanes = 3; vi->format.bytesPerSample = 1;
+    vi->format.bitsPerSample = 8;
+  }
+  tt.maxr = cnr.radius = 1;
+  tt.scenechange = cnr.scenechange = false;
+  tt.weight_mode = {1, 1, 1}; tt.center_weights = {0.5f, 0.5f, 0.5f};
+  for (auto& weights : tt.temporal_weights) weights = {0.5f, 0.25f};
+  ccd.weights = {1.0f}; ccd.points = {{0, 0}};
+  const std::array<VSFilterGetFrame, 3> phase5_callbacks{
+    neo_smo::plugin::ttempsmooth_get_frame, neo_smo::plugin::ccd_get_frame, neo_smo::plugin::cnr4_get_frame};
+  void* phase5_instances[] = {&tt, &ccd, &cnr};
+  for (int filter = 0; filter < 3; ++filter) {
+    int normal_fetches = 0;
+    for (scenario = 0; scenario <= 3; ++scenario) {
+      // CCD's vector kernel performs no dynamic allocations after WritePtr.
+      if (filter == 1 && (scenario == 1 || scenario == 3)) continue;
+      freed = errors = fetched = 0; bad_access = false;
+      const auto* result = phase5_callbacks[filter](4, arAllFramesReady, phase5_instances[filter], nullptr, nullptr, nullptr, &api);
+      fail_allocation = 0;
+      if (scenario == 0) {
+        normal_fetches = fetched;
+        if (!result || freed != fetched || errors || bad_access) return 1;
+        api.freeFrame(result);
+      } else if (result || errors != 1 || freed != fetched + (scenario != 2) || bad_access) {
+        std::fprintf(stderr, "phase5 filter=%d scenario=%d fetched=%d freed=%d errors=%d\n", filter, scenario, fetched, freed, errors);
+        return 1;
+      }
+    }
+    scenario = 0;
+    for (null_at = 0; null_at < normal_fetches; ++null_at) {
+      freed = errors = fetched = 0; bad_access = false;
+      const auto* result = phase5_callbacks[filter](4, arAllFramesReady, phase5_instances[filter], nullptr, nullptr, nullptr, &api);
+      // The last two Cnr4 references are addFrameRef, not upstream fetches.
+      if (result) { api.freeFrame(result); continue; }
+      if (freed != fetched - 1 || bad_access) return 1;
     }
     null_at = -1;
   }
