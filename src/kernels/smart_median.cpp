@@ -43,13 +43,14 @@ HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
     sum = hn::Add(sum, values[i]);
   }
 
+  // After removing the power of two, MulHigh divides the bounded sum by 3 exactly.
   V average;
   if constexpr (Radius == 1) {
     average = hn::ShiftRight<3>(hn::Add(sum, hn::Set(d, 4)));
   } else if constexpr (Radius == 2) {
-    average = hn::Div(hn::Add(sum, hn::Set(d, 12)), hn::Set(d, 24));
+    average = hn::MulHigh(hn::ShiftRight<3>(hn::Add(sum, hn::Set(d, 12))), hn::Set(d, 0x55555556));
   } else {
-    average = hn::Div(hn::Add(sum, hn::Set(d, 24)), hn::Set(d, 48));
+    average = hn::MulHigh(hn::ShiftRight<4>(hn::Add(sum, hn::Set(d, 24))), hn::Set(d, 0x55555556));
   }
 
   const V diff_l = hn::Sub(median_left, average);
