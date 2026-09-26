@@ -34,6 +34,20 @@ HWY_INLINE void sort8(D d, V* v) {
   #undef NEO_SMO_CS
 }
 
+// Full sort of 9 elements (SorterHunter N9L25D7 - used by Repair sortWithCenter)
+template <class D, class V = hn::Vec<D>>
+HWY_INLINE void sort9(D d, V* v) {
+  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+  NEO_SMO_CS(0, 3); NEO_SMO_CS(1, 7); NEO_SMO_CS(2, 5); NEO_SMO_CS(4, 8);
+  NEO_SMO_CS(0, 7); NEO_SMO_CS(2, 4); NEO_SMO_CS(3, 8); NEO_SMO_CS(5, 6);
+  NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(7, 8);
+  NEO_SMO_CS(1, 4); NEO_SMO_CS(3, 6); NEO_SMO_CS(5, 7);
+  NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 4); NEO_SMO_CS(3, 5); NEO_SMO_CS(6, 8);
+  NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7);
+  NEO_SMO_CS(1, 2); NEO_SMO_CS(3, 4); NEO_SMO_CS(5, 6);
+  #undef NEO_SMO_CS
+}
+
 // Median network for 9 elements (SorterHunter N9L19D7 - returns v[4])
 template <class D, class V = hn::Vec<D>>
 HWY_INLINE V median9(D d, V* v) {

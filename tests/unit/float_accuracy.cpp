@@ -28,6 +28,20 @@ std::vector<float> apply(const std::vector<float>& input, bool half, bool chroma
     neo_smo::process_remove_grain_plane(type, mode, chroma, s, d, width, height, stride, stride);
   if (filter == 2)
     neo_smo::process_vertical_cleaner_plane(type, mode, chroma, 16, s, d, width, height, stride, stride);
+  if (filter >= 3) {
+    // Independent spatial permutations retain the input's subnormals and ties.
+    auto ref1 = src, ref2 = src;
+    std::rotate(ref1.begin(), ref1.begin() + 13, ref1.end());
+    std::rotate(ref2.begin(), ref2.begin() + 37, ref2.end());
+    const auto* r1 = reinterpret_cast<const uint8_t*>(ref1.data());
+    const auto* r2 = reinterpret_cast<const uint8_t*>(ref2.data());
+    if (filter == 3)
+      neo_smo::process_repair_plane(type, mode, chroma, s, r1, d, width, height, stride, stride, stride);
+    else if (filter == 4)
+      neo_smo::process_clense_plane(type, s, r1, r2, d, width, height, stride, stride, stride, stride);
+    else
+      neo_smo::process_clense_forward_backward_plane(type, s, r1, r2, d, width, height, stride, stride, stride, stride);
+  }
   std::vector<float> out(count);
   for (size_t i = 0; i < count; ++i) {
     if constexpr (sizeof(T) == 2)
@@ -67,8 +81,8 @@ int main() {
             if (chroma)
               input[i] = pattern < 2 ? ((v & 1024) ? -input[i] : input[i]) : input[i] - 0.5f;
           }
-          for (int filter = 0; filter < 3; ++filter)
-            for (int mode = 1; mode <= (filter == 0 ? 3 : filter == 1 ? 24 : 2); ++mode) {
+          for (int filter = 0; filter < 6; ++filter)
+            for (int mode = 1; mode <= (filter == 0 ? 3 : (filter == 1 || filter == 3) ? 24 : filter == 2 ? 2 : 1); ++mode) {
               std::vector<std::vector<float>> expected;
               auto current = input;
               hwy::SetSupportedTargetsForTest(reference);

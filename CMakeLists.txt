@@ -16,6 +16,11 @@ add_library(neo_smo_core STATIC
   src/kernels/median_7x7.cpp
   src/kernels/vertical_cleaner.cpp
   src/kernels/remove_grain.cpp
+  src/kernels/repair.cpp
+  src/kernels/repair_int.cpp
+  src/kernels/repair_f16.cpp
+  src/kernels/repair_f32.cpp
+  src/kernels/clense.cpp
 )
 target_compile_features(neo_smo_core PUBLIC cxx_std_17)
 target_include_directories(neo_smo_core PUBLIC src)
@@ -41,14 +46,19 @@ target_compile_definitions(neo_smo_core PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 # Limit expansion of the EMU128 sorting network in MSVC. Hardware SIMD targets
 # retain normal inlining and optimization.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
-  set_property(SOURCE src/kernels/median_7x7.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+  set_property(SOURCE src/kernels/median_7x7.cpp
+    src/kernels/repair_int.cpp src/kernels/repair_f16.cpp src/kernels/repair_f32.cpp
+    APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_COMPARE_SWAP>")
+  # Reduce integer Repair optimization cost only for the native MSVC compiler.
+  set_property(SOURCE src/kernels/repair_int.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+    "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_MSVC_REPAIR_ABS_DIFF>")
 endif()
 
 # EMU128 half rounding expands into large scalar control flow in MSVC/clang-cl.
 # Keep it as a function boundary without restricting hardware SIMD inlining.
 if(MSVC)
-  set_property(SOURCE src/kernels/remove_grain.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+  set_property(SOURCE src/kernels/remove_grain.cpp src/kernels/repair_f16.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_ROUND_F16>")
 endif()
 
@@ -120,6 +130,11 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
       --plugin "$<TARGET_FILE:neo_smo>"
       --reference "${NEO_SMO_REFERENCE_PLUGIN}")
     set_tests_properties(vs.differential.phase1 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
+    add_test(NAME vs.differential.phase2 COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/phase2.py"
+      --plugin "$<TARGET_FILE:neo_smo>"
+      --reference "${NEO_SMO_REFERENCE_PLUGIN}")
+    set_tests_properties(vs.differential.phase2 PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 300)
     add_test(NAME vs.differential.regressions COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/regressions.py"
       --plugin "$<TARGET_FILE:neo_smo>" --reference "${NEO_SMO_REFERENCE_PLUGIN}")

@@ -102,6 +102,47 @@ void check(neo_smo::DataType type, int width, int height, bool end) {
           std::memcmp(src + (height - mode) * width, dst + (height - mode) * width, pitch * mode))
         throw std::runtime_error("vertical border copy");
     }
+
+  Guarded repair_source(count * sizeof(T), end);
+  auto* rep = reinterpret_cast<T*>(repair_source.data);
+  for (size_t i = 0; i < count; ++i) {
+    const auto v = static_cast<unsigned>((i * 53 + i / width * 29) % 251);
+    rep[i] = type == neo_smo::DataType::F16 ? static_cast<T>(neo_smo::fp32_to_fp16(v / 256.0f)) : static_cast<T>(v);
+  }
+  for (int mode = 1; mode <= 24; ++mode) {
+    neo_smo::process_repair_plane(type, mode, false, source.data, repair_source.data, dest.data, width, height, pitch, pitch, pitch);
+  }
+  Guarded next_source(count * sizeof(T), end);
+  auto* next = reinterpret_cast<T*>(next_source.data);
+  for (size_t i = 0; i < count; ++i)
+    next[i] = rep[count - 1 - i];
+  neo_smo::process_clense_plane(type, source.data, repair_source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
+  for (size_t i = 0; i < count; ++i)
+    if (dst[i] != std::clamp(src[i], std::min(rep[i], next[i]), std::max(rep[i], next[i])))
+      throw std::runtime_error("clense median mismatch");
+  neo_smo::process_clense_forward_backward_plane(type, source.data, repair_source.data, next_source.data, dest.data, width, height, pitch, pitch, pitch, pitch);
+  for (size_t i = 0; i < count; ++i) {
+    const auto decode = [type](T value) -> double {
+      return type == neo_smo::DataType::F16 ? neo_smo::fp16_to_fp32(static_cast<uint16_t>(value)) : value;
+    };
+    const double s = decode(src[i]), p = decode(rep[i]), n = decode(next[i]);
+    double lo = 2 * std::min(p, n), hi = 2 * std::max(p, n);
+    if (type == neo_smo::DataType::F16) {
+      lo = neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(static_cast<float>(lo)));
+      hi = neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(static_cast<float>(hi)));
+    }
+    lo -= n;
+    hi -= n;
+    if (type == neo_smo::DataType::U8 || type == neo_smo::DataType::U16) {
+      lo = std::max(0.0, lo);
+      hi = std::min(static_cast<double>(std::numeric_limits<T>::max()), hi);
+    } else if (type == neo_smo::DataType::F16) {
+      lo = neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(static_cast<float>(lo)));
+      hi = neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(static_cast<float>(hi)));
+    }
+    if (decode(dst[i]) != std::clamp(s, lo, hi))
+      throw std::runtime_error("clense forward/backward mismatch");
+  }
 }
 int main() {
   try {

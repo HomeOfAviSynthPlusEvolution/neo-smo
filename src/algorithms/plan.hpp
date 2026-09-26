@@ -13,6 +13,10 @@ enum class Algorithm {
   Median,
   VerticalCleaner,
   RemoveGrain,
+  Repair,
+  Clense,
+  ForwardClense,
+  BackwardClense,
 };
 
 struct FormatInfo {

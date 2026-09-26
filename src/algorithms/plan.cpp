@@ -10,6 +10,14 @@ const char* algorithm_name(Algorithm alg) noexcept {
       return "VerticalCleaner";
     case Algorithm::RemoveGrain:
       return "RemoveGrain";
+    case Algorithm::Repair:
+      return "Repair";
+    case Algorithm::Clense:
+      return "Clense";
+    case Algorithm::ForwardClense:
+      return "ForwardClense";
+    case Algorithm::BackwardClense:
+      return "BackwardClense";
   }
   return "neo_smo";
 }
@@ -96,6 +104,25 @@ FilterPlan build_plan(
         plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
       }
       plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && (plan.params[static_cast<std::size_t>(i)] > 0);
+    }
+  } else if (alg == Algorithm::Repair) {
+    const int count = static_cast<int>(param_list.size());
+    require(count > 0, "Repair: mode is required.");
+    require(count <= fmt.num_planes, "Repair: Number of modes must be equal or fewer than the number of input planes.");
+    for (int i = 0; i < 3; ++i) {
+      if (i < count) {
+        const int m = param_list[static_cast<std::size_t>(i)];
+        require(m >= 0 && m <= 24, "Repair: Invalid mode specified, only modes 0-24 supported.");
+        plan.params[static_cast<std::size_t>(i)] = m;
+      } else {
+        plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
+      }
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && (plan.params[static_cast<std::size_t>(i)] > 0);
+    }
+  } else if (alg == Algorithm::Clense || alg == Algorithm::ForwardClense || alg == Algorithm::BackwardClense) {
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)];
     }
   }
 
