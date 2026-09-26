@@ -132,20 +132,27 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
+  const hn::Rebind<T, decltype(d)> ds;
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   const auto thresh_vec = hn::Set(d, static_cast<std::int32_t>(threshold));
 
   auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
-    for (std::int64_t x = -Radius; x < static_cast<std::int64_t>(width) + Radius; ++x) {
-      const std::size_t idx = (x >= 0 && x < width) ? static_cast<std::size_t>(x) : mirror_index(x, width);
-      dst[x] = static_cast<std::int32_t>(srow[idx]);
-    }
+    for (int x = -Radius; x < 0; ++x) dst[x] = srow[mirror_index(x, width)];
+    for (int x = 0; x < width; ++x) dst[x] = srow[x];
+    for (std::int64_t x = width; x < static_cast<std::int64_t>(width) + Radius; ++x) dst[x] = srow[mirror_index(x, width)];
   };
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_i32_row(rows[static_cast<std::size_t>(dy + Radius)], srcp + my * src_stride);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_i32_row(row, srcp + my * src_stride);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[static_cast<std::size_t>(dy + Radius)] = row;
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -169,12 +176,10 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
       }
 
       const auto res = eval_smart_median_int32<Radius>(d, center, values, thresh_vec);
-      hn::StoreU(res, d, out_i32.data() + x);
+      hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
+                 std::min(lanes, static_cast<std::size_t>(width) - x));
     }
 
-    for (int x = 0; x < width; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)]);
-    }
   }
 }
 
