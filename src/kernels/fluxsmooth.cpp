@@ -172,12 +172,37 @@ void fluxsmooth_t_float_impl(float temporal_threshold, const StorageT* prevp, co
 // ---------------------------------------------------------------------------
 // FluxSmoothST
 // ---------------------------------------------------------------------------
+// Positive numerators are bounded by 22 * 65535 + 11. FP32 represents
+// them exactly; an integer remainder corrects division near a boundary.
+template <class D>
+HWY_INLINE hn::Vec<D> flux_integer_divide(D d, hn::Vec<D> numerator, hn::Vec<D> denominator) {
+  auto divide32 = [](auto di, auto n, auto divisor) HWY_ATTR {
+    const hn::Rebind<float, decltype(di)> df;
+    auto q = hn::ConvertTo(di, hn::Div(hn::ConvertTo(df, n), hn::ConvertTo(df, divisor)));
+    const auto rem = hn::Sub(n, hn::Mul(q, divisor));
+    return hn::Add(q, hn::IfThenElse(hn::Lt(rem, hn::Zero(di)), hn::Set(di, -1),
+        hn::IfThenElse(hn::Ge(rem, divisor), hn::Set(di, 1), hn::Zero(di))));
+  };
+  if constexpr (sizeof(hn::TFromD<D>) == 2) {
+    const hn::Half<D> dh;
+    const hn::Rebind<std::int32_t, decltype(dh)> di;
+    const auto lo = divide32(di, hn::PromoteTo(di, hn::LowerHalf(dh, numerator)),
+                                hn::PromoteTo(di, hn::LowerHalf(dh, denominator)));
+    const auto hi = divide32(di, hn::PromoteTo(di, hn::UpperHalf(dh, numerator)),
+                                hn::PromoteTo(di, hn::UpperHalf(dh, denominator)));
+    return hn::Combine(d, hn::DemoteTo(dh, hi), hn::DemoteTo(dh, lo));
+  } else {
+    return divide32(d, numerator, denominator);
+  }
+}
+
 template <typename T>
 void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatial_threshold, const T* prevp, const T* currp,
                             const T* nextp, T* dstp, int width, int height, std::size_t prev_stride,
                             std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
   constexpr int kRadius = 1;
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
@@ -188,12 +213,12 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, 1);
 
-  std::vector<std::int32_t> b_curr(3 * padded_len, 0);
-  std::array<std::int32_t*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius,
+  std::vector<ComputeT> b_curr(3 * padded_len, 0);
+  std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius,
                                       b_curr.data() + 1 * padded_len + kRadius,
                                       b_curr.data() + 2 * padded_len + kRadius};
 
-  auto fill_i32 = [&](std::int32_t* dst, const T* srow) {
+  auto fill_i32 = [&](ComputeT* dst, const T* srow) {
     dst[-1] = srow[mirror_index(-1, width)];
     for (int x = 0; x < width; ++x) dst[x] = srow[x];
     dst[width] = srow[mirror_index(width, width)];
@@ -251,13 +276,7 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
 
       const auto numerator = hn::Add(hn::ShiftLeft<1>(sum), count);
       const auto denominator = hn::ShiftLeft<1>(count);
-      // All terms fit exactly in FP32. Correct the approximate quotient
-      // with an integer remainder so fast division cannot move a boundary.
-      const hn::Rebind<float, decltype(d)> df;
-      auto filtered = hn::ConvertTo(d, hn::Div(hn::ConvertTo(df, numerator), hn::ConvertTo(df, denominator)));
-      const auto remainder = hn::Sub(numerator, hn::Mul(filtered, denominator));
-      filtered = hn::Add(filtered, hn::IfThenElse(hn::Lt(remainder, zero), hn::Set(d, -1),
-          hn::IfThenElse(hn::Ge(remainder, denominator), one, zero)));
+      const auto filtered = flux_integer_divide(d, numerator, denominator);
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
