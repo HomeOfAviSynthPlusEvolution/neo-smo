@@ -114,7 +114,16 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
           // Round the rational integer average without an FP32 reciprocal
           // moving exact half ties down by one code value.
           const auto numerator = hn::Add(hn::Add(total, total), accepted);
-          const auto result = hn::Floor(hn::Div(numerator, hn::Add(accepted, accepted)));
+          const auto denominator = hn::Add(accepted, accepted);
+          auto result = hn::Floor(hn::Div(numerator, denominator));
+          if constexpr (!wide_integer) {
+            // Fast FP32 division can land just below an exact integer.
+            // These integer-valued products are exact in FP32; use the
+            // remainder to correct either side of the quotient boundary.
+            const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
+            result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
+                hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
+          }
           weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
         } else {
           weighted_store<Half>(d, float_div<Half>(d, total, accepted), destinations[plane] + y * stride + x, count);
