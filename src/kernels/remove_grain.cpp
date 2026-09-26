@@ -26,9 +26,9 @@ inline bool rg_should_skip_line(int mode, int line) noexcept {
   return false;
 }
 
-// Evaluate RemoveGrain mode on 32-bit signed integer lanes (covers both u8 and u16 without overflow)
+// U8 arithmetic fits signed 16-bit lanes; U16 requires signed 32-bit lanes.
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_rg_int32(D d, int mode, const Grid3x3<D>& g, std::int32_t type_max) {
+HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_max) {
   const V c = g.center_center;
   const V zero = hn::Zero(d);
   const V one = hn::Set(d, 1);
@@ -194,7 +194,12 @@ HWY_INLINE V eval_rg_int32(D d, int mode, const Grid3x3<D>& g, std::int32_t type
       const V sum = hn::Add(hn::Add(sum8, c), four);
       // sum is in [4, 9 * 65535 + 4]. Multiplication by ceil(2^33 / 9)
       // followed by a 33-bit shift gives the exact nonnegative quotient.
-      return hn::ShiftRight<1>(hn::MulHigh(sum, hn::Set(d, 0x38E38E39)));
+      if constexpr (sizeof(hn::TFromD<D>) == 2) {
+        // sum <= 9 * 255 + 4; ceil(2^16 / 9) is exact over this range.
+        return hn::MulHigh(sum, hn::Set(d, 7282));
+      } else {
+        return hn::ShiftRight<1>(hn::MulHigh(sum, hn::Set(d, 0x38E38E39)));
+      }
     }
     case 21: {
       const V l1l = hn::ShiftRight<1>(hn::Add(g.top_left, g.bottom_right));
@@ -504,12 +509,13 @@ template <typename T>
 void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int height, std::size_t src_stride,
                            std::size_t dst_stride) {
   constexpr int kRadius = 1;
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + kSimdPad;
-  std::vector<std::int32_t> row_buffers(checked_product(3, padded_len));
-  std::array<std::int32_t*, 3> rows{
+  std::vector<ComputeT> row_buffers(checked_product(3, padded_len));
+  std::array<ComputeT*, 3> rows{
       row_buffers.data() + 0 * padded_len + kRadius,
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
@@ -518,13 +524,13 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
   const hn::Rebind<T, decltype(d)> ds;
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
-  auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
-    dst[-1] = static_cast<std::int32_t>(srow[mirror_index(-1, width)]);
+  auto fill_i32_row = [&](ComputeT* dst, const T* srow) {
+    dst[-1] = static_cast<ComputeT>(srow[mirror_index(-1, width)]);
     // Keep mirror indexing out of the interior so widening is a contiguous load.
     for (int x = 0; x < width; ++x) {
-      dst[x] = static_cast<std::int32_t>(srow[x]);
+      dst[x] = static_cast<ComputeT>(srow[x]);
     }
-    dst[width] = static_cast<std::int32_t>(srow[mirror_index(width, width)]);
+    dst[width] = static_cast<ComputeT>(srow[mirror_index(width, width)]);
   };
 
   for (int y = 0; y < height; ++y) {
@@ -548,7 +554,7 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
-      const auto res = eval_rg_int32(d, mode, g, type_max);
+      const auto res = eval_rg_int(d, mode, g, type_max);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
                  std::min(lanes, static_cast<std::size_t>(width) - x));
     }
