@@ -23,14 +23,14 @@ HWY_INLINE V repair_abs_diff32(V a, V b) {
 #endif
 }
 
-// Evaluate Repair mode on 32-bit signed integer lanes (covers both u8 and u16 without overflow)
+// U8 intermediates fit signed 16-bit lanes; U16 requires signed 32-bit lanes.
 template <class D, class V = hn::Vec<D>>
 #if defined(_MSC_VER) && !defined(__clang__)
 HWY_NOINLINE
 #else
 HWY_INLINE
 #endif
-V eval_repair_int32(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_max) {
+V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_max) {
   const V c = g.center_center;
   const V zero = hn::Zero(d);
   const V vmax = hn::Set(d, type_max);
@@ -328,12 +328,13 @@ template <typename T>
 void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int width, int height,
                      std::size_t src_stride, std::size_t repair_stride, std::size_t dst_stride) {
   constexpr int kRadius = 1;
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + kSimdPad;
-  std::vector<std::int32_t> row_buffers(checked_product(3, padded_len));
-  std::array<std::int32_t*, 3> rows{
+  std::vector<ComputeT> row_buffers(checked_product(3, padded_len));
+  std::array<ComputeT*, 3> rows{
       row_buffers.data() + 0 * padded_len + kRadius,
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
@@ -342,7 +343,7 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
   std::array<int, 3> cached_y{-1, -1, -1};
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
-  auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
+  auto fill_i32_row = [&](ComputeT* dst, const T* srow) {
     dst[-1] = srow[mirror_index(-1, width)];
     for (int x = 0; x < width; ++x) dst[x] = srow[x];
     dst[width] = srow[mirror_index(width, width)];
@@ -367,7 +368,7 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
       const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
       const auto s = hn::PromoteTo(d, hn::LoadN(ds, src_row + x, count));
-      const auto res = eval_repair_int32(d, mode, s, g, type_max);
+      const auto res = eval_repair_int(d, mode, s, g, type_max);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, count);
     }
 
