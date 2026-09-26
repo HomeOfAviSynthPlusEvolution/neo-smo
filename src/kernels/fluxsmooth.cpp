@@ -251,7 +251,13 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
 
       const auto numerator = hn::Add(hn::ShiftLeft<1>(sum), count);
       const auto denominator = hn::ShiftLeft<1>(count);
-      const auto filtered = hn::Div(numerator, denominator);
+      // All terms fit exactly in FP32. Correct the approximate quotient
+      // with an integer remainder so fast division cannot move a boundary.
+      const hn::Rebind<float, decltype(d)> df;
+      auto filtered = hn::ConvertTo(d, hn::Div(hn::ConvertTo(df, numerator), hn::ConvertTo(df, denominator)));
+      const auto remainder = hn::Sub(numerator, hn::Mul(filtered, denominator));
+      filtered = hn::Add(filtered, hn::IfThenElse(hn::Lt(remainder, zero), hn::Set(d, -1),
+          hn::IfThenElse(hn::Ge(remainder, denominator), one, zero)));
 
       const auto res = hn::IfThenElse(mask_either, filtered, c);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x, active);
