@@ -51,7 +51,10 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   const hn::ScalableTag<std::conditional_t<wide_integer, double, FloatLane<Half>>> d;
   const hn::Rebind<float, decltype(d)> df;
   const std::size_t stride = stride_bytes / sizeof(T), lanes = hn::Lanes(d);
-  auto threshold_v = hn::Set(d, integer ? std::floor(threshold) : threshold);
+  // floor((ssd + radius) / diameter) < floor(threshold) is exactly
+  // ssd < floor(threshold) * diameter - radius for integer SSD values.
+  const double cutoff = integer ? std::floor(static_cast<double>(threshold)) * (radius * 2 + 1) - radius : threshold;
+  const auto threshold_v = hn::Set(d, cutoff);
   const auto div = hn::Set(d, radius * 2 + 1);
   T* destinations[3] = {reinterpret_cast<T*>(dst_r), reinterpret_cast<T*>(dst_g), reinterpret_cast<T*>(dst_b)};
   int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
@@ -97,9 +100,8 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
             ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
           }
         }
-        if (radius) {
-          if constexpr (integer) ssd = hn::Floor(hn::Div(hn::Add(ssd, hn::Set(d, radius)), div));
-          else ssd = float_div<Half>(d, ssd, div);
+        if constexpr (!integer) {
+          if (radius) ssd = float_div<Half>(d, ssd, div);
         }
         const auto mask = hn::Lt(ssd, threshold_v);
         if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, load_src(0, px, py)), ta);
