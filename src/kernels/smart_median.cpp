@@ -17,32 +17,7 @@ namespace HWY_NAMESPACE {
 #include "common/fp16_rows.hpp"
 
 template <int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
-  constexpr int kSide = 2 * Radius + 1;
-  constexpr int kCount = kSide * kSide;
-  constexpr int kEvenCount = kCount - 1;
-  constexpr int kCenterIdx = kEvenCount / 2;
-
-  if constexpr (Radius == 1) {
-    median8_even(d, values);
-  } else if constexpr (Radius == 2) {
-    median24_even(d, values);
-  } else {
-#if defined(NEO_SMO_MSVC_U16_SORT) && (HWY_TARGET == HWY_SSE2 || HWY_TARGET == HWY_SSSE3)
-    sort_u16_samples<48>(d, values, [](auto ds, auto* v) { median48_even(ds, v); });
-#else
-    median48_even(d, values);
-#endif
-  }
-
-  const V median_left = values[kCenterIdx - 1];
-  const V median_right = values[kCenterIdx];
-
-  V sum = values[0];
-  for (int i = 1; i < kEvenCount; ++i) {
-    sum = hn::Add(sum, values[i]);
-  }
-
+HWY_INLINE V smart_median_result(D d, V center, V median_left, V median_right, V sum, V threshold) {
   // After removing the power of two, MulHigh divides the bounded sum by 3 exactly.
   V average;
   if constexpr (Radius == 1) {
@@ -71,6 +46,58 @@ HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
   const auto clamped = hn::Clamp(center, med_lo, med_hi);
 
   return hn::IfThenElse(lte, clamped, center);
+}
+
+template <int Radius, class D, class V = hn::Vec<D>>
+HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
+  constexpr int kSide = 2 * Radius + 1;
+  constexpr int kCount = kSide * kSide;
+  constexpr int kEvenCount = kCount - 1;
+  constexpr int kCenterIdx = kEvenCount / 2;
+
+  if constexpr (Radius == 1) {
+    median8_even(d, values);
+  } else if constexpr (Radius == 2) {
+    median24_even(d, values);
+  } else {
+#if defined(NEO_SMO_MSVC_U16_SORT) && (HWY_TARGET == HWY_SSE2 || HWY_TARGET == HWY_SSSE3)
+    sort_u16_samples<48>(d, values, [](auto ds, auto* v) { median48_even(ds, v); });
+#else
+    median48_even(d, values);
+#endif
+  }
+
+  const V median_left = values[kCenterIdx - 1];
+  const V median_right = values[kCenterIdx];
+
+  V sum = values[0];
+  for (int i = 1; i < kEvenCount; ++i) {
+    sum = hn::Add(sum, values[i]);
+  }
+
+  return smart_median_result<Radius>(d, center, median_left, median_right, sum, threshold);
+}
+
+template <int Radius, class D>
+HWY_INLINE hn::Vec<D> eval_smart_median_u8(D d, hn::Vec<D> center, hn::Vec<D>* values, hn::Vec<D> threshold) {
+  constexpr int count = (2 * Radius + 1) * (2 * Radius + 1) - 1;
+  if constexpr (Radius == 1) median8_even(d, values);
+  else if constexpr (Radius == 2) median24_even(d, values);
+  else median48_even(d, values);
+  auto sum = values[0];
+  for (int i = 1; i < count; ++i) sum = hn::Add(sum, values[i]);
+  // The U8 sum fits int16; only the variance calculation needs int32 lanes.
+  const hn::Half<D> dh;
+  const hn::Rebind<std::int32_t, decltype(dh)> di;
+  auto finish = [&](auto c, auto left, auto right, auto total, auto th) HWY_ATTR {
+    return hn::DemoteTo(dh, smart_median_result<Radius>(di, hn::PromoteTo(di, c),
+        hn::PromoteTo(di, left), hn::PromoteTo(di, right), hn::PromoteTo(di, total), hn::PromoteTo(di, th)));
+  };
+  const auto lo = finish(hn::LowerHalf(dh, center), hn::LowerHalf(dh, values[count/2-1]),
+      hn::LowerHalf(dh, values[count/2]), hn::LowerHalf(dh, sum), hn::LowerHalf(dh, threshold));
+  const auto hi = finish(hn::UpperHalf(dh, center), hn::UpperHalf(dh, values[count/2-1]),
+      hn::UpperHalf(dh, values[count/2]), hn::UpperHalf(dh, sum), hn::UpperHalf(dh, threshold));
+  return hn::Combine(d, hi, lo);
 }
 
 template <bool IsF16, int Radius, class D, class V = hn::Vec<D>>
@@ -123,13 +150,14 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
   constexpr int kEvenCount = kCount - 1;
   constexpr int kCenterOffset = kCount / 2;
 
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
-  std::vector<std::int32_t> row_buffers(checked_product(kSide, padded_len));
-  std::array<std::int32_t*, kSide> rows{};
+  std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
+  std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
@@ -138,7 +166,7 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
   cached_y.fill(-1);
   const auto thresh_vec = hn::Set(d, static_cast<std::int32_t>(threshold));
 
-  auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
+  auto fill_i32_row = [&](ComputeT* dst, const T* srow) {
     for (int x = -Radius; x < 0; ++x) dst[x] = srow[mirror_index(x, width)];
     for (int x = 0; x < width; ++x) dst[x] = srow[x];
     for (std::int64_t x = width; x < static_cast<std::int64_t>(width) + Radius; ++x) dst[x] = srow[mirror_index(x, width)];
@@ -164,7 +192,7 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
       int val_idx = 0;
 
       for (int ky = 0; ky < kSide; ++ky) {
-        const std::int32_t* rptr = rows[static_cast<std::size_t>(ky)];
+        const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
         for (int kx = -Radius; kx <= Radius; ++kx) {
           const auto val = hn::LoadU(d, rptr + x + kx);
           if (flat_idx == kCenterOffset) {
@@ -176,7 +204,9 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
         }
       }
 
-      const auto res = eval_smart_median_int32<Radius>(d, center, values, thresh_vec);
+      auto res = hn::Zero(d);
+      if constexpr (sizeof(T) == 1) res = eval_smart_median_u8<Radius>(d, center, values, thresh_vec);
+      else res = eval_smart_median_int32<Radius>(d, center, values, thresh_vec);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
                  std::min(lanes, static_cast<std::size_t>(width) - x));
     }
