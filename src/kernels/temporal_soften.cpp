@@ -16,53 +16,35 @@ namespace HWY_NAMESPACE {
 template <typename T>
 void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_planes, T* dstp,
                               int width, int height, std::size_t src_stride, std::size_t dst_stride) {
-  hn::ScalableTag<std::int32_t> d;
+  if (diameter == 1) {
+    copy_plane(dstp, srcp_planes[0], width, height, dst_stride, src_stride);
+    return;
+  }
+  const hn::ScalableTag<std::int32_t> d;
+  const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
-  const auto thresh_vec = hn::Set(d, static_cast<std::int32_t>(threshold));
-  const int half_frames = diameter / 2;
-
-  std::vector<std::int32_t> curr_i32(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> frame_i32(static_cast<std::size_t>(width) + lanes, 0);
-  std::vector<std::int32_t> sum_i32(static_cast<std::size_t>(width) + lanes, 0);
-
+  const auto thresh = hn::Set(d, threshold);
+  const auto rounding = hn::Set(d, diameter / 2);
+  constexpr unsigned scale_bits = sizeof(T) == 1 ? 16 : 32;
+  const hn::RebindToUnsigned<decltype(d)> du;
+  const auto multiplier = hn::Set(du, (std::uint64_t{1} << scale_bits) / diameter);
   for (int y = 0; y < height; ++y) {
-    const T* c_row = srcp_planes[0] + static_cast<std::size_t>(y) * src_stride;
-    for (int x = 0; x < width; ++x) {
-      curr_i32[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(c_row[x]);
-    }
-
-    T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
+    const auto offset = static_cast<std::size_t>(y) * src_stride;
+    auto* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto curr = hn::LoadU(d, curr_i32.data() + x);
-      hn::StoreU(curr, d, sum_i32.data() + x);
-    }
-
-    for (int i = 1; i < diameter; ++i) {
-      const T* f_row = srcp_planes[i] + static_cast<std::size_t>(y) * src_stride;
-      for (int x = 0; x < width; ++x) {
-        frame_i32[static_cast<std::size_t>(x)] = static_cast<std::int32_t>(f_row[x]);
+      const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+      const auto curr = hn::PromoteTo(d, hn::LoadN(ds, srcp_planes[0] + offset + x, count));
+      auto sum = curr;
+      for (int i = 1; i < diameter; ++i) {
+        const auto value = hn::PromoteTo(d, hn::LoadN(ds, srcp_planes[i] + offset + x, count));
+        sum = hn::Add(sum, hn::IfThenElse(hn::Le(hn::AbsDiff(curr, value), thresh), value, curr));
       }
-
-      for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto curr = hn::LoadU(d, curr_i32.data() + x);
-        const auto f_val = hn::LoadU(d, frame_i32.data() + x);
-        const auto diff = hn::AbsDiff(curr, f_val);
-        const auto chosen = hn::IfThenElse(hn::Le(diff, thresh_vec), f_val, curr);
-        const auto old_sum = hn::LoadU(d, sum_i32.data() + x);
-        hn::StoreU(hn::Add(old_sum, chosen), d, sum_i32.data() + x);
-      }
-    }
-
-    for (int x = 0; x < width; ++x) {
-      if constexpr (std::is_same_v<T, std::uint8_t>) {
-        const std::uint32_t mul = (1u << 16) / static_cast<std::uint32_t>(diameter);
-        const auto val = static_cast<std::uint32_t>(sum_i32[static_cast<std::size_t>(x)] + half_frames);
-        dst_row[x] = static_cast<T>((val * mul) >> 16);
-      } else {
-        const std::uint64_t mul = (1ULL << 32) / static_cast<std::uint64_t>(diameter);
-        const auto val = static_cast<std::uint64_t>(sum_i32[static_cast<std::size_t>(x)] + half_frames);
-        dst_row[x] = static_cast<T>((val * mul) >> 32);
-      }
+      const auto value = hn::Add(sum, rounding);
+      auto result = hn::Zero(d);
+      // Preserve the upstream fixed-point reciprocal, including its truncation.
+      if constexpr (sizeof(T) == 1) result = hn::BitCast(d, hn::ShiftRight<16>(hn::Mul(hn::BitCast(du, value), multiplier)));
+      else result = hn::BitCast(d, hn::MulHigh(hn::BitCast(du, value), multiplier));
+      hn::StoreN(hn::DemoteTo(ds, result), ds, dst_row + x, count);
     }
   }
 }
