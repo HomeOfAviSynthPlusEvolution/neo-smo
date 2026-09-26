@@ -17,6 +17,8 @@ enum class Algorithm {
   Clense,
   ForwardClense,
   BackwardClense,
+  InterQuartileMean,
+  SmartMedian,
 };
 
 struct FormatInfo {
@@ -34,7 +36,8 @@ struct FormatInfo {
 struct FilterPlan {
   Algorithm algorithm;
   FormatInfo format;
-  std::array<int, 3> params{0, 0, 0}; // radius for Median, mode for VerticalCleaner/RemoveGrain
+  std::array<int, 3> params{0, 0, 0}; // radius for Median/IQM/SmartMedian, mode for VerticalCleaner/RemoveGrain/Repair
+  std::array<float, 3> thresholds{0.0f, 0.0f, 0.0f}; // for SmartMedian
   std::array<bool, 3> process{false, false, false};
 };
 
@@ -44,6 +47,16 @@ FilterPlan build_plan(
   Algorithm alg,
   const FormatInfo& fmt,
   const std::vector<int>& param_list,
+  const std::vector<int>& planes_list,
+  bool planes_specified
+);
+
+FilterPlan build_plan(
+  Algorithm alg,
+  const FormatInfo& fmt,
+  const std::vector<int>& param_list,
+  const std::vector<float>& threshold_list,
+  bool scalep,
   const std::vector<int>& planes_list,
   bool planes_specified
 );

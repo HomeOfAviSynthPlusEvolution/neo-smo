@@ -18,11 +18,25 @@ const char* algorithm_name(Algorithm alg) noexcept {
       return "ForwardClense";
     case Algorithm::BackwardClense:
       return "BackwardClense";
+    case Algorithm::InterQuartileMean:
+      return "InterQuartileMean";
+    case Algorithm::SmartMedian:
+      return "SmartMedian";
   }
   return "neo_smo";
 }
 
 namespace {
+
+float scale_to_format(const FormatInfo& fmt, float value) {
+  if (fmt.is_float) {
+    return value / 255.0f;
+  }
+  if (fmt.bits_per_sample > 8) {
+    return value * static_cast<float>(1 << (fmt.bits_per_sample - 8));
+  }
+  return value;
+}
 
 std::array<bool, 3> normalize_planes(int num_planes, const std::vector<int>& planes_list, bool planes_specified, const std::string& prefix) {
   if (!planes_specified) {
@@ -43,6 +57,8 @@ FilterPlan build_plan(
   Algorithm alg,
   const FormatInfo& fmt,
   const std::vector<int>& param_list,
+  const std::vector<float>& threshold_list,
+  bool scalep,
   const std::vector<int>& planes_list,
   bool planes_specified
 ) {
@@ -124,9 +140,85 @@ FilterPlan build_plan(
     for (int i = 0; i < 3; ++i) {
       plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)];
     }
+  } else if (alg == Algorithm::InterQuartileMean) {
+    const int count = static_cast<int>(param_list.size());
+    require(count <= fmt.num_planes, "InterQuartileMean: Element count of radius must be less than or equal to the number of input planes.");
+    if (count > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count) {
+          const int r = param_list[static_cast<std::size_t>(i)];
+          require(r >= 0 && r <= 3, "InterQuartileMean: Invalid radius specified, only radius 0-3 supported.");
+          plan.params[static_cast<std::size_t>(i)] = r;
+        } else {
+          plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      plan.params = {1, 1, 1};
+    }
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)] && (plan.params[static_cast<std::size_t>(i)] > 0);
+    }
+  } else if (alg == Algorithm::SmartMedian) {
+    const int count = static_cast<int>(param_list.size());
+    require(count <= fmt.num_planes, "SmartMedian: Element count of radius must be less than or equal to the number of input planes.");
+    if (count > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count) {
+          const int r = param_list[static_cast<std::size_t>(i)];
+          require(r >= 0 && r <= 3, "SmartMedian: Invalid radius specified, only radius 0-3 supported.");
+          plan.params[static_cast<std::size_t>(i)] = r;
+        } else {
+          plan.params[static_cast<std::size_t>(i)] = plan.params[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      plan.params = {1, 1, 1};
+    }
+
+    const int count_th = static_cast<int>(threshold_list.size());
+    require(count_th <= fmt.num_planes, "SmartMedian: Element count of threshold must be less than or equal to the number of input planes.");
+    const float format_max = scalep ? 255.0f : (fmt.is_float ? 1.0f : static_cast<float>((1 << fmt.bits_per_sample) - 1));
+    if (count_th > 0) {
+      for (int i = 0; i < 3; ++i) {
+        if (i < count_th) {
+          const float th = threshold_list[static_cast<std::size_t>(i)];
+          require(th >= 0.0f && th <= format_max,
+                  "SmartMedian: Invalid threshold, must be in the range of 0 - " +
+                  (fmt.is_float && !scalep ? std::to_string(format_max) : std::to_string(static_cast<int>(format_max))) +
+                  " with scalep = " + (scalep ? "true" : "false") + " for this bit depth");
+          plan.thresholds[static_cast<std::size_t>(i)] = scalep ? scale_to_format(fmt, th) : th;
+        } else {
+          plan.thresholds[static_cast<std::size_t>(i)] = plan.thresholds[static_cast<std::size_t>(i - 1)];
+        }
+      }
+    } else {
+      const float fifty = scale_to_format(fmt, 50.0f);
+      const float one_twenty_eight = scale_to_format(fmt, 128.0f);
+      plan.thresholds = {
+          plan.params[0] == 1 ? fifty : one_twenty_eight,
+          plan.params[1] == 1 ? fifty : one_twenty_eight,
+          plan.params[2] == 1 ? fifty : one_twenty_eight,
+      };
+    }
+    const auto planes = normalize_planes(fmt.num_planes, planes_list, planes_specified, prefix);
+    for (int i = 0; i < 3; ++i) {
+      plan.process[static_cast<std::size_t>(i)] = (i < fmt.num_planes) && planes[static_cast<std::size_t>(i)] && (plan.params[static_cast<std::size_t>(i)] > 0);
+    }
   }
 
   return plan;
+}
+
+FilterPlan build_plan(
+  Algorithm alg,
+  const FormatInfo& fmt,
+  const std::vector<int>& param_list,
+  const std::vector<int>& planes_list,
+  bool planes_specified
+) {
+  return build_plan(alg, fmt, param_list, {}, false, planes_list, planes_specified);
 }
 
 } // namespace neo_smo

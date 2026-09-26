@@ -149,11 +149,28 @@ void VS_CC filter_create(const VSMap* in, VSMap* out, void*, VSCore* core, const
 
     FormatInfo fmt = extract_format_info(vi);
 
-    const char* param_key = (Alg == Algorithm::Median) ? "radius" : "mode";
+    const char* param_key = (Alg == Algorithm::Median || Alg == Algorithm::InterQuartileMean || Alg == Algorithm::SmartMedian) ? "radius" : "mode";
     std::vector<int> param_list;
     const int num_params = vsapi->mapNumElements(in, param_key);
     for (int i = 0; i < num_params; ++i) {
       param_list.push_back(read_int(in, param_key, i, vsapi));
+    }
+
+    std::vector<float> threshold_list;
+    bool scalep = false;
+    if constexpr (Alg == Algorithm::SmartMedian) {
+      const int num_th = vsapi->mapNumElements(in, "threshold");
+      for (int i = 0; i < num_th; ++i) {
+        int th_err = 0;
+        const double th_val = vsapi->mapGetFloat(in, "threshold", i, &th_err);
+        require(!th_err, "SmartMedian: invalid threshold parameter.");
+        threshold_list.push_back(static_cast<float>(th_val));
+      }
+      int sc_err = 0;
+      const std::int64_t sc_val = vsapi->mapGetInt(in, "scalep", 0, &sc_err);
+      if (!sc_err) {
+        scalep = (sc_val != 0);
+      }
     }
 
     std::vector<int> planes_list;
@@ -163,7 +180,7 @@ void VS_CC filter_create(const VSMap* in, VSMap* out, void*, VSCore* core, const
       planes_list.push_back(read_int(in, "planes", i, vsapi));
     }
 
-    FilterPlan plan = build_plan(Alg, fmt, param_list, planes_list, planes_specified);
+    FilterPlan plan = build_plan(Alg, fmt, param_list, threshold_list, scalep, planes_list, planes_specified);
 
     auto instance = std::make_unique<VSFilterInstance>();
     instance->node = node;
@@ -547,4 +564,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
                            clense_create<Algorithm::ForwardClense>, nullptr, plugin);
   vspapi->registerFunction("BackwardClense", vs_signature(Algorithm::BackwardClense), "clip:vnode;",
                            clense_create<Algorithm::BackwardClense>, nullptr, plugin);
+  vspapi->registerFunction("InterQuartileMean", vs_signature(Algorithm::InterQuartileMean), "clip:vnode;",
+                           filter_create<Algorithm::InterQuartileMean>, nullptr, plugin);
+  vspapi->registerFunction("SmartMedian", vs_signature(Algorithm::SmartMedian), "clip:vnode;",
+                           filter_create<Algorithm::SmartMedian>, nullptr, plugin);
 }

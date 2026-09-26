@@ -59,6 +59,21 @@ def main():
         checks += 1
     else:
         raise AssertionError('Repair accepted empty mode')
+    for name in ['InterQuartileMean', 'SmartMedian']:
+        for value in [-2**63, -4294967295, -1, 4, 2**31, 4294967297, 2**63 - 1]:
+            try:
+                getattr(core.neo_smo, name)(base, radius=[value])
+            except vs.Error:
+                checks += 1
+            else:
+                raise AssertionError(f'{name} accepted {value}')
+    for th in [-1.0, 256.0, 1000.0]:
+        try:
+            core.neo_smo.SmartMedian(base, threshold=[th])
+        except vs.Error:
+            checks += 1
+        else:
+            raise AssertionError(f'SmartMedian accepted invalid threshold {th}')
     print(f'{checks} invalid parameter cases rejected')
 
     count = 0

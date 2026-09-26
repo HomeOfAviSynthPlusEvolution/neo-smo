@@ -47,10 +47,7 @@ int main() {
         ok = out[i] == expected[i];
       } else {
         const float error = std::abs(out[i] - expected[i]);
-        // A half-subnormal rounding step is 2^-24. Permit at most half a
-        // step here; normal half values still require the exact rounding.
-        const float tolerance = std::abs(inputs[i]) < 0x1p-14f ? 0x1p-25f : 0.0f;
-        ok = std::isfinite(out[i]) && error <= tolerance && std::signbit(out[i]) == std::signbit(expected[i]);
+        ok = std::isfinite(out[i]) && error == 0.0f && std::signbit(out[i]) == std::signbit(expected[i]);
         if (out[i] != expected[i])
           ++inexact;
         max_error = std::max(max_error, error);

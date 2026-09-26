@@ -32,6 +32,20 @@ inline hn::Vec<D> float_div9(D d, hn::Vec<D> a) {
 }
 
 template <bool IsF16, class D>
+inline hn::Vec<D> float_div(D d, hn::Vec<D> a, hn::Vec<D> b) {
+  const auto r = hn::Div(a, b);
+  if constexpr (IsF16) return round_f16(d, r);
+  else return r;
+}
+
+template <bool IsF16, class D>
+inline hn::Vec<D> float_sqrt(D d, hn::Vec<D> a) {
+  const auto r = hn::Sqrt(a);
+  if constexpr (IsF16) return round_f16(d, r);
+  else return r;
+}
+
+template <bool IsF16, class D>
 inline hn::Vec<D> float_abs_diff(D d, hn::Vec<D> a, hn::Vec<D> b) {
   return hn::Abs(float_sub<IsF16>(d, a, b));
 }

@@ -143,6 +143,11 @@ void check(neo_smo::DataType type, int width, int height, bool end) {
     if (decode(dst[i]) != std::clamp(s, lo, hi))
       throw std::runtime_error("clense forward/backward mismatch");
   }
+
+  for (int radius = 1; radius <= 3; ++radius) {
+    neo_smo::process_inter_quartile_mean_plane(type, radius, source.data, dest.data, width, height, pitch, pitch);
+    neo_smo::process_smart_median_plane(type, radius, 50.0f, source.data, dest.data, width, height, pitch, pitch);
+  }
 }
 int main() {
   try {

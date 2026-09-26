@@ -1,5 +1,7 @@
 // Exercise the real VS callback with a fake VSAPI; no host or production fault hook.
+#include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <new>
 #include <cstdio>
 static int fail_allocation = 0;

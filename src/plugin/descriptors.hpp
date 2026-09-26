@@ -40,6 +40,10 @@ inline const char* vs_signature(Algorithm alg) noexcept {
     case Algorithm::ForwardClense:
     case Algorithm::BackwardClense:
       return "clip:vnode;planes:int[]:opt;";
+    case Algorithm::InterQuartileMean:
+      return "clip:vnode;radius:int[]:opt;planes:int[]:opt;";
+    case Algorithm::SmartMedian:
+      return "clip:vnode;radius:int[]:opt;threshold:float[]:opt;scalep:int:opt;planes:int[]:opt;";
   }
   return "clip:vnode;";
 }
@@ -67,6 +71,12 @@ inline void execute_plane(
       break;
     case Algorithm::RemoveGrain:
       process_remove_grain_plane(dtype, param, chroma, srcp, dstp, width, height, src_stride_bytes, dst_stride_bytes);
+      break;
+    case Algorithm::InterQuartileMean:
+      process_inter_quartile_mean_plane(dtype, param, srcp, dstp, width, height, src_stride_bytes, dst_stride_bytes);
+      break;
+    case Algorithm::SmartMedian:
+      process_smart_median_plane(dtype, param, plan.thresholds[static_cast<std::size_t>(plane)], srcp, dstp, width, height, src_stride_bytes, dst_stride_bytes);
       break;
     default:
       break;

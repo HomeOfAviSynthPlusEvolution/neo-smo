@@ -84,4 +84,27 @@ void process_clense_forward_backward_plane(
   std::size_t dst_stride_bytes
 );
 
+void process_inter_quartile_mean_plane(
+  DataType dtype,
+  int radius,
+  const std::uint8_t* srcp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t src_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
+void process_smart_median_plane(
+  DataType dtype,
+  int radius,
+  float threshold,
+  const std::uint8_t* srcp,
+  std::uint8_t* dstp,
+  std::size_t width,
+  std::size_t height,
+  std::size_t src_stride_bytes,
+  std::size_t dst_stride_bytes
+);
+
 } // namespace neo_smo

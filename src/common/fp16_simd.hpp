@@ -18,7 +18,10 @@ hn::Vec<D> round_f16(D d, hn::Vec<D> v) {
   // Mask first so inactive infinity/NaN/large lanes do not enter arithmetic.
   const auto tiny = hn::Lt(magnitude, hn::Set(du, 0x38800000u));
   const auto small = hn::BitCast(d, hn::IfThenElseZero(tiny, magnitude));
-  const auto subnormal = hn::Mul(hn::Round(hn::Mul(small, hn::Set(d, 0x1p24f))), hn::Set(d, 0x1p-24f));
+  // An integer conversion keeps this quantization explicit under fast math;
+  // a floating-point Round implementation can lose it through reassociation.
+  const auto quantum = hn::NearestInt(hn::Mul(small, hn::Set(d, 0x1p24f)));
+  const auto subnormal = hn::Mul(hn::ConvertTo(d, quantum), hn::Set(d, 0x1p-24f));
   rounded = hn::IfThenElse(tiny, hn::BitCast(du, subnormal), rounded);
   rounded = hn::IfThenElse(hn::Ge(magnitude, hn::Set(du, 0x477ff000u)), hn::Set(du, 0x7f800000u), rounded);
   // Keep NaNs as NaNs, including payloads that would otherwise round to inf.
