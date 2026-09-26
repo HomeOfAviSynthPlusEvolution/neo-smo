@@ -119,7 +119,7 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
   }
   std::array<int, kSide> cached_y;
   cached_y.fill(-1);
-  std::vector<ComputeT> out_i32(static_cast<std::size_t>(width) + kSimdPad);
+  const hn::Rebind<T, decltype(d)> ds;
 
   auto fill_i32_row = [&](ComputeT* dst, const T* srow) {
     for (int x = -Radius; x < 0; ++x) dst[x] = srow[mirror_index(x, width)];
@@ -151,12 +151,16 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
       }
 
       const auto res = eval_iqm_int<Radius>(d, vals);
-      hn::StoreU(res, d, out_i32.data() + x);
+      // Rounded-up reciprocal gives at most one excess; correct it exactly.
+      constexpr std::uint64_t scale = std::uint64_t{1} << (sizeof(ComputeT) * 8);
+      const auto divisor = hn::Set(d, kCount);
+      auto quotient = hn::MulHigh(res, hn::Set(d, (scale + kCount - 1) / kCount));
+      quotient = hn::Sub(quotient, hn::IfThenElse(hn::Gt(hn::Mul(quotient, divisor), res),
+                                                hn::Set(d, 1), hn::Zero(d)));
+      hn::StoreN(hn::DemoteTo(ds, quotient), ds, dst_row + x,
+                 std::min(lanes, static_cast<std::size_t>(width) - x));
     }
 
-    for (int x = 0; x < width; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)] / kCount);
-    }
   }
 }
 
