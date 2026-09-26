@@ -515,7 +515,7 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
       row_buffers.data() + 2 * padded_len + kRadius,
   };
   std::array<int, 3> cached_y{-1, -1, -1};
-  std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
+  const hn::Rebind<T, decltype(d)> ds;
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
   auto fill_i32_row = [&](std::int32_t* dst, const T* srow) {
@@ -549,12 +549,10 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
       const auto res = eval_rg_int32(d, mode, g, type_max);
-      hn::StoreU(res, d, out_i32.data() + x);
+      hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
+                 std::min(lanes, static_cast<std::size_t>(width) - x));
     }
 
-    for (int x = 0; x < width; ++x) {
-      dst_row[x] = static_cast<T>(out_i32[static_cast<std::size_t>(x)]);
-    }
   }
 }
 
