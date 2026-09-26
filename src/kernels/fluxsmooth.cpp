@@ -19,10 +19,11 @@ namespace HWY_NAMESPACE {
 // FluxSmoothT
 // ---------------------------------------------------------------------------
 template <typename T>
-void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp, const T* nextp,
+HWY_NOINLINE void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp, const T* nextp,
                            T* dstp, int width, int height, std::size_t prev_stride,
                            std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
-  hn::ScalableTag<std::int32_t> d;
+  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  hn::ScalableTag<ComputeT> d;
   const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh = hn::Set(d, static_cast<std::int32_t>(temporal_threshold));
@@ -65,7 +66,8 @@ void fluxsmooth_t_int_impl(T temporal_threshold, const T* prevp, const T* currp,
       // count is only 1, 2 or 3. These bounded integer quotients are exact.
       const auto rounded_sum = hn::Add(sum, one);
       const auto average2 = hn::ShiftRight<1>(rounded_sum);
-      const auto average3 = hn::MulHigh(rounded_sum, hn::Set(d, 0x55555556));
+      constexpr int reciprocal3 = sizeof(T) == 1 ? 21846 : 0x55555556;
+      const auto average3 = hn::MulHigh(rounded_sum, hn::Set(d, reciprocal3));
       const auto filtered = hn::IfThenElse(hn::Eq(count, hn::Set(d, 3)), average3,
           hn::IfThenElse(hn::Eq(count, hn::Set(d, 2)), average2, c));
 
