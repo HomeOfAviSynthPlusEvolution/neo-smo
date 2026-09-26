@@ -514,6 +514,7 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
+  std::array<int, 3> cached_y{-1, -1, -1};
   std::vector<std::int32_t> out_i32(static_cast<std::size_t>(width) + kSimdPad);
 
   const std::int32_t type_max = static_cast<std::int32_t>(std::numeric_limits<T>::max());
@@ -536,7 +537,13 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
 
     for (int dy = -1; dy <= 1; ++dy) {
       const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_i32_row(rows[static_cast<std::size_t>(dy + 1)], srcp + my * src_stride);
+      const std::size_t slot = my % 3;
+      auto* row = row_buffers.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_i32_row(row, srcp + my * src_stride);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[static_cast<std::size_t>(dy + 1)] = row;
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
