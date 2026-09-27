@@ -201,12 +201,21 @@ void temporal_repair_st_int_impl(int mode, int bits_per_sample, const T* srcp, c
   std::array<T*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
   std::array<T*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
 
+  std::array<int, 3> cached_y{-1, -1, -1};
   for (int y = 0; y < height; ++y) {
     for (int dy = -1; dy <= 1; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_mirrored_row(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
-      fill_mirrored_row(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
-      fill_mirrored_row(r_next[static_cast<std::size_t>(dy + 1)] - kRadius, nextp + my * next_stride, width, kRadius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % 3;
+      auto* p = b_prev.data() + slot * padded_len + kRadius;
+      auto* c = b_curr.data() + slot * padded_len + kRadius;
+      auto* n = b_next.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_mirrored_row(p - kRadius, prevp + my * prev_stride, width, kRadius);
+        fill_mirrored_row(c - kRadius, currp + my * curr_stride, width, kRadius);
+        fill_mirrored_row(n - kRadius, nextp + my * next_stride, width, kRadius);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      r_prev[dy + 1] = p; r_curr[dy + 1] = c; r_next[dy + 1] = n;
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
