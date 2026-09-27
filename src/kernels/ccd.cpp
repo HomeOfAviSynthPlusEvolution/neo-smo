@@ -63,6 +63,8 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
   auto load_src = [&](int plane, int px, int py) HWY_ATTR {
     return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(src[radius * 3 + plane]), stride, width, height, px, py, count);
   };
+  const bool shared_reference = src[radius * 3] == ref[radius * 3] &&
+      src[radius * 3 + 1] == ref[radius * 3 + 1] && src[radius * 3 + 2] == ref[radius * 3 + 2];
   const auto ca = load_ref(radius, 0, x, y), cb = load_ref(radius, 1, x, y), cc = load_ref(radius, 2, x, y);
   auto ta = hn::Zero(d), tb = load_src(1, x, y), tc = load_src(2, x, y);
   if constexpr (RGB) ta = load_src(0, x, y);
@@ -72,7 +74,8 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     auto distance = [&](int frame) HWY_ATTR {
       return ccd_distance<Half, RGB>(d, load_ref(frame, 0, px, py), load_ref(frame, 1, px, py), load_ref(frame, 2, px, py), ca, cb, cc);
     };
-    auto ssd = distance(radius);
+    const auto ra = load_ref(radius, 0, px, py), rb = load_ref(radius, 1, px, py), rc = load_ref(radius, 2, px, py);
+    auto ssd = ccd_distance<Half, RGB>(d, ra, rb, rc, ca, cb, cc);
     for (int i = 0; i < radius; ++i) {
       const int prev = radius - 1 - i, next = radius + 1 + i;
       const auto a = distance(prev), b = distance(next);
@@ -95,9 +98,9 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
       if (radius) ssd = float_div<Half>(d, ssd, div);
     }
     const auto mask = hn::Lt(ssd, threshold_v);
-    if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, load_src(0, px, py)), ta);
-    tb = hn::IfThenElse(mask, float_add<Half>(d, tb, load_src(1, px, py)), tb);
-    tc = hn::IfThenElse(mask, float_add<Half>(d, tc, load_src(2, px, py)), tc);
+    if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, shared_reference ? ra : load_src(0, px, py)), ta);
+    tb = hn::IfThenElse(mask, float_add<Half>(d, tb, shared_reference ? rb : load_src(1, px, py)), tb);
+    tc = hn::IfThenElse(mask, float_add<Half>(d, tc, shared_reference ? rc : load_src(2, px, py)), tc);
     accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
   }
   auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
