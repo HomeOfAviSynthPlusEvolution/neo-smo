@@ -39,11 +39,11 @@ HWY_INLINE hn::Vec<D> ccd_distance(D d, hn::Vec<D> a, hn::Vec<D> b, hn::Vec<D> c
   return float_add<Half>(d, float_add<Half>(d, aa, float_mul<Half>(d, db, db)), float_mul<Half>(d, dc, dc));
 }
 
-template <class T, bool Half, bool RGB>
-HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
+template <class T, bool Half, bool RGB, bool Interior>
+HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
-    std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
-    float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
+    T* const* destinations, float threshold, int radius, const float* weights,
+    const Point* points, int num_points, int bits, int x, int y) {
   constexpr bool integer = !Half && !std::is_same_v<T, float>;
   // U8 squared-distance accumulation is bounded by 6 * 255^2 * 21 < 2^23,
   // so FP32 represents each integer exactly. U16 still requires binary64.
@@ -56,6 +56,85 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   const double cutoff = integer ? std::floor(static_cast<double>(threshold)) * (radius * 2 + 1) - radius : threshold;
   const auto threshold_v = hn::Set(d, cutoff);
   const auto div = hn::Set(d, radius * 2 + 1);
+  const auto count = Interior ? lanes : std::min(lanes, static_cast<std::size_t>(width - x));
+  auto load_ref = [&](int frame, int plane, int px, int py) HWY_ATTR {
+    return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(ref[frame * 3 + plane]), stride, width, height, px, py, count);
+  };
+  auto load_src = [&](int plane, int px, int py) HWY_ATTR {
+    return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(src[radius * 3 + plane]), stride, width, height, px, py, count);
+  };
+  const auto ca = load_ref(radius, 0, x, y), cb = load_ref(radius, 1, x, y), cc = load_ref(radius, 2, x, y);
+  auto ta = hn::Zero(d), tb = load_src(1, x, y), tc = load_src(2, x, y);
+  if constexpr (RGB) ta = load_src(0, x, y);
+  auto accepted = hn::Set(d, 1);
+  for (int p = 0; p < num_points; ++p) {
+    const int px = x + points[p].x, py = y + points[p].y;
+    auto distance = [&](int frame) HWY_ATTR {
+      return ccd_distance<Half, RGB>(d, load_ref(frame, 0, px, py), load_ref(frame, 1, px, py), load_ref(frame, 2, px, py), ca, cb, cc);
+    };
+    auto ssd = distance(radius);
+    for (int i = 0; i < radius; ++i) {
+      const int prev = radius - 1 - i, next = radius + 1 + i;
+      const auto a = distance(prev), b = distance(next);
+      if constexpr (integer) {
+        if constexpr (wide_integer) {
+          const auto term = hn::Add(hn::Mul(hn::DemoteTo(df, a), hn::Set(df, weights[prev])),
+                                    hn::Mul(hn::DemoteTo(df, b), hn::Set(df, weights[next])));
+          ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
+        } else {
+          const auto term = hn::Add(hn::Mul(a, hn::Set(d, weights[prev])),
+                                    hn::Mul(b, hn::Set(d, weights[next])));
+          ssd = hn::Add(ssd, weighted_round(d, term));
+        }
+      } else {
+        auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
+        ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
+      }
+    }
+    if constexpr (!integer) {
+      if (radius) ssd = float_div<Half>(d, ssd, div);
+    }
+    const auto mask = hn::Lt(ssd, threshold_v);
+    if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, load_src(0, px, py)), ta);
+    tb = hn::IfThenElse(mask, float_add<Half>(d, tb, load_src(1, px, py)), tb);
+    tc = hn::IfThenElse(mask, float_add<Half>(d, tc, load_src(2, px, py)), tc);
+    accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
+  }
+  auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
+    if constexpr (!Half && !std::is_same_v<T, float>) {
+      // Round the rational integer average without an FP32 reciprocal
+      // moving exact half ties down by one code value.
+      const auto numerator = hn::Add(hn::Add(total, total), accepted);
+      const auto denominator = hn::Add(accepted, accepted);
+      auto result = hn::Floor(hn::Div(numerator, denominator));
+      if constexpr (!wide_integer) {
+        // Fast FP32 division can land just below an exact integer.
+        // These integer-valued products are exact in FP32; use the
+        // remainder to correct either side of the quotient boundary.
+        const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
+        result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
+            hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
+      }
+      weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
+    } else {
+      weighted_store<Half>(d, float_div<Half>(d, total, accepted), destinations[plane] + y * stride + x, count);
+    }
+  };
+  if constexpr (RGB) store(ta, 0);
+  store(tb, 1); store(tc, 2);
+}
+
+template <class T, bool Half, bool RGB>
+HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
+    const std::uint8_t* const* src, const std::uint8_t* const* ref,
+    std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
+    float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
+  constexpr bool integer = !Half && !std::is_same_v<T, float>;
+  // U8 squared-distance accumulation is bounded by 6 * 255^2 * 21 < 2^23,
+  // so FP32 represents each integer exactly. U16 still requires binary64.
+  constexpr bool wide_integer = integer && sizeof(T) > 1;
+  const hn::ScalableTag<std::conditional_t<wide_integer, double, FloatLane<Half>>> d;
+  const std::size_t stride = stride_bytes / sizeof(T), lanes = hn::Lanes(d);
   T* destinations[3] = {reinterpret_cast<T*>(dst_r), reinterpret_cast<T*>(dst_g), reinterpret_cast<T*>(dst_b)};
   int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
   for (int p = 0; p < num_points; ++p) {
@@ -63,81 +142,12 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     min_y = std::min(min_y, points[p].y); max_y = std::max(max_y, points[p].y);
   }
   for (int y = 0; y < height; ++y) {
-    auto block = [&](int x, auto interior_tag) HWY_ATTR {
-      constexpr bool Interior = decltype(interior_tag)::value;
-      const auto count = std::min(lanes, static_cast<std::size_t>(width - x));
-      auto load_ref = [&](int frame, int plane, int px, int py) HWY_ATTR {
-        return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(ref[frame * 3 + plane]), stride, width, height, px, py, count);
-      };
-      auto load_src = [&](int plane, int px, int py) HWY_ATTR {
-        return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(src[radius * 3 + plane]), stride, width, height, px, py, count);
-      };
-      const auto ca = load_ref(radius, 0, x, y), cb = load_ref(radius, 1, x, y), cc = load_ref(radius, 2, x, y);
-      auto ta = hn::Zero(d), tb = load_src(1, x, y), tc = load_src(2, x, y);
-      if constexpr (RGB) ta = load_src(0, x, y);
-      auto accepted = hn::Set(d, 1);
-      for (int p = 0; p < num_points; ++p) {
-        const int px = x + points[p].x, py = y + points[p].y;
-        auto distance = [&](int frame) HWY_ATTR {
-          return ccd_distance<Half, RGB>(d, load_ref(frame, 0, px, py), load_ref(frame, 1, px, py), load_ref(frame, 2, px, py), ca, cb, cc);
-        };
-        auto ssd = distance(radius);
-        for (int i = 0; i < radius; ++i) {
-          const int prev = radius - 1 - i, next = radius + 1 + i;
-          const auto a = distance(prev), b = distance(next);
-          if constexpr (integer) {
-            if constexpr (wide_integer) {
-              const auto term = hn::Add(hn::Mul(hn::DemoteTo(df, a), hn::Set(df, weights[prev])),
-                                        hn::Mul(hn::DemoteTo(df, b), hn::Set(df, weights[next])));
-              ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
-            } else {
-              const auto term = hn::Add(hn::Mul(a, hn::Set(d, weights[prev])),
-                                        hn::Mul(b, hn::Set(d, weights[next])));
-              ssd = hn::Add(ssd, weighted_round(d, term));
-            }
-          } else {
-            auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
-            ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
-          }
-        }
-        if constexpr (!integer) {
-          if (radius) ssd = float_div<Half>(d, ssd, div);
-        }
-        const auto mask = hn::Lt(ssd, threshold_v);
-        if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, load_src(0, px, py)), ta);
-        tb = hn::IfThenElse(mask, float_add<Half>(d, tb, load_src(1, px, py)), tb);
-        tc = hn::IfThenElse(mask, float_add<Half>(d, tc, load_src(2, px, py)), tc);
-        accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
-      }
-      auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
-        if constexpr (!Half && !std::is_same_v<T, float>) {
-          // Round the rational integer average without an FP32 reciprocal
-          // moving exact half ties down by one code value.
-          const auto numerator = hn::Add(hn::Add(total, total), accepted);
-          const auto denominator = hn::Add(accepted, accepted);
-          auto result = hn::Floor(hn::Div(numerator, denominator));
-          if constexpr (!wide_integer) {
-            // Fast FP32 division can land just below an exact integer.
-            // These integer-valued products are exact in FP32; use the
-            // remainder to correct either side of the quotient boundary.
-            const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
-            result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
-                hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
-          }
-          weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
-        } else {
-          weighted_store<Half>(d, float_div<Half>(d, total, accepted), destinations[plane] + y * stride + x, count);
-        }
-      };
-      if constexpr (RGB) store(ta, 0);
-      store(tb, 1); store(tc, 2);
-    };
     for (int x = 0; x < width; x += static_cast<int>(lanes)) {
       const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
           static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
           static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
-      if (interior) block(x, std::true_type{});
-      else block(x, std::false_type{});
+      if (interior) ccd_block<T, Half, RGB, true>(width, height, stride_bytes, src, ref, destinations, threshold, radius, weights, points, num_points, bits, x, y);
+      else ccd_block<T, Half, RGB, false>(width, height, stride_bytes, src, ref, destinations, threshold, radius, weights, points, num_points, bits, x, y);
     }
   }
 }
