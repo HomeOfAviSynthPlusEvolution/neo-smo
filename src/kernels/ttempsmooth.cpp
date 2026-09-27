@@ -18,25 +18,7 @@ namespace HWY_NAMESPACE {
 
 namespace {
 
-// Split a native integer vector into FP32-sized groups without widening the
-// reference pixels before their comparisons.
-template <int Part, class D, class V>
-HWY_INLINE auto ttempsmooth_group(D /*d*/, V value) {
-  constexpr int groups = sizeof(float) / sizeof(hn::TFromD<D>);
-  const hn::Half<D> dh;
-  const auto half = [&] {
-    if constexpr (Part < groups / 2) return hn::LowerHalf(dh, value);
-    else return hn::UpperHalf(dh, value);
-  }();
-  if constexpr (groups == 2) {
-    return half;
-  } else {
-    const hn::Half<decltype(dh)> dq;
-    if constexpr (Part % 2 == 0) return hn::LowerHalf(dq, half);
-    else return hn::UpperHalf(dq, half);
-  }
-}
-
+// Split native comparison masks into FP32-sized groups.
 template <int Part, class D>
 HWY_INLINE auto ttempsmooth_mask_group(D /*d*/, hn::Mask<D> value) {
   constexpr int groups = sizeof(float) / sizeof(hn::TFromD<D>);
@@ -85,19 +67,21 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
   const auto as_float = [&](auto group) {
     return hn::ConvertTo(df, hn::PromoteTo(di, group));
   };
+  const auto load_group = [&](const T* row, std::size_t group) {
+    return as_float(hn::LoadU(dg, row + group * hn::Lanes(df)));
+  };
   const auto diff = [](auto a, auto b) {
     return hn::Sub(hn::Max(a, b), hn::Min(a, b));
   };
   for (int x = 0; x < width; x += static_cast<int>(lanes)) {
-    const std::size_t count = std::min(lanes, static_cast<std::size_t>(width - x));
-    const auto current_ref = hn::LoadN(dt, ref + x, count);
-    const auto current = hn::LoadN(dt, curr + x, count);
-    const auto c0 = as_float(ttempsmooth_group<0>(dt, current));
-    const auto c1 = as_float(ttempsmooth_group<1>(dt, current));
+    // The plane dispatcher sends only complete native integer vectors here.
+    const auto current_ref = hn::LoadU(dt, ref + x);
+    const auto c0 = load_group(curr + x, 0);
+    const auto c1 = load_group(curr + x, 1);
     auto c2 = hn::Zero(df), c3 = hn::Zero(df);
     if constexpr (groups == 4) {
-      c2 = as_float(ttempsmooth_group<2>(dt, current));
-      c3 = as_float(ttempsmooth_group<3>(dt, current));
+      c2 = load_group(curr + x, 2);
+      c3 = load_group(curr + x, 3);
     }
     auto s0 = hn::Mul(c0, center), s1 = hn::Mul(c1, center);
     auto s2 = hn::Mul(c2, center), s3 = hn::Mul(c3, center);
@@ -110,23 +94,22 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
       auto active = valid;
       auto previous = current_ref;
       for (int i = 0; i < frames; ++i) {
-        const auto neighbor = hn::LoadN(dt,
-            refs[i] + static_cast<std::size_t>(y) * ref_stride + x, count);
+        const auto neighbor = hn::LoadU(dt,
+            refs[i] + static_cast<std::size_t>(y) * ref_stride + x);
         active = hn::And(active, hn::Le(diff(current_ref, neighbor), limit));
         if (i != 0) active = hn::And(active, hn::Le(diff(previous, neighbor), limit));
-        const auto source = hn::LoadN(dt,
-            sources[i] + static_cast<std::size_t>(y) * src_stride + x, count);
+        const T* source = sources[i] + static_cast<std::size_t>(y) * src_stride + x;
         const auto weight = hn::Set(df, temporal_weights[1 + i]);
         const auto update = [&](auto& sum, auto& weights, auto pixels, auto group_mask) {
           const auto mask = hn::PromoteMaskTo(df, dg, group_mask);
           weights = hn::IfThenElse(mask, hn::Add(weights, weight), weights);
-          sum = hn::IfThenElse(mask, hn::Add(sum, hn::Mul(as_float(pixels), weight)), sum);
+          sum = hn::IfThenElse(mask, hn::Add(sum, hn::Mul(pixels, weight)), sum);
         };
-        update(s0, w0, ttempsmooth_group<0>(dt, source), ttempsmooth_mask_group<0>(dt, active));
-        update(s1, w1, ttempsmooth_group<1>(dt, source), ttempsmooth_mask_group<1>(dt, active));
+        update(s0, w0, load_group(source, 0), ttempsmooth_mask_group<0>(dt, active));
+        update(s1, w1, load_group(source, 1), ttempsmooth_mask_group<1>(dt, active));
         if constexpr (groups == 4) {
-          update(s2, w2, ttempsmooth_group<2>(dt, source), ttempsmooth_mask_group<2>(dt, active));
-          update(s3, w3, ttempsmooth_group<3>(dt, source), ttempsmooth_mask_group<3>(dt, active));
+          update(s2, w2, load_group(source, 2), ttempsmooth_mask_group<2>(dt, active));
+          update(s3, w3, load_group(source, 3), ttempsmooth_mask_group<3>(dt, active));
         }
         previous = neighbor;
       }
@@ -144,10 +127,10 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
     const auto o0 = finish(c0, s0, w0), o1 = finish(c1, s1, w1);
     if constexpr (groups == 4) {
       const auto o2 = finish(c2, s2, w2), o3 = finish(c3, s3, w3);
-      hn::StoreN(hn::Combine(dt, hn::Combine(dh, o3, o2), hn::Combine(dh, o1, o0)),
-                 dt, dst + x, count);
+      hn::StoreU(hn::Combine(dt, hn::Combine(dh, o3, o2), hn::Combine(dh, o1, o0)),
+                 dt, dst + x);
     } else {
-      hn::StoreN(hn::Combine(dt, o1, o0), dt, dst + x, count);
+      hn::StoreU(hn::Combine(dt, o1, o0), dt, dst + x);
     }
   }
 }
@@ -303,12 +286,32 @@ void ttempsmooth_plane_impl(
     const float* temporal_difference_weights
 ) {
   if constexpr (!std::is_floating_point_v<T> && hn::MaxLanes(hn::ScalableTag<T>()) >= sizeof(float) / sizeof(T)) {
-    if (weight_mode == 1 && width >= static_cast<int>(hn::Lanes(hn::ScalableTag<T>()))) {
+    const int lanes = static_cast<int>(hn::Lanes(hn::ScalableTag<T>()));
+    if (weight_mode == 1 && width >= lanes) {
+      const int full_width = width - width % lanes;
       for (int y = 0; y < height; ++y) {
-        ttempsmooth_temporal_integer_row(width, src_stride, ref_stride, dst_stride, y,
-          curr_plane, curr_ref_plane, prev_planes, prev_ref_planes, next_planes,
-          next_ref_planes, dst_plane, num_prev, num_next, threshold, fp,
-          bits_per_sample, center_weight, temporal_weights);
+        ttempsmooth_temporal_integer_row(full_width, src_stride, ref_stride, dst_stride, y,
+            curr_plane, curr_ref_plane, prev_planes, prev_ref_planes, next_planes,
+            next_ref_planes, dst_plane, num_prev, num_next, threshold, fp,
+            bits_per_sample, center_weight, temporal_weights);
+      }
+      if (full_width < width) {
+        std::array<const T*, 7> tail_prev{}, tail_prev_ref{}, tail_next{}, tail_next_ref{};
+        for (int i = 0; i < num_prev; ++i) {
+          tail_prev[i] = prev_planes[i] + full_width;
+          tail_prev_ref[i] = prev_ref_planes[i] + full_width;
+        }
+        for (int i = 0; i < num_next; ++i) {
+          tail_next[i] = next_planes[i] + full_width;
+          tail_next_ref[i] = next_ref_planes[i] + full_width;
+        }
+        for (int y = 0; y < height; ++y) {
+          ttempsmooth_row_impl(width - full_width, src_stride, ref_stride, dst_stride, y,
+              curr_plane + full_width, curr_ref_plane + full_width,
+              tail_prev.data(), tail_prev_ref.data(), tail_next.data(), tail_next_ref.data(),
+              dst_plane + full_width, maxr, num_prev, num_next, threshold, fp,
+              bits_per_sample, weight_mode, center_weight, temporal_weights, temporal_difference_weights);
+        }
       }
       return;
     }
