@@ -229,7 +229,9 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
   std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
-  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> out_f32(IsF16 ? static_cast<std::size_t>(width) + kSimdPad : 0);
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
@@ -238,14 +240,15 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      if constexpr (IsF16) {
-        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
-                                       srcp + my * src_stride, width, Radius);
-      } else {
-        fill_mirrored_row(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
-                          srcp + my * src_stride, width, Radius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        if constexpr (IsF16) fill_mirrored_row_f16(row - Radius, srcp + my * src_stride, width, Radius);
+        else fill_mirrored_row(row - Radius, srcp + my * src_stride, width, Radius);
+        cached_y[slot] = static_cast<int>(my);
       }
+      rows[dy + Radius] = row;
     }
 
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -269,13 +272,12 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
       }
 
       const auto res = eval_smart_median_float<IsF16, Radius>(d, center, values, thresh_vec);
-      hn::StoreU(res, d, out_f32.data() + x);
+      if constexpr (IsF16) hn::StoreU(res, d, out_f32.data() + x);
+      else hn::StoreN(res, d, dst_row + x, std::min(lanes, static_cast<std::size_t>(width) - x));
     }
 
     if constexpr (IsF16) {
       store_row_f16(dst_row, out_f32.data(), width);
-    } else {
-      std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }
   }
 }

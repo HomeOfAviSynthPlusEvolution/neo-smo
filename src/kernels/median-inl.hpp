@@ -18,10 +18,18 @@ void median_plane_impl(const T* srcp, T* dstp, int width, int height, std::size_
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
 
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_mirrored_row(rows[static_cast<std::size_t>(dy + Radius)] - Radius, srcp + my * src_stride, width, Radius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_mirrored_row(row - Radius, srcp + my * src_stride, width, Radius);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[dy + Radius] = row;
     }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -72,11 +80,18 @@ void median_plane_f16_impl(const std::uint16_t* srcp, std::uint16_t* dstp, int w
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
 
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + Radius)] - Radius, srcp + my * src_stride,
-                                     width, Radius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        fill_mirrored_row_f16(row - Radius, srcp + my * src_stride, width, Radius);
+        cached_y[slot] = static_cast<int>(my);
+      }
+      rows[dy + Radius] = row;
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
