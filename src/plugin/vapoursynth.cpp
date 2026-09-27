@@ -1735,8 +1735,16 @@ void VS_CC ccd_create(const VSMap* in, VSMap* out, void*, VSCore* core, const VS
     instance->scale = scale;
 
     std::vector<VSFilterDependency> deps;
-    deps.push_back({instance->node, rpGeneral});
-    if (instance->ref_node && instance->ref_node != instance->node) deps.push_back({instance->ref_node, rpGeneral});
+    const int source_pattern = temporal_radius == 0 ? rpStrictSpatial : rpGeneral;
+    deps.push_back({instance->node, source_pattern});
+    if (instance->ref_node && instance->ref_node != instance->node) {
+      // A shorter reference is clamped by the host, so it is not strictly
+      // spatial even when the source requests only the current frame.
+      const auto* refvi = vsapi->getVideoInfo(instance->ref_node);
+      const int reference_pattern = temporal_radius == 0 && refvi->numFrames >= vi->numFrames
+          ? rpStrictSpatial : rpGeneral;
+      deps.push_back({instance->ref_node, reference_pattern});
+    }
 
     vsapi->createVideoFilter(out, "CCD", vi, ccd_get_frame, ccd_free, fmParallel,
                              deps.data(), static_cast<int>(deps.size()), instance.release(), core);
