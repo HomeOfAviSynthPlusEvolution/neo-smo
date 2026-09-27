@@ -29,6 +29,33 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
   constexpr unsigned scale_bits = sizeof(T) == 1 ? 16 : 32;
   const hn::RebindToUnsigned<decltype(d)> du;
   const auto multiplier = hn::Set(du, (std::uint64_t{1} << scale_bits) / diameter);
+  if constexpr (sizeof(T) == 2) {
+    const hn::ScalableTag<std::uint16_t> dn;
+    const auto native_lanes = hn::Lanes(dn);
+    const auto native_threshold = hn::Set(dn, threshold);
+    for (int y = 0; y < height; ++y) {
+      const auto offset = static_cast<std::size_t>(y) * src_stride;
+      auto* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
+      for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += native_lanes) {
+        const auto count = std::min(native_lanes, static_cast<std::size_t>(width) - x);
+        const auto curr = hn::LoadN(dn, srcp_planes[0] + offset + x, count);
+        auto lo = hn::PromoteTo(d, hn::LowerHalf(ds, curr));
+        auto hi = hn::PromoteTo(d, hn::UpperHalf(ds, curr));
+        for (int i = 1; i < diameter; ++i) {
+          const auto value = hn::LoadN(dn, srcp_planes[i] + offset + x, count);
+          const auto chosen = hn::IfThenElse(hn::Le(hn::AbsDiff(curr, value), native_threshold), value, curr);
+          lo = hn::Add(lo, hn::PromoteTo(d, hn::LowerHalf(ds, chosen)));
+          hi = hn::Add(hi, hn::PromoteTo(d, hn::UpperHalf(ds, chosen)));
+        }
+        auto finish = [&](auto sum) HWY_ATTR {
+          const auto value = hn::Add(sum, rounding);
+          return hn::DemoteTo(ds, hn::BitCast(d, hn::MulHigh(hn::BitCast(du, value), multiplier)));
+        };
+        hn::StoreN(hn::Combine(dn, finish(hi), finish(lo)), dn, dst_row + x, count);
+      }
+    }
+    return;
+  }
   for (int y = 0; y < height; ++y) {
     const auto offset = static_cast<std::size_t>(y) * src_stride;
     auto* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
