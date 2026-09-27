@@ -338,6 +338,12 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
     NEO_SMO_REPAIR_RANK(4);
     NEO_SMO_REPAIR_RANK(9);
     NEO_SMO_REPAIR_RANK(17);
+    NEO_SMO_REPAIR_RANK(19);
+    NEO_SMO_REPAIR_RANK(20);
+    NEO_SMO_REPAIR_RANK(21);
+    NEO_SMO_REPAIR_RANK(22);
+    NEO_SMO_REPAIR_RANK(23);
+    NEO_SMO_REPAIR_RANK(24);
     NEO_SMO_REPAIR_RANK(12);
     NEO_SMO_REPAIR_RANK(13);
     NEO_SMO_REPAIR_RANK(14);

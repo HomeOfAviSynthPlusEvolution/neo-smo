@@ -4,7 +4,7 @@ template <bool WithCenter, int Mode, class T>
 void rank_clamp_plane(const T* src, const T* reference, T* dst,
     int width, int height, std::size_t src_stride, std::size_t reference_stride,
     std::size_t dst_stride) {
-  static_assert((Mode >= 1 && Mode <= 4) || Mode == 9 || Mode == 17 || (WithCenter && Mode >= 12 && Mode <= 14));
+  static_assert((Mode >= 1 && Mode <= 4) || Mode == 9 || Mode == 17 || (WithCenter && ((Mode >= 12 && Mode <= 14) || (Mode >= 19 && Mode <= 24))));
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 + lanes;
@@ -28,6 +28,8 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
+      auto value = g.center_center;
+      if constexpr (WithCenter) value = hn::LoadN(d, src + y * src_stride + x, count);
       auto lo = hn::Zero(d), hi = hn::Zero(d);
       if constexpr (Mode == 1) {
         lo = g.min_without_center(d);
@@ -62,6 +64,33 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
         }
+      } else if constexpr (Mode >= 19) {
+        const auto center = Mode >= 22 ? value : g.center_center;
+        const hn::Vec<decltype(d)> neighbors[8] = {g.top_left, g.top_center, g.top_right,
+            g.center_left, g.center_right, g.bottom_left, g.bottom_center, g.bottom_right};
+        hn::Vec<decltype(d)> diff[8];
+        for (int i = 0; i < 8; ++i) diff[i] = hn::Sub(hn::Max(center, neighbors[i]), hn::Min(center, neighbors[i]));
+        auto radius = hn::Zero(d);
+        if constexpr (Mode == 21 || Mode == 24) {
+          radius = hn::Min(hn::Min(hn::Max(diff[0], diff[7]), hn::Max(diff[1], diff[6])),
+                           hn::Min(hn::Max(diff[2], diff[5]), hn::Max(diff[3], diff[4])));
+        } else {
+          const auto a = hn::Min(diff[0], diff[1]), b = hn::Min(diff[2], diff[3]);
+          const auto c = hn::Min(diff[4], diff[5]), e = hn::Min(diff[6], diff[7]);
+          if constexpr (Mode == 20 || Mode == 23) {
+            // Merge pairs of two smallest distances; ties count as distinct samples.
+            const auto second_ab = hn::Min(hn::Max(a, b),
+                hn::Min(hn::Max(diff[0], diff[1]), hn::Max(diff[2], diff[3])));
+            const auto second_ce = hn::Min(hn::Max(c, e),
+                hn::Min(hn::Max(diff[4], diff[5]), hn::Max(diff[6], diff[7])));
+            radius = hn::Min(hn::Max(hn::Min(a, b), hn::Min(c, e)), hn::Min(second_ab, second_ce));
+          } else {
+            radius = hn::Min(hn::Min(a, b), hn::Min(c, e));
+          }
+        }
+        lo = hn::SaturatedSub(center, radius);
+        hi = hn::SaturatedAdd(center, radius);
+        if constexpr (Mode >= 22) value = g.center_center;
       } else if constexpr (Mode >= 12) {
         hn::Vec<decltype(d)> sorted[8];
         g.sort_without_center(d, sorted);
@@ -76,8 +105,6 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
         g.sort_without_center(d, sorted);
         lo = sorted[Mode - 1]; hi = sorted[8 - Mode];
       }
-      auto value = g.center_center;
-      if constexpr (WithCenter) value = hn::LoadN(d, src + y * src_stride + x, count);
       hn::StoreN(hn::Clamp(value, lo, hi), d, dst + y * dst_stride + x, count);
     }
   }

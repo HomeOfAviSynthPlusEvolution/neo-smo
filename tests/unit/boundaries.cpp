@@ -155,7 +155,8 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
     src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
     ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
   }
-  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 9, 11, 12, 13, 14, 17}) {
+  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 9, 11, 12, 13, 14, 17, 19, 20, 21, 22, 23, 24}) {
+    if (mode >= 19 && std::is_floating_point_v<T>) continue;
     if (!repair && mode > 4 && mode != 9 && mode != 17) continue;
     if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
         width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
@@ -169,6 +170,24 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
         const auto* samples = repair ? ref : src;
         const auto stride = repair ? ref_pitch : src_pitch;
         values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
+      }
+      if (mode >= 19) {
+        const int center = mode >= 22 ? src[y * src_pitch + x] : ref[y * ref_pitch + x];
+        int diffs[8];
+        for (int i = 0; i < 8; ++i) diffs[i] = std::abs(center - int(values[i]));
+        int radius;
+        if (mode == 21 || mode == 24) {
+          radius = std::numeric_limits<int>::max();
+          for (int i = 0; i < 4; ++i) radius = std::min(radius, std::max(diffs[i], diffs[7 - i]));
+        } else {
+          std::sort(diffs, diffs + 8);
+          radius = diffs[mode == 20 || mode == 23 ? 1 : 0];
+        }
+        const int value = mode >= 22 ? ref[y * ref_pitch + x] : src[y * src_pitch + x];
+        const int expected = std::clamp(value, std::max(0, center - radius),
+            std::min(int(std::numeric_limits<T>::max()), center + radius));
+        if (dst[y * dst_pitch + x] != expected) throw std::runtime_error("Distance clamp oracle mismatch");
+        continue;
       }
       if (mode == 9) {
         double best = std::numeric_limits<double>::infinity();
