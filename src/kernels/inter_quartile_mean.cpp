@@ -102,46 +102,49 @@ HWY_INLINE V eval_iqm_float(D d, V* vals) {
   }
 }
 
-// Sort in native U16 lanes, then widen only the retained quartiles for
-// accumulation. Sorting dominates radius two and needs no arithmetic headroom.
-template <class D>
-void iqm_u16_radius2(D d, const std::uint16_t* srcp, std::uint16_t* dstp,
+// Sort in native sample lanes, then widen only the retained quartiles.
+template <int Radius, class D, class T>
+void iqm_native_int(D d, const T* srcp, T* dstp,
     int width, int height, std::size_t src_stride, std::size_t dst_stride) {
+  constexpr int side = 2 * Radius + 1, count = side * side, quartile = count / 4;
+  using Wide = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
   const hn::Half<D> dh;
-  const hn::Rebind<std::int32_t, decltype(dh)> dw;
+  const hn::Rebind<Wide, decltype(dh)> dw;
   const auto lanes = hn::Lanes(d);
-  const auto padded_len = static_cast<std::size_t>(width) + 4 + lanes;
-  std::vector<std::uint16_t> buffer(checked_product(5, padded_len));
-  std::array<int, 5> cached_y{-1, -1, -1, -1, -1};
-  std::array<const std::uint16_t*, 5> rows{};
+  const auto padded_len = static_cast<std::size_t>(width) + 2 * Radius + lanes;
+  std::vector<T> buffer(checked_product(side, padded_len));
+  std::array<int, side> cached_y;
+  cached_y.fill(-1);
+  std::array<const T*, side> rows{};
   for (int y = 0; y < height; ++y) {
-    for (int dy = -2; dy <= 2; ++dy) {
+    for (int dy = -Radius; dy <= Radius; ++dy) {
       const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      const auto slot = my % 5;
-      auto* row = buffer.data() + slot * padded_len + 2;
+      const auto slot = my % side;
+      auto* row = buffer.data() + slot * padded_len + Radius;
       if (cached_y[slot] != static_cast<int>(my)) {
-        fill_mirrored_row(row - 2, srcp + my * src_stride, width, 2);
+        fill_mirrored_row(row - Radius, srcp + my * src_stride, width, Radius);
         cached_y[slot] = static_cast<int>(my);
       }
-      rows[dy + 2] = row;
+      rows[dy + Radius] = row;
     }
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<D> values[25];
-      for (int ky = 0; ky < 5; ++ky) for (int kx = -2; kx <= 2; ++kx)
-        values[ky * 5 + kx + 2] = hn::LoadU(d, rows[ky] + x + kx);
-      sort25(d, values);
+      hn::Vec<D> values[count];
+      for (int ky = 0; ky < side; ++ky) for (int kx = -Radius; kx <= Radius; ++kx)
+        values[ky * side + kx + Radius] = hn::LoadU(d, rows[ky] + x + kx);
+      if constexpr (Radius == 1) sort9(d, values);
+      else sort25(d, values);
       auto average = [&](auto upper) HWY_ATTR {
         auto widen = [&](int i) HWY_ATTR {
           if constexpr (decltype(upper)::value) return hn::PromoteTo(dw, hn::UpperHalf(dh, values[i]));
           else return hn::PromoteTo(dw, hn::LowerHalf(dh, values[i]));
         };
-        auto sum = widen(7);
-        for (int i = 8; i <= 17; ++i) sum = hn::Add(sum, widen(i));
-        const auto ends = hn::Add(widen(6), widen(18));
+        auto sum = widen(quartile + 1);
+        for (int i = quartile + 2; i < count - quartile - 1; ++i) sum = hn::Add(sum, widen(i));
+        const auto ends = hn::Add(widen(quartile), widen(count - quartile - 1));
         sum = hn::Add(sum, hn::ShiftRight<2>(hn::Add(hn::Mul(ends, hn::Set(dw, 3)), hn::Set(dw, 2))));
-        const auto numerator = hn::Add(hn::Add(sum, sum), hn::Set(dw, 12));
-        const auto divisor = hn::Set(dw, 25);
-        auto q = hn::MulHigh(numerator, hn::Set(dw, ((std::uint64_t{1} << 32) + 24) / 25));
+        const auto numerator = hn::Add(hn::Add(sum, sum), hn::Set(dw, count / 2));
+        const auto divisor = hn::Set(dw, count);
+        auto q = hn::MulHigh(numerator, hn::Set(dw, ((std::uint64_t{1} << (sizeof(Wide) * 8)) + count - 1) / count));
         q = hn::Sub(q, hn::IfThenElse(hn::Gt(hn::Mul(q, divisor), numerator), hn::Set(dw, 1), hn::Zero(dw)));
         return hn::DemoteTo(dh, q);
       };
@@ -154,10 +157,10 @@ void iqm_u16_radius2(D d, const std::uint16_t* srcp, std::uint16_t* dstp,
 
 template <typename T, int Radius>
 void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src_stride, std::size_t dst_stride) {
-  if constexpr (sizeof(T) == 2 && Radius == 2) {
-    const hn::ScalableTag<std::uint16_t> packed;
+  if constexpr (Radius <= 2) {
+    const hn::ScalableTag<T> packed;
     if constexpr (hn::MaxLanes(packed) >= 2) {
-      iqm_u16_radius2(packed, srcp, dstp, width, height, src_stride, dst_stride);
+      iqm_native_int<Radius>(packed, srcp, dstp, width, height, src_stride, dst_stride);
       return;
     }
   }
@@ -233,7 +236,9 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * Radius + kSimdPad;
 
   std::vector<ComputeT> row_buffers(checked_product(kSide, padded_len));
-  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> out_f32(IsF16 ? static_cast<std::size_t>(width) + kSimdPad : 0);
+  std::array<int, kSide> cached_y;
+  cached_y.fill(-1);
   std::array<ComputeT*, kSide> rows{};
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
@@ -241,14 +246,15 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      if constexpr (IsF16) {
-        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
-                                       srcp + my * src_stride, width, Radius);
-      } else {
-        fill_mirrored_row(rows[static_cast<std::size_t>(dy + Radius)] - Radius,
-                          srcp + my * src_stride, width, Radius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % kSide;
+      auto* row = row_buffers.data() + slot * padded_len + Radius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        if constexpr (IsF16) fill_mirrored_row_f16(row - Radius, srcp + my * src_stride, width, Radius);
+        else fill_mirrored_row(row - Radius, srcp + my * src_stride, width, Radius);
+        cached_y[slot] = static_cast<int>(my);
       }
+      rows[dy + Radius] = row;
     }
 
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -263,13 +269,12 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
       }
 
       const auto res = eval_iqm_float<IsF16, Radius>(d, vals);
-      hn::StoreU(res, d, out_f32.data() + x);
+      if constexpr (IsF16) hn::StoreU(res, d, out_f32.data() + x);
+      else hn::StoreN(res, d, dst_row + x, std::min(lanes, static_cast<std::size_t>(width) - x));
     }
 
     if constexpr (IsF16) {
       store_row_f16(dst_row, out_f32.data(), width);
-    } else {
-      std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }
   }
 }
