@@ -39,7 +39,7 @@ HWY_INLINE hn::Vec<D> ccd_distance(D d, hn::Vec<D> a, hn::Vec<D> b, hn::Vec<D> c
   return float_add<Half>(d, float_add<Half>(d, aa, float_mul<Half>(d, db, db)), float_mul<Half>(d, dc, dc));
 }
 
-template <class T, bool Half, bool RGB, bool Interior>
+template <class T, bool Half, bool RGB, bool Interior, bool SpatialFloat = false>
 HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
     T* const* destinations, float threshold, int radius, const float* weights,
@@ -103,6 +103,13 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     tc = hn::IfThenElse(mask, float_add<Half>(d, tc, shared_reference ? rc : load_src(2, px, py)), tc);
     accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
   }
+  auto inverse_count = hn::Zero(d);
+  if constexpr (SpatialFloat) {
+    // Counts are finite and >= 1. One Newton step refines the hardware
+    // reciprocal to FP32 rounding precision, shared across output channels.
+    const auto estimate = hn::ApproximateReciprocal(accepted);
+    inverse_count = hn::Mul(estimate, hn::NegMulAdd(accepted, estimate, hn::Set(d, 2)));
+  }
   auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
     if constexpr (!Half && !std::is_same_v<T, float>) {
       // Round the rational integer average without an FP32 reciprocal
@@ -119,6 +126,8 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
             hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
       }
       weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
+    } else if constexpr (SpatialFloat) {
+      hn::StoreN(hn::Mul(total, inverse_count), d, destinations[plane] + y * stride + x, count);
     } else {
       weighted_store<Half>(d, float_div<Half>(d, total, accepted), destinations[plane] + y * stride + x, count);
     }
@@ -181,11 +190,44 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
 }
 
 
+// Keep the spatial FP32 loop separate so its simpler register allocation
+// does not enlarge or spill the temporal kernel.
+template <bool RGB>
+HWY_NOINLINE void ccd_spatial_float(int width, int height, std::size_t stride_bytes,
+    const std::uint8_t* const* src, const std::uint8_t* const* ref,
+    float* const* dst, float threshold, const Point* points, int num_points) {
+  const hn::ScalableTag<float> d;
+  const auto lanes = hn::Lanes(d);
+  int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
+  for (int p = 0; p < num_points; ++p) {
+    min_x = std::min(min_x, points[p].x); max_x = std::max(max_x, points[p].x);
+    min_y = std::min(min_y, points[p].y); max_y = std::max(max_y, points[p].y);
+  }
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+      const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
+          static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
+          static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
+      if (interior) ccd_block<float, false, RGB, true, true>(width, height, stride_bytes, src, ref,
+          dst, threshold, 0, nullptr, points, num_points, 32, x, y);
+      else ccd_block<float, false, RGB, false, true>(width, height, stride_bytes, src, ref,
+          dst, threshold, 0, nullptr, points, num_points, 32, x, y);
+    }
+  }
+}
+
 template <class T, bool Half, bool RGB>
 HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
     std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
     float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
+  if constexpr (std::is_same_v<T, float>) {
+    if (radius == 0) {
+      float* dst[3] = {reinterpret_cast<float*>(dst_r), reinterpret_cast<float*>(dst_g), reinterpret_cast<float*>(dst_b)};
+      ccd_spatial_float<RGB>(width, height, stride_bytes, src, ref, dst, threshold, points, num_points);
+      return;
+    }
+  }
   constexpr bool integer = !Half && !std::is_same_v<T, float>;
   // U8 squared-distance accumulation is bounded by 6 * 255^2 * 21 < 2^23,
   // so FP32 represents each integer exactly. U16 still requires binary64.
