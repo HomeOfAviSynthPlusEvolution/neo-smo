@@ -222,11 +222,23 @@ HWY_NOINLINE void ccd_fixed_float(int width, int height, std::size_t stride_byte
   }
 }
 
-template <class T, bool Half, bool RGB>
+template <class T, bool Half, bool RGB, int SpatialPoints = 0>
 HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
     std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
     float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
+  if constexpr (SpatialPoints != 0) {
+    radius = 0;
+    num_points = SpatialPoints;
+  } else if constexpr (std::is_same_v<T, std::uint8_t>) {
+    if (radius == 0 && (num_points == 4 || num_points == 8)) {
+      if (num_points == 4) ccd_impl<T, Half, RGB, 4>(width, height, stride_bytes, src, ref,
+          dst_r, dst_g, dst_b, threshold, radius, weights, points, num_points, bits);
+      else ccd_impl<T, Half, RGB, 8>(width, height, stride_bytes, src, ref,
+          dst_r, dst_g, dst_b, threshold, radius, weights, points, num_points, bits);
+      return;
+    }
+  }
   if constexpr (std::is_same_v<T, float>) {
     if (radius == 0 || radius == 2) {
       float* dst[3] = {reinterpret_cast<float*>(dst_r), reinterpret_cast<float*>(dst_g), reinterpret_cast<float*>(dst_b)};
