@@ -57,7 +57,7 @@ void temporal_soften_float_impl(int diameter, float threshold, const StorageT* c
   const hn::Rebind<ComputeT, decltype(df)> d;
   const std::size_t lanes = hn::Lanes(d);
   const auto thresh_vec = hn::Set(d, threshold);
-  const auto frames_vec = hn::Set(d, static_cast<float>(diameter));
+  const auto reciprocal = hn::Set(df, 1.0f / static_cast<float>(diameter));
 
   if constexpr (IsF16) {
     for (int y = 0; y < height; ++y) {
@@ -87,12 +87,12 @@ void temporal_soften_float_impl(int diameter, float threshold, const StorageT* c
 
 #if HWY_HAVE_FLOAT16
         if constexpr (std::is_same_v<ComputeT, hwy::float16_t>) {
-          const auto res = hn::Div(hn::PromoteTo(df, sum), hn::Set(df, static_cast<float>(diameter)));
+          const auto res = hn::Mul(hn::PromoteTo(df, sum), reciprocal);
           store_f16(df, res, dst_row + x, count);
         } else
 #endif
         {
-          store_f16(d, hn::Div(sum, frames_vec), dst_row + x, count);
+          store_f16(d, hn::Mul(sum, reciprocal), dst_row + x, count);
         }
       }
     }
@@ -113,7 +113,7 @@ void temporal_soften_float_impl(int diameter, float threshold, const StorageT* c
           sum = hn::Add(sum, chosen);
         }
 
-        const auto res = hn::Div(sum, frames_vec);
+        const auto res = hn::Mul(sum, reciprocal);
         if (rem >= lanes) {
           hn::StoreU(res, d, dst_row + x);
         } else {
