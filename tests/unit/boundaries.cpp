@@ -155,9 +155,9 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
     src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
     ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
   }
-  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 9, 11, 12, 13, 14, 17, 19, 20, 21, 22, 23, 24}) {
-    if (mode >= 19 && std::is_floating_point_v<T>) continue;
-    if (!repair && mode > 4 && mode != 9 && mode != 17) continue;
+  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 5, 6, 8, 9, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24}) {
+    if (std::is_floating_point_v<T> && (mode == 5 || mode == 6 || mode == 8 || mode == 15 || mode == 16 || mode >= 18)) continue;
+    if (!repair && mode > 9 && mode != 17 && mode != 18 && mode != 22) continue;
     if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
         width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
     else neo_smo::process_remove_grain_plane(type, mode, false, source.data, output.data,
@@ -166,10 +166,34 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
       std::array<T, 9> values{};
       int count = 0;
       for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-        if ((!repair || mode >= 12 || mode == 9) && dx == 0 && dy == 0) continue;
+        if ((!repair || mode >= 12 || (mode >= 5 && mode <= 9)) && dx == 0 && dy == 0) continue;
         const auto* samples = repair ? ref : src;
         const auto stride = repair ? ref_pitch : src_pitch;
         values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
+      }
+      if (mode == 5 || mode == 6 || mode == 8 || mode == 15 || mode == 16 || mode == 18 || (!repair && mode == 22)) {
+        const int center = repair ? ref[y * ref_pitch + x] : src[y * src_pitch + x];
+        const int pivot = mode >= 15 ? center : src[y * src_pitch + x];
+        int lo = std::numeric_limits<int>::max(), hi = 0, best = std::numeric_limits<int>::max();
+        for (int i : {0, 2, 1, 3}) {
+          const int a = values[i], b = values[7 - i];
+          if (!repair && mode == 22) {
+            lo = std::min(lo, (a + b + 1) / 2); hi = std::max(hi, (a + b + 1) / 2);
+            continue;
+          }
+          int low = std::min(a, b), high = std::max(a, b);
+          if (repair && mode <= 9) { low = std::min(low, center); high = std::max(high, center); }
+          const int delta = std::abs(pivot - std::clamp(pivot, low, high)), range = high - low;
+          int cost = delta;
+          if (mode == 6 || mode == 16) cost = std::min(int(std::numeric_limits<T>::max()), 2 * delta + range);
+          if (mode == 8) cost = std::min(int(std::numeric_limits<T>::max()), delta + 2 * range);
+          if (mode == 18) cost = std::max(std::abs(pivot - a), std::abs(pivot - b));
+          if (cost <= best) { best = cost; lo = low; hi = high; }
+        }
+        if (repair && mode >= 15) { lo = std::min(lo, center); hi = std::max(hi, center); }
+        if (dst[y * dst_pitch + x] != std::clamp(int(src[y * src_pitch + x]), lo, hi))
+          throw std::runtime_error("Native direction clamp oracle mismatch");
+        continue;
       }
       if (mode >= 19) {
         const int center = mode >= 22 ? src[y * src_pitch + x] : ref[y * ref_pitch + x];

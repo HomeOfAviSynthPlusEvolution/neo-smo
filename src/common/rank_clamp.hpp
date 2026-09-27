@@ -4,7 +4,7 @@ template <bool WithCenter, int Mode, class T>
 void rank_clamp_plane(const T* src, const T* reference, T* dst,
     int width, int height, std::size_t src_stride, std::size_t reference_stride,
     std::size_t dst_stride) {
-  static_assert((Mode >= 1 && Mode <= 4) || Mode == 9 || Mode == 17 || (WithCenter && ((Mode >= 12 && Mode <= 14) || (Mode >= 19 && Mode <= 24))));
+  static_assert((Mode >= 1 && Mode <= 4) || Mode == 5 || Mode == 6 || Mode == 8 || Mode == 9 || Mode == 17 || Mode == 18 || (!WithCenter && Mode == 22) || (WithCenter && ((Mode >= 12 && Mode <= 16) || (Mode >= 19 && Mode <= 24))));
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 + lanes;
@@ -38,13 +38,26 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
         }
-      } else if constexpr (Mode == 9) {
+      } else if constexpr (Mode == 5 || Mode == 6 || Mode == 8 || Mode == 9 || Mode == 15 || Mode == 16 || Mode == 18) {
         auto pairs = g.min_max_opposites_without_center(d);
-        if constexpr (WithCenter) pairs = g.min_max_opposites_with_center(d);
-        const auto c1 = hn::Sub(pairs.max1, pairs.min1);
-        const auto c2 = hn::Sub(pairs.max2, pairs.min2);
-        const auto c3 = hn::Sub(pairs.max3, pairs.min3);
-        const auto c4 = hn::Sub(pairs.max4, pairs.min4);
+        if constexpr (WithCenter && Mode <= 9) pairs = g.min_max_opposites_with_center(d);
+        const auto pivot = Mode >= 15 ? g.center_center : value;
+        auto pair_cost = [&](auto low, auto high) HWY_ATTR {
+          const auto range = hn::Sub(high, low);
+          if constexpr (Mode == 9) return range;
+          else if constexpr (Mode == 18) return hn::Max(
+              hn::Sub(hn::Max(pivot, low), hn::Min(pivot, low)),
+              hn::Sub(hn::Max(pivot, high), hn::Min(pivot, high)));
+          else {
+            const auto clamped = hn::Clamp(pivot, low, high);
+            const auto delta = hn::Sub(hn::Max(pivot, clamped), hn::Min(pivot, clamped));
+            if constexpr (Mode == 5 || Mode == 15) return delta;
+            else if constexpr (Mode == 8) return hn::SaturatedAdd(delta, hn::SaturatedAdd(range, range));
+            else return hn::SaturatedAdd(hn::SaturatedAdd(delta, delta), range);
+          }
+        };
+        const auto c1 = pair_cost(pairs.min1, pairs.max1), c2 = pair_cost(pairs.min2, pairs.max2);
+        const auto c3 = pair_cost(pairs.min3, pairs.max3), c4 = pair_cost(pairs.min4, pairs.max4);
         const auto cost = hn::Min(hn::Min(c1, c2), hn::Min(c3, c4));
         // Match upstream tie priority: horizontal, vertical, diagonal 3, diagonal 1.
         lo = pairs.min1; hi = pairs.max1;
@@ -54,6 +67,17 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
         hi = hn::IfThenElse(hn::Eq(cost, c2), pairs.max2, hi);
         lo = hn::IfThenElse(hn::Eq(cost, c4), pairs.min4, lo);
         hi = hn::IfThenElse(hn::Eq(cost, c4), pairs.max4, hi);
+        if constexpr (WithCenter && Mode >= 15) {
+          lo = hn::Min(lo, g.center_center);
+          hi = hn::Max(hi, g.center_center);
+        }
+      } else if constexpr (!WithCenter && Mode == 22) {
+        const auto a = hn::AverageRound(g.top_left, g.bottom_right);
+        const auto b = hn::AverageRound(g.top_center, g.bottom_center);
+        const auto c = hn::AverageRound(g.top_right, g.bottom_left);
+        const auto e = hn::AverageRound(g.center_left, g.center_right);
+        lo = hn::Min(hn::Min(a, b), hn::Min(c, e));
+        hi = hn::Max(hn::Max(a, b), hn::Max(c, e));
       } else if constexpr (Mode == 17) {
         const auto pairs = g.min_max_opposites_without_center(d);
         const auto lower = hn::Max(hn::Max(pairs.min1, pairs.min2), hn::Max(pairs.min3, pairs.min4));
