@@ -40,18 +40,21 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
     storage.push_back(std::make_unique<Guarded>(size*sizeof(T), end));
     dst[p] = storage.back()->data;
   }
-  const neo_smo::Point points[] = {{-2,-1},{1,-1},{0,1},{2,1}};
+  const neo_smo::Point points[] = {{-2,-1},{1,-1},{0,1},{2,1},
+                                   {0,0},{-1,0},{1,0},{0,-1}};
   const float weights[] = {0.70710677f, 1.f, 0.68163878f};
-  for (bool rgb : {false,true}) for (int radius : {0,1}) {
+  for (bool rgb : {false,true}) for (int radius : {0,1}) for (int num_points : {4,8}) {
+    if (num_points == 8 && type != neo_smo::DataType::F32) continue;
     const float threshold = integer ? 123456.f : 0.0003f;
     const auto* sources = radius ? src.data() : src.data()+3;
     neo_smo::process_ccd_planes(type,rgb,width,height,pitch,sources,sources,dst[0],dst[1],dst[2],threshold,radius,
-                               radius?weights:weights+1,points,4,5,1.f,bits);
+                               radius?weights:weights+1,points,num_points,5,1.f,bits);
     auto sample = [&](int f, int p, int x, int y) {return decode(reinterpret_cast<const T*>(src[f*3+p])[reflect(y,height)*width+reflect(x,width)]);};
     for(int y=0;y<height;++y) for(int x=0;x<width;++x) {
       double totals[3] = {sample(1,0,x,y),sample(1,1,x,y),sample(1,2,x,y)};
       int accepted=1;
-      for(auto point:points) {
+      for(int point_index=0;point_index<num_points;++point_index) {
+        const auto point=points[point_index];
         auto distance = [&](int f) {
           double squares[3];
           for(int p=0;p<3;++p) { const double diff=round(sample(f,p,x+point.x,y+point.y)-sample(1,p,x,y)); squares[p]=round(diff*diff); }

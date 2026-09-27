@@ -195,11 +195,13 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
 
 
 // Fixed FP32 radii expose frame indices and loop counts to the compiler,
-// without expanding the general temporal kernel.
-template <bool RGB, int Radius>
+// without expanding the general temporal kernel. Four/eight-point spatial
+// sets also expose their short point loops for unrolling.
+template <bool RGB, int Radius, int NumPoints = 0>
 HWY_NOINLINE void ccd_fixed_float(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
     float* const* dst, float threshold, const float* weights, const Point* points, int num_points) {
+  if constexpr (NumPoints != 0) num_points = NumPoints;
   const hn::ScalableTag<float> d;
   const auto lanes = hn::Lanes(d);
   int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
@@ -228,7 +230,9 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   if constexpr (std::is_same_v<T, float>) {
     if (radius == 0 || radius == 2) {
       float* dst[3] = {reinterpret_cast<float*>(dst_r), reinterpret_cast<float*>(dst_g), reinterpret_cast<float*>(dst_b)};
-      if (radius == 0) ccd_fixed_float<RGB, 0>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
+      if (radius == 0 && num_points == 4) ccd_fixed_float<RGB, 0, 4>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
+      else if (radius == 0 && num_points == 8) ccd_fixed_float<RGB, 0, 8>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
+      else if (radius == 0) ccd_fixed_float<RGB, 0>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       else ccd_fixed_float<RGB, 2>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       return;
     }
