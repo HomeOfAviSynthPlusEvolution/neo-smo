@@ -114,13 +114,22 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     const auto estimate = hn::ApproximateReciprocal(accepted);
     inverse_count = hn::Mul(estimate, hn::NegMulAdd(accepted, estimate, hn::Set(d, 2)));
   }
+  if constexpr (integer && !wide_integer) {
+    const auto denominator = hn::Add(accepted, accepted);
+    const auto estimate = hn::ApproximateReciprocal(denominator);
+    inverse_count = hn::Mul(estimate, hn::NegMulAdd(denominator, estimate, hn::Set(d, 2)));
+  }
   auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
     if constexpr (!Half && !std::is_same_v<T, float>) {
       // Round the rational integer average without an FP32 reciprocal
       // moving exact half ties down by one code value.
       const auto numerator = hn::Add(hn::Add(total, total), accepted);
       const auto denominator = hn::Add(accepted, accepted);
-      auto result = hn::Floor(hn::Div(numerator, denominator));
+      const auto quotient = [&]() HWY_ATTR {
+        if constexpr (wide_integer) return hn::Div(numerator, denominator);
+        else return hn::Mul(numerator, inverse_count);
+      }();
+      auto result = hn::Floor(quotient);
       if constexpr (!wide_integer) {
         // Fast FP32 division can land just below an exact integer.
         // These integer-valued products are exact in FP32; use the
@@ -181,9 +190,12 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
     accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
   }
   const auto denominator = hn::Add(accepted, accepted);
+  const auto denominator_f = hn::ConvertTo(df, denominator);
+  const auto estimate = hn::ApproximateReciprocal(denominator_f);
+  const auto inverse = hn::Mul(estimate, hn::NegMulAdd(denominator_f, estimate, hn::Set(df, 2)));
   auto store = [&](auto total, int p) HWY_ATTR {
     const auto numerator = hn::Add(hn::Add(total, total), accepted);
-    auto result = hn::ConvertTo(d, hn::Div(hn::ConvertTo(df, numerator), hn::ConvertTo(df, denominator)));
+    auto result = hn::ConvertTo(d, hn::Mul(hn::ConvertTo(df, numerator), inverse));
     const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
     result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
         hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
