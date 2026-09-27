@@ -243,10 +243,8 @@ void degrain_median_int_impl(int bits_per_sample, T limit, bool interlaced, cons
                              const T* currp, const T* nextp, T* dstp, int width, int height,
                              std::size_t prev_stride, std::size_t curr_stride,
                              std::size_t next_stride, std::size_t dst_stride) {
-  constexpr int kRadius = 1;
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
-  const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto pixel_max = hn::Set(d, get_format_maximum<T>(bits_per_sample, false));
   const auto limit_vec = hn::Set(d, limit);
 
@@ -258,38 +256,33 @@ void degrain_median_int_impl(int bits_per_sample, T limit, bool interlaced, cons
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, skip_rows);
 
-  const std::size_t row_count = 2 * skip_rows + 1;
-  std::vector<T> b_prev(row_count * padded_len, 0), b_curr(row_count * padded_len, 0), b_next(row_count * padded_len, 0);
-  std::array<T*, 3> r_prev{}, r_curr{}, r_next{};
-  std::array<int, 5> cached_y{-1, -1, -1, -1, -1};
-
   for (int y = skip_rows; y < height - skip_rows; ++y) {
+    std::array<const T*, 3> r_prev{}, r_curr{}, r_next{};
     for (int dy = -1; dy <= 1; ++dy) {
-      const int row_y = y + dy * skip_rows;
-      const std::size_t slot = static_cast<std::size_t>(row_y) % row_count;
-      auto* prev = b_prev.data() + slot * padded_len + kRadius;
-      auto* curr = b_curr.data() + slot * padded_len + kRadius;
-      auto* next = b_next.data() + slot * padded_len + kRadius;
-      if (cached_y[slot] != row_y) {
-        fill_mirrored_row(prev - kRadius, prevp + static_cast<std::size_t>(row_y) * prev_stride, width, kRadius);
-        fill_mirrored_row(curr - kRadius, currp + static_cast<std::size_t>(row_y) * curr_stride, width, kRadius);
-        fill_mirrored_row(next - kRadius, nextp + static_cast<std::size_t>(row_y) * next_stride, width, kRadius);
-        cached_y[slot] = row_y;
-      }
-      r_prev[dy + 1] = prev; r_curr[dy + 1] = curr; r_next[dy + 1] = next;
+      const auto row_y = static_cast<std::size_t>(y + dy * skip_rows);
+      r_prev[dy + 1] = prevp + row_y * prev_stride;
+      r_curr[dy + 1] = currp + row_y * curr_stride;
+      r_next[dy + 1] = nextp + row_y * next_stride;
     }
-
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
-    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+    std::size_t x = 1;
+    const auto end = static_cast<std::size_t>(width - 1);
+    for (; x + lanes <= end; x += lanes) {
       const auto gp = Grid3x3<decltype(d)>::load(d, r_prev[0], r_prev[1], r_prev[2], x);
       const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
       const auto gn = Grid3x3<decltype(d)>::load(d, r_next[0], r_next[1], r_next[2], x);
-
-      const auto res = eval_dgm_int<Mode, NoRow>(d, gp, gc, gn, limit_vec, pixel_max);
-
-      const std::size_t rem = static_cast<std::size_t>(width - x);
-      if (rem >= lanes) hn::StoreU(res, d, dst_row + x);
-      else hn::StoreN(res, d, dst_row + x, rem);
+      hn::StoreU(eval_dgm_int<Mode, NoRow>(d, gp, gc, gn, limit_vec, pixel_max), d, dst_row + x);
+    }
+    if (x < end) {
+      const auto count = end - x;
+      auto load_tail = [&](const auto& rows) HWY_ATTR {
+        return Grid3x3<decltype(d)>{
+            hn::LoadN(d, rows[0] + x - 1, count), hn::LoadN(d, rows[0] + x, count), hn::LoadN(d, rows[0] + x + 1, count),
+            hn::LoadN(d, rows[1] + x - 1, count), hn::LoadN(d, rows[1] + x, count), hn::LoadN(d, rows[1] + x + 1, count),
+            hn::LoadN(d, rows[2] + x - 1, count), hn::LoadN(d, rows[2] + x, count), hn::LoadN(d, rows[2] + x + 1, count)};
+      };
+      const auto gp = load_tail(r_prev), gc = load_tail(r_curr), gn = load_tail(r_next);
+      hn::StoreN(eval_dgm_int<Mode, NoRow>(d, gp, gc, gn, limit_vec, pixel_max), d, dst_row + x, count);
     }
 
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
