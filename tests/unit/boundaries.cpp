@@ -155,8 +155,8 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
     src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
     ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
   }
-  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 11, 12, 13, 14}) {
-    if (!repair && mode > 4) continue;
+  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 11, 12, 13, 14, 17}) {
+    if (!repair && mode > 4 && mode != 17) continue;
     if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
         width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
     else neo_smo::process_remove_grain_plane(type, mode, false, source.data, output.data,
@@ -169,6 +169,21 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
         const auto* samples = repair ? ref : src;
         const auto stride = repair ? ref_pitch : src_pitch;
         values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
+      }
+      if (mode == 17) {
+        T lower = std::numeric_limits<T>::lowest(), upper = std::numeric_limits<T>::max();
+        for (int i = 0; i < 4; ++i) {
+          lower = std::max(lower, std::min(values[i], values[7 - i]));
+          upper = std::min(upper, std::max(values[i], values[7 - i]));
+        }
+        T lo = std::min(lower, upper), hi = std::max(lower, upper);
+        if (repair) {
+          lo = std::min(lo, ref[y * ref_pitch + x]);
+          hi = std::max(hi, ref[y * ref_pitch + x]);
+        }
+        if (dst[y * dst_pitch + x] != std::clamp(src[y * src_pitch + x], lo, hi))
+          throw std::runtime_error("Opposite-pair clamp oracle mismatch");
+        continue;
       }
       std::sort(values.begin(), values.begin() + count);
       const int rank = mode == 11 ? 1 : mode >= 12 ? mode - 10 : mode;

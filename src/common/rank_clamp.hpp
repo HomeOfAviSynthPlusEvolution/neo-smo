@@ -4,7 +4,7 @@ template <bool WithCenter, int Mode, class T>
 void rank_clamp_plane(const T* src, const T* reference, T* dst,
     int width, int height, std::size_t src_stride, std::size_t reference_stride,
     std::size_t dst_stride) {
-  static_assert((Mode >= 1 && Mode <= 4) || (WithCenter && Mode >= 12 && Mode <= 14));
+  static_assert((Mode >= 1 && Mode <= 4) || Mode == 17 || (WithCenter && Mode >= 12 && Mode <= 14));
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 + lanes;
@@ -32,6 +32,16 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
       if constexpr (Mode == 1) {
         lo = g.min_without_center(d);
         hi = g.max_without_center(d);
+        if constexpr (WithCenter) {
+          lo = hn::Min(lo, g.center_center);
+          hi = hn::Max(hi, g.center_center);
+        }
+      } else if constexpr (Mode == 17) {
+        const auto pairs = g.min_max_opposites_without_center(d);
+        const auto lower = hn::Max(hn::Max(pairs.min1, pairs.min2), hn::Max(pairs.min3, pairs.min4));
+        const auto upper = hn::Min(hn::Min(pairs.max1, pairs.max2), hn::Min(pairs.max3, pairs.max4));
+        lo = hn::Min(lower, upper);
+        hi = hn::Max(lower, upper);
         if constexpr (WithCenter) {
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
