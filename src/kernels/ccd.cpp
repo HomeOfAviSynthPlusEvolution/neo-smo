@@ -190,12 +190,12 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
 }
 
 
-// Keep the spatial FP32 loop separate so its simpler register allocation
-// does not enlarge or spill the temporal kernel.
-template <bool RGB>
-HWY_NOINLINE void ccd_spatial_float(int width, int height, std::size_t stride_bytes,
+// Fixed FP32 radii expose frame indices and loop counts to the compiler,
+// without expanding the general temporal kernel.
+template <bool RGB, int Radius>
+HWY_NOINLINE void ccd_fixed_float(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
-    float* const* dst, float threshold, const Point* points, int num_points) {
+    float* const* dst, float threshold, const float* weights, const Point* points, int num_points) {
   const hn::ScalableTag<float> d;
   const auto lanes = hn::Lanes(d);
   int min_x = 0, max_x = 0, min_y = 0, max_y = 0;
@@ -208,10 +208,10 @@ HWY_NOINLINE void ccd_spatial_float(int width, int height, std::size_t stride_by
       const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
           static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
           static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
-      if (interior) ccd_block<float, false, RGB, true, true>(width, height, stride_bytes, src, ref,
-          dst, threshold, 0, nullptr, points, num_points, 32, x, y);
-      else ccd_block<float, false, RGB, false, true>(width, height, stride_bytes, src, ref,
-          dst, threshold, 0, nullptr, points, num_points, 32, x, y);
+      if (interior) ccd_block<float, false, RGB, true, Radius == 0>(width, height, stride_bytes, src, ref,
+          dst, threshold, Radius, weights, points, num_points, 32, x, y);
+      else ccd_block<float, false, RGB, false, Radius == 0>(width, height, stride_bytes, src, ref,
+          dst, threshold, Radius, weights, points, num_points, 32, x, y);
     }
   }
 }
@@ -222,9 +222,10 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     std::uint8_t* dst_r, std::uint8_t* dst_g, std::uint8_t* dst_b,
     float threshold, int radius, const float* weights, const Point* points, int num_points, int bits) {
   if constexpr (std::is_same_v<T, float>) {
-    if (radius == 0) {
+    if (radius == 0 || radius == 2) {
       float* dst[3] = {reinterpret_cast<float*>(dst_r), reinterpret_cast<float*>(dst_g), reinterpret_cast<float*>(dst_b)};
-      ccd_spatial_float<RGB>(width, height, stride_bytes, src, ref, dst, threshold, points, num_points);
+      if (radius == 0) ccd_fixed_float<RGB, 0>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
+      else ccd_fixed_float<RGB, 2>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       return;
     }
   }
