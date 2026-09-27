@@ -258,6 +258,36 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
 }
 
 
+void check_flux_u8(int width) {
+  constexpr int height = 5;
+  std::vector<std::uint8_t> curr(width * height), prev(curr.size()), next(curr.size()), dst(curr.size());
+  std::uint32_t state = 137;
+  for (std::size_t i = 0; i < curr.size(); ++i) {
+    state = state * 1664525u + 1013904223u;
+    curr[i] = static_cast<std::uint8_t>(state >> 24);
+    prev[i] = static_cast<std::uint8_t>(state >> 16);
+    next[i] = static_cast<std::uint8_t>(state >> 8);
+  }
+  for (int threshold : {0, 1, 7, 127, 255}) {
+    neo_smo::process_fluxsmooth_st_plane(neo_smo::DataType::U8, float(threshold), float(threshold),
+        prev.data(), curr.data(), next.data(), dst.data(), width, height, width, width, width, width);
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+      const int i = y * width + x, c = curr[i], p = prev[i], n = next[i];
+      int expected = c;
+      if (y > 0 && y < height - 1 && x > 0 && x < width - 1 &&
+          ((p < c && n < c) || (p > c && n > c))) {
+        int sum = c, count = 1;
+        auto include = [&](int v) { if (std::abs(v - c) <= threshold) { sum += v; ++count; } };
+        include(p); include(n);
+        for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx)
+          if (dy || dx) include(curr[(y + dy) * width + x + dx]);
+        expected = (2 * sum + count) / (2 * count);
+      }
+      if (dst[i] != expected) throw std::runtime_error("FluxSmoothST U8 integer-average oracle mismatch");
+    }
+  }
+}
+
 int main() {
   try {
     (void)neo_smo::checked_product(std::numeric_limits<size_t>::max(), 7);
@@ -270,6 +300,7 @@ int main() {
   for (int64_t target : hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
     for (bool end : {false, true}) for (int width : {1, 15, 16, 17, 31, 32, 33, 65, 129}) {
+      check_flux_u8(width);
       check_rank_clamp<uint8_t>(neo_smo::DataType::U8, width, end);
       check_rank_clamp<uint16_t>(neo_smo::DataType::U16, width, end);
       check_rank_clamp<float>(neo_smo::DataType::F32, width, end);

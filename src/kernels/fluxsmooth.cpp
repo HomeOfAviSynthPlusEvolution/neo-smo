@@ -179,13 +179,20 @@ HWY_INLINE hn::Vec<D> flux_integer_divide(D d, hn::Vec<D> numerator, hn::Vec<D> 
         hn::IfThenElse(hn::Ge(rem, divisor), hn::Set(di, 1), hn::Zero(di))));
   };
   if constexpr (sizeof(hn::TFromD<D>) == 2) {
-    const hn::Half<D> dh;
-    const hn::Rebind<std::int32_t, decltype(dh)> di;
-    const auto lo = divide32(di, hn::PromoteTo(di, hn::LowerHalf(dh, numerator)),
-                                hn::PromoteTo(di, hn::LowerHalf(dh, denominator)));
-    const auto hi = divide32(di, hn::PromoteTo(di, hn::UpperHalf(dh, numerator)),
-                                hn::PromoteTo(di, hn::UpperHalf(dh, denominator)));
-    return hn::Combine(d, hn::DemoteTo(dh, hi), hn::DemoteTo(dh, lo));
+    // U8: numerator <= 22 * 255 + 11; denominator is even and in [2, 22].
+    // A ceiling reciprocal can overshoot by at most one, corrected below.
+    const hn::RebindToUnsigned<D> du;
+    const hn::Repartition<std::uint8_t, D> db;
+    alignas(16) static constexpr std::uint8_t low[16] =
+        {0, 0, 0, 171, 0, 154, 86, 74, 0, 57, 205, 163, 0, 0, 0, 0};
+    alignas(16) static constexpr std::uint8_t high[16] =
+        {0, 128, 64, 42, 32, 25, 21, 18, 16, 14, 12, 11, 0, 0, 0, 0};
+    const auto index = hn::BitCast(db, hn::ShiftRight<1>(denominator));
+    const auto lo = hn::BitCast(du, hn::TableLookupBytes(hn::LoadDup128(db, low), index));
+    const auto hi = hn::BitCast(du, hn::TableLookupBytes(hn::LoadDup128(db, high), index));
+    const auto multiplier = hn::Or(lo, hn::ShiftLeft<8>(hi));
+    auto q = hn::BitCast(d, hn::MulHigh(hn::BitCast(du, numerator), multiplier));
+    return hn::Sub(q, hn::IfThenElse(hn::Gt(hn::Mul(q, denominator), numerator), hn::Set(d, 1), hn::Zero(d)));
   } else {
     return divide32(d, numerator, denominator);
   }
