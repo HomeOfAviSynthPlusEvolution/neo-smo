@@ -103,7 +103,9 @@ HWY_NOINLINE void ttempsmooth_row_impl(
           active_mask = hn::And(active_mask, hn::And(lt_diff, lt_tdiff));
         }
 
-        if (hn::AllFalse(df, active_mask)) {
+        // Temporal weights are broadcasts: masking is cheaper than a
+        // pixel-dependent early-exit branch. Keep the exit for table gathers.
+        if (weight_mode != 1 && hn::AllFalse(df, active_mask)) {
           break;
         }
 
