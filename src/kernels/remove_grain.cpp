@@ -516,6 +516,7 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
     NEO_SMO_RG_RANK(2);
     NEO_SMO_RG_RANK(3);
     NEO_SMO_RG_RANK(4);
+    NEO_SMO_RG_RANK(9);
     NEO_SMO_RG_RANK(17);
   }
 #undef NEO_SMO_RG_RANK

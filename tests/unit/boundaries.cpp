@@ -155,8 +155,8 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
     src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
     ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
   }
-  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 11, 12, 13, 14, 17}) {
-    if (!repair && mode > 4 && mode != 17) continue;
+  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 9, 11, 12, 13, 14, 17}) {
+    if (!repair && mode > 4 && mode != 9 && mode != 17) continue;
     if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
         width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
     else neo_smo::process_remove_grain_plane(type, mode, false, source.data, output.data,
@@ -165,10 +165,26 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
       std::array<T, 9> values{};
       int count = 0;
       for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-        if ((!repair || mode >= 12) && dx == 0 && dy == 0) continue;
+        if ((!repair || mode >= 12 || mode == 9) && dx == 0 && dy == 0) continue;
         const auto* samples = repair ? ref : src;
         const auto stride = repair ? ref_pitch : src_pitch;
         values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
+      }
+      if (mode == 9) {
+        double best = std::numeric_limits<double>::infinity();
+        T lo{}, hi{};
+        for (int i : {0, 2, 1, 3}) {
+          T a = std::min(values[i], values[7 - i]), b = std::max(values[i], values[7 - i]);
+          if (repair) {
+            a = std::min(a, ref[y * ref_pitch + x]);
+            b = std::max(b, ref[y * ref_pitch + x]);
+          }
+          const double cost = double(b) - double(a);
+          if (cost <= best) { best = cost; lo = a; hi = b; }
+        }
+        if (dst[y * dst_pitch + x] != std::clamp(src[y * src_pitch + x], lo, hi))
+          throw std::runtime_error("Smallest-range clamp oracle mismatch");
+        continue;
       }
       if (mode == 17) {
         T lower = std::numeric_limits<T>::lowest(), upper = std::numeric_limits<T>::max();

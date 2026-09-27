@@ -4,7 +4,7 @@ template <bool WithCenter, int Mode, class T>
 void rank_clamp_plane(const T* src, const T* reference, T* dst,
     int width, int height, std::size_t src_stride, std::size_t reference_stride,
     std::size_t dst_stride) {
-  static_assert((Mode >= 1 && Mode <= 4) || Mode == 17 || (WithCenter && Mode >= 12 && Mode <= 14));
+  static_assert((Mode >= 1 && Mode <= 4) || Mode == 9 || Mode == 17 || (WithCenter && Mode >= 12 && Mode <= 14));
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 + lanes;
@@ -36,6 +36,22 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
         }
+      } else if constexpr (Mode == 9) {
+        auto pairs = g.min_max_opposites_without_center(d);
+        if constexpr (WithCenter) pairs = g.min_max_opposites_with_center(d);
+        const auto c1 = hn::Sub(pairs.max1, pairs.min1);
+        const auto c2 = hn::Sub(pairs.max2, pairs.min2);
+        const auto c3 = hn::Sub(pairs.max3, pairs.min3);
+        const auto c4 = hn::Sub(pairs.max4, pairs.min4);
+        const auto cost = hn::Min(hn::Min(c1, c2), hn::Min(c3, c4));
+        // Match upstream tie priority: horizontal, vertical, diagonal 3, diagonal 1.
+        lo = pairs.min1; hi = pairs.max1;
+        lo = hn::IfThenElse(hn::Eq(cost, c3), pairs.min3, lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c3), pairs.max3, hi);
+        lo = hn::IfThenElse(hn::Eq(cost, c2), pairs.min2, lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c2), pairs.max2, hi);
+        lo = hn::IfThenElse(hn::Eq(cost, c4), pairs.min4, lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c4), pairs.max4, hi);
       } else if constexpr (Mode == 17) {
         const auto pairs = g.min_max_opposites_without_center(d);
         const auto lower = hn::Max(hn::Max(pairs.min1, pairs.min2), hn::Max(pairs.min3, pairs.min4));
