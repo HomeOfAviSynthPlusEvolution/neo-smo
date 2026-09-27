@@ -1,5 +1,6 @@
 // Included inside the per-target Highway namespace. No include guard.
 #include "common/grid.hpp"
+#include "common/rank_clamp.hpp"
 #include "common/float_arithmetic.hpp"
 #include "common/fp16_rows.hpp"
 
@@ -302,6 +303,12 @@ template <bool IsF16, typename StorageT>
 void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const StorageT* repairp, StorageT* dstp,
                        int width, int height, std::size_t src_stride, std::size_t repair_stride,
                        std::size_t dst_stride) {
+  if constexpr (!IsF16) {
+    if (mode == 1 || mode == 11) {
+      rank_clamp_plane<true, 1>(srcp, repairp, dstp, width, height, src_stride, repair_stride, dst_stride);
+      return;
+    }
+  }
   using ComputeT = FloatLane<IsF16>;
   constexpr int kRadius = 1;
   hn::ScalableTag<ComputeT> d;

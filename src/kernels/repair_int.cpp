@@ -329,12 +329,16 @@ template <typename T>
 void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int width, int height,
                      std::size_t src_stride, std::size_t repair_stride, std::size_t dst_stride) {
   // These modes only select ranks and clamp; they need no widened arithmetic.
-#define NEO_SMO_REPAIR_RANK(M) case M: rank_clamp_integer_plane<true, M>(srcp, repairp, dstp, width, height, src_stride, repair_stride, dst_stride); return
+#define NEO_SMO_REPAIR_RANK(M) case M: rank_clamp_plane<true, M>(srcp, repairp, dstp, width, height, src_stride, repair_stride, dst_stride); return
   switch (mode) {
+    case 11:
     NEO_SMO_REPAIR_RANK(1);
     NEO_SMO_REPAIR_RANK(2);
     NEO_SMO_REPAIR_RANK(3);
     NEO_SMO_REPAIR_RANK(4);
+    NEO_SMO_REPAIR_RANK(12);
+    NEO_SMO_REPAIR_RANK(13);
+    NEO_SMO_REPAIR_RANK(14);
   }
 #undef NEO_SMO_REPAIR_RANK
   constexpr int kRadius = 1;

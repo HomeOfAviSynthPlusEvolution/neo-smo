@@ -510,7 +510,7 @@ template <typename T>
 void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int height, std::size_t src_stride,
                            std::size_t dst_stride) {
   // Sorting modes only need the unsigned sample range, not arithmetic headroom.
-#define NEO_SMO_RG_RANK(M) case M: rank_clamp_integer_plane<false, M>(srcp, srcp, dstp, width, height, src_stride, src_stride, dst_stride); return
+#define NEO_SMO_RG_RANK(M) case M: rank_clamp_plane<false, M>(srcp, srcp, dstp, width, height, src_stride, src_stride, dst_stride); return
   switch (mode) {
     NEO_SMO_RG_RANK(1);
     NEO_SMO_RG_RANK(2);

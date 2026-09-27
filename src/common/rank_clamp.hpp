@@ -1,10 +1,10 @@
 // Included after grid.hpp inside each Highway target namespace.
 // Ranking and clamping need no arithmetic headroom: retain the sample width.
 template <bool WithCenter, int Mode, class T>
-void rank_clamp_integer_plane(const T* src, const T* reference, T* dst,
+void rank_clamp_plane(const T* src, const T* reference, T* dst,
     int width, int height, std::size_t src_stride, std::size_t reference_stride,
     std::size_t dst_stride) {
-  static_assert(Mode >= 1 && Mode <= 4);
+  static_assert((Mode >= 1 && Mode <= 4) || (WithCenter && Mode >= 12 && Mode <= 14));
   const hn::ScalableTag<T> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 + lanes;
@@ -36,6 +36,11 @@ void rank_clamp_integer_plane(const T* src, const T* reference, T* dst,
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
         }
+      } else if constexpr (Mode >= 12) {
+        hn::Vec<decltype(d)> sorted[8];
+        g.sort_without_center(d, sorted);
+        lo = hn::Min(sorted[Mode - 11], g.center_center);
+        hi = hn::Max(sorted[18 - Mode], g.center_center);
       } else if constexpr (WithCenter) {
         hn::Vec<decltype(d)> sorted[9];
         g.sort_with_center(d, sorted);

@@ -155,7 +155,8 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
     src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
     ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
   }
-  for (bool repair : {false, true}) for (int mode = 1; mode <= 4; ++mode) {
+  for (bool repair : {false, true}) for (int mode : {1, 2, 3, 4, 11, 12, 13, 14}) {
+    if (!repair && mode > 4) continue;
     if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
         width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
     else neo_smo::process_remove_grain_plane(type, mode, false, source.data, output.data,
@@ -164,13 +165,19 @@ void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
       std::array<T, 9> values{};
       int count = 0;
       for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
-        if (!repair && dx == 0 && dy == 0) continue;
+        if ((!repair || mode >= 12) && dx == 0 && dy == 0) continue;
         const auto* samples = repair ? ref : src;
         const auto stride = repair ? ref_pitch : src_pitch;
         values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
       }
       std::sort(values.begin(), values.begin() + count);
-      const T expected = std::clamp(src[y * src_pitch + x], values[mode - 1], values[count - mode]);
+      const int rank = mode == 11 ? 1 : mode >= 12 ? mode - 10 : mode;
+      T lo = values[rank - 1], hi = values[count - rank];
+      if (mode >= 12) {
+        lo = std::min(lo, ref[y * ref_pitch + x]);
+        hi = std::max(hi, ref[y * ref_pitch + x]);
+      }
+      const T expected = std::clamp(src[y * src_pitch + x], lo, hi);
       if (dst[y * dst_pitch + x] != expected) throw std::runtime_error("Rank clamp sorted oracle mismatch");
     }
   }
@@ -191,6 +198,7 @@ int main() {
     for (bool end : {false, true}) for (int width : {1, 15, 16, 17, 31, 32, 33, 65, 129}) {
       check_rank_clamp<uint8_t>(neo_smo::DataType::U8, width, end);
       check_rank_clamp<uint16_t>(neo_smo::DataType::U16, width, end);
+      check_rank_clamp<float>(neo_smo::DataType::F32, width, end);
     }
     check_rg_mean<uint8_t>(neo_smo::DataType::U8);
     check_rg_mean<uint16_t>(neo_smo::DataType::U16);
