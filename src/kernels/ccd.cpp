@@ -91,7 +91,12 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
         }
       } else {
         auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
-        ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
+        if constexpr (std::is_same_v<T, float>) {
+          ssd = hn::MulAdd(a, wp, ssd);
+          ssd = hn::MulAdd(b, wn, ssd);
+        } else {
+          ssd = float_add<Half>(d, ssd, float_add<Half>(d, float_mul<Half>(d, a, wp), float_mul<Half>(d, b, wn)));
+        }
       }
     }
     if constexpr (!integer) {
