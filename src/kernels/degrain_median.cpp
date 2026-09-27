@@ -258,23 +258,26 @@ void degrain_median_int_impl(int bits_per_sample, T limit, bool interlaced, cons
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, skip_rows);
 
-  std::vector<T> b_prev(3 * padded_len, 0), b_curr(3 * padded_len, 0), b_next(3 * padded_len, 0);
-  std::array<T*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
-  std::array<T*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
-  std::array<T*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
+  const std::size_t row_count = 2 * skip_rows + 1;
+  std::vector<T> b_prev(row_count * padded_len, 0), b_curr(row_count * padded_len, 0), b_next(row_count * padded_len, 0);
+  std::array<T*, 3> r_prev{}, r_curr{}, r_next{};
+  std::array<int, 5> cached_y{-1, -1, -1, -1, -1};
 
   for (int y = skip_rows; y < height - skip_rows; ++y) {
-    fill_mirrored_row(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
-    fill_mirrored_row(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
-    fill_mirrored_row(r_prev[2] - kRadius, prevp + static_cast<std::size_t>(y + skip_rows) * prev_stride, width, kRadius);
-
-    fill_mirrored_row(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - skip_rows) * curr_stride, width, kRadius);
-    fill_mirrored_row(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
-    fill_mirrored_row(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + skip_rows) * curr_stride, width, kRadius);
-
-    fill_mirrored_row(r_next[0] - kRadius, nextp + static_cast<std::size_t>(y - skip_rows) * next_stride, width, kRadius);
-    fill_mirrored_row(r_next[1] - kRadius, nextp + static_cast<std::size_t>(y) * next_stride, width, kRadius);
-    fill_mirrored_row(r_next[2] - kRadius, nextp + static_cast<std::size_t>(y + skip_rows) * next_stride, width, kRadius);
+    for (int dy = -1; dy <= 1; ++dy) {
+      const int row_y = y + dy * skip_rows;
+      const std::size_t slot = static_cast<std::size_t>(row_y) % row_count;
+      auto* prev = b_prev.data() + slot * padded_len + kRadius;
+      auto* curr = b_curr.data() + slot * padded_len + kRadius;
+      auto* next = b_next.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != row_y) {
+        fill_mirrored_row(prev - kRadius, prevp + static_cast<std::size_t>(row_y) * prev_stride, width, kRadius);
+        fill_mirrored_row(curr - kRadius, currp + static_cast<std::size_t>(row_y) * curr_stride, width, kRadius);
+        fill_mirrored_row(next - kRadius, nextp + static_cast<std::size_t>(row_y) * next_stride, width, kRadius);
+        cached_y[slot] = row_y;
+      }
+      r_prev[dy + 1] = prev; r_curr[dy + 1] = curr; r_next[dy + 1] = next;
+    }
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
