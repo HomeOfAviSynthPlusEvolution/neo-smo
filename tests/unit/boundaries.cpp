@@ -4,6 +4,7 @@
 #include "common/padded_row.hpp"
 #include "hwy/targets.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -142,6 +143,40 @@ void check_rg_mean(neo_smo::DataType type) {
         throw std::runtime_error("RemoveGrain mode 20 integer mean mismatch");
   }
 }
+template <class T>
+void check_rank_clamp(neo_smo::DataType type, int width, bool end) {
+  constexpr int height = 3;
+  const std::size_t src_pitch = width + 1, ref_pitch = width + 3, dst_pitch = width + 5;
+  Guarded source(height * src_pitch * sizeof(T), end), reference(height * ref_pitch * sizeof(T), end), output(height * dst_pitch * sizeof(T), end);
+  auto* src = reinterpret_cast<T*>(source.data);
+  auto* ref = reinterpret_cast<T*>(reference.data);
+  auto* dst = reinterpret_cast<T*>(output.data);
+  for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+    src[y * src_pitch + x] = T((x + y) % 3 == 0 ? std::numeric_limits<T>::max() : (x + y) % 3 == 1 ? 0 : x * 7919 + y * 11);
+    ref[y * ref_pitch + x] = T(x * 17113 + y * 23);
+  }
+  for (bool repair : {false, true}) for (int mode = 1; mode <= 4; ++mode) {
+    if (repair) neo_smo::process_repair_plane(type, mode, false, source.data, reference.data, output.data,
+        width, height, src_pitch * sizeof(T), ref_pitch * sizeof(T), dst_pitch * sizeof(T));
+    else neo_smo::process_remove_grain_plane(type, mode, false, source.data, output.data,
+        width, height, src_pitch * sizeof(T), dst_pitch * sizeof(T));
+    for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+      std::array<T, 9> values{};
+      int count = 0;
+      for (int dy = -1; dy <= 1; ++dy) for (int dx = -1; dx <= 1; ++dx) {
+        if (!repair && dx == 0 && dy == 0) continue;
+        const auto* samples = repair ? ref : src;
+        const auto stride = repair ? ref_pitch : src_pitch;
+        values[count++] = samples[reflect(y + dy, height) * stride + reflect(x + dx, width)];
+      }
+      std::sort(values.begin(), values.begin() + count);
+      const T expected = std::clamp(src[y * src_pitch + x], values[mode - 1], values[count - mode]);
+      if (dst[y * dst_pitch + x] != expected) throw std::runtime_error("Rank clamp sorted oracle mismatch");
+    }
+  }
+}
+
+
 int main() {
   try {
     (void)neo_smo::checked_product(std::numeric_limits<size_t>::max(), 7);
@@ -153,6 +188,10 @@ int main() {
   }
   for (int64_t target : hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
+    for (bool end : {false, true}) for (int width : {1, 15, 16, 17, 31, 32, 33, 65, 129}) {
+      check_rank_clamp<uint8_t>(neo_smo::DataType::U8, width, end);
+      check_rank_clamp<uint16_t>(neo_smo::DataType::U16, width, end);
+    }
     check_rg_mean<uint8_t>(neo_smo::DataType::U8);
     check_rg_mean<uint16_t>(neo_smo::DataType::U16);
     for (bool end : {false, true})

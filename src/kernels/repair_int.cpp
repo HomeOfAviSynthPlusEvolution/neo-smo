@@ -11,6 +11,7 @@ namespace neo_smo {
 namespace HWY_NAMESPACE {
 
 #include "common/grid.hpp"
+#include "common/rank_clamp.hpp"
 
 template <class V>
 HWY_INLINE V repair_abs_diff32(V a, V b) {
@@ -327,6 +328,15 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
 template <typename T>
 void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int width, int height,
                      std::size_t src_stride, std::size_t repair_stride, std::size_t dst_stride) {
+  // These modes only select ranks and clamp; they need no widened arithmetic.
+#define NEO_SMO_REPAIR_RANK(M) case M: rank_clamp_integer_plane<true, M>(srcp, repairp, dstp, width, height, src_stride, repair_stride, dst_stride); return
+  switch (mode) {
+    NEO_SMO_REPAIR_RANK(1);
+    NEO_SMO_REPAIR_RANK(2);
+    NEO_SMO_REPAIR_RANK(3);
+    NEO_SMO_REPAIR_RANK(4);
+  }
+#undef NEO_SMO_REPAIR_RANK
   constexpr int kRadius = 1;
   using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
   hn::ScalableTag<ComputeT> d;
