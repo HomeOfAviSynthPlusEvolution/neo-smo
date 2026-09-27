@@ -141,7 +141,7 @@ void check_ttempsmooth_packed(int bits, int width, bool end) {
   const auto value = [](const uint8_t* plane, int index) {
     return float(reinterpret_cast<const T*>(plane)[index]);
   };
-  for (int threshold : {1, 2, 256}) for (bool fp : {false, true}) {
+  for (int threshold : {0, 1, 2, 256}) for (bool fp : {false, true}) {
     for (int num_prev : {0, 1, 3}) for (int num_next : {0, 3}) {
       neo_smo::process_ttempsmooth_plane(sizeof(T) == 1 ? neo_smo::DataType::U8 : neo_smo::DataType::U16,
           width, height, source_pitch * sizeof(T), reference_pitch * sizeof(T), output_pitch * sizeof(T),

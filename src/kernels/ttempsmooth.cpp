@@ -57,7 +57,7 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
   // pixels. This also represents the inclusive 255/65535 upper bound.
   const auto limit = hn::Set(dt, static_cast<T>(
       std::min(format_max, std::max(0.0f, std::ceil(threshold) - 1.0f))));
-  const auto valid = hn::FirstN(dt, threshold > 0.0f ? lanes : 0);
+  const auto valid = hn::Eq(limit, limit);
   const auto center = hn::Set(df, center_weight);
   const auto one = hn::Set(df, 1.0f);
   const auto maximum = hn::Set(df, format_max);
@@ -74,7 +74,7 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
     return hn::Sub(hn::Max(a, b), hn::Min(a, b));
   };
   for (int x = 0; x < width; x += static_cast<int>(lanes)) {
-    // The plane dispatcher sends only complete native integer vectors here.
+    // The dispatcher guarantees complete vectors and a positive threshold.
     const auto current_ref = hn::LoadU(dt, ref + x);
     const auto c0 = load_group(curr + x, 0);
     const auto c1 = load_group(curr + x, 1);
@@ -287,7 +287,7 @@ void ttempsmooth_plane_impl(
 ) {
   if constexpr (!std::is_floating_point_v<T> && hn::MaxLanes(hn::ScalableTag<T>()) >= sizeof(float) / sizeof(T)) {
     const int lanes = static_cast<int>(hn::Lanes(hn::ScalableTag<T>()));
-    if (weight_mode == 1 && width >= lanes) {
+    if (weight_mode == 1 && threshold > 0.0f && width >= lanes) {
       const int full_width = width - width % lanes;
       for (int y = 0; y < height; ++y) {
         ttempsmooth_temporal_integer_row(full_width, src_stride, ref_stride, dst_stride, y,
