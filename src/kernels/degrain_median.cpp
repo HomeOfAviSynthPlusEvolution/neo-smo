@@ -110,9 +110,9 @@ HWY_INLINE V limit_pixel_correction_float(D d, V old_pixel, V new_pixel, V limit
 }
 
 template <int Mode, bool NoRow, class D, class Grid, class V = hn::Vec<D>>
-// Keep native MSVC's compile-cost boundary; other compilers can keep the
-// neighborhood in registers instead of passing three grids through memory.
-#if defined(_MSC_VER) && !defined(__clang__)
+// Preserve the fallback and native MSVC compile-cost boundaries. Hardware
+// SIMD on other compilers keeps the neighborhood in registers.
+#if HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SCALAR || (defined(_MSC_VER) && !defined(__clang__))
 HWY_NOINLINE
 #else
 HWY_INLINE
