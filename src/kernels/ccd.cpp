@@ -95,7 +95,11 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
       }
     }
     if constexpr (!integer) {
-      if (radius) ssd = float_div<Half>(d, ssd, div);
+      if constexpr (std::is_same_v<T, float>) {
+        // The five-frame FP32 average permits reciprocal rounding, as with FMA.
+        if (radius == 2) ssd = hn::Mul(ssd, hn::Set(d, 0.2f));
+        else if (radius) ssd = float_div<Half>(d, ssd, div);
+      } else if (radius) ssd = float_div<Half>(d, ssd, div);
     }
     const auto mask = hn::Lt(ssd, threshold_v);
     if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, shared_reference ? ra : load_src(0, px, py)), ta);
