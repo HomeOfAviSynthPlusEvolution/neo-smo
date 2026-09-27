@@ -87,76 +87,27 @@ void vertical_cleaner_int_impl(int mode, int bits_per_sample, const T* srcp, T* 
 template <bool IsF16, typename StorageT>
 void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, StorageT* dstp, int width, int height,
                                  std::size_t src_stride, std::size_t dst_stride) {
-  using ComputeT = FloatLane<IsF16>;
-  const hn::ScalableTag<ComputeT> d;
+  const hn::ScalableTag<FloatLane<IsF16>> d;
   const std::size_t lanes = hn::Lanes(d);
-  const std::size_t kSimdPad = lanes;
-
-  auto load_row_f32 = [&](std::vector<ComputeT>& buf, const StorageT* row_ptr) HWY_ATTR {
-    if constexpr (IsF16) {
-      fill_mirrored_row_f16(buf.data(), row_ptr, width, 0);
-    } else {
-      std::memcpy(buf.data(), row_ptr, static_cast<std::size_t>(width) * sizeof(float));
-    }
-  };
-
-  if (mode == 1) {
-    copy_first_n_lines(dstp, srcp, static_cast<std::size_t>(width), dst_stride, src_stride, 1);
-    std::vector<ComputeT> r_top(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> r_cur(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> r_bot(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
-
-    for (int y = 1; y < height - 1; ++y) {
-      load_row_f32(r_top, srcp + static_cast<std::size_t>(y - 1) * src_stride);
-      load_row_f32(r_cur, srcp + static_cast<std::size_t>(y) * src_stride);
-      load_row_f32(r_bot, srcp + static_cast<std::size_t>(y + 1) * src_stride);
-
-      for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto top = hn::LoadU(d, r_top.data() + x);
-        const auto cur = hn::LoadU(d, r_cur.data() + x);
-        const auto bot = hn::LoadU(d, r_bot.data() + x);
-        const auto res = median3(d, top, cur, bot);
-        hn::StoreU(res, d, out_f32.data() + x);
-      }
-
-      if constexpr (IsF16) {
-        store_row_f16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
+  const int radius = mode == 1 ? 1 : 2;
+  if (mode != 1 && mode != 2) return;
+  copy_first_n_lines(dstp, srcp, static_cast<std::size_t>(width), dst_stride, src_stride, radius);
+  const auto vmin = hn::Set(d, chroma ? -0.5f : 0.0f);
+  const auto vmax = hn::Set(d, chroma ? 0.5f : 1.0f);
+  for (int y = radius; y < height - radius; ++y) {
+    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+      const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+      auto load = [&](int dy) HWY_ATTR {
+        const auto* row = srcp + static_cast<std::size_t>(y + dy) * src_stride + x;
+        if constexpr (IsF16) return load_f16(d, row, count);
+        else return hn::LoadN(d, row, count);
+      };
+      const auto p1 = load(-1), c = load(0), n1 = load(1);
+      auto result = c;
+      if (mode == 1) {
+        result = median3(d, p1, c, n1);
       } else {
-        std::memcpy(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(),
-                    static_cast<std::size_t>(width) * sizeof(float));
-      }
-    }
-    copy_last_n_lines(dstp, srcp, static_cast<std::size_t>(width), static_cast<std::size_t>(height), dst_stride,
-                      src_stride, 1);
-  } else if (mode == 2) {
-    copy_first_n_lines(dstp, srcp, static_cast<std::size_t>(width), dst_stride, src_stride, 2);
-    const float min_s = chroma ? -0.5f : 0.0f;
-    const float max_s = chroma ? 0.5f : 1.0f;
-    const auto vmin = hn::Set(d, min_s);
-    const auto vmax = hn::Set(d, max_s);
-
-    std::vector<ComputeT> rp2(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> rp1(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> rc(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> rn1(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> rn2(static_cast<std::size_t>(width) + kSimdPad);
-    std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
-
-    for (int y = 2; y < height - 2; ++y) {
-      load_row_f32(rp2, srcp + static_cast<std::size_t>(y - 2) * src_stride);
-      load_row_f32(rp1, srcp + static_cast<std::size_t>(y - 1) * src_stride);
-      load_row_f32(rc, srcp + static_cast<std::size_t>(y) * src_stride);
-      load_row_f32(rn1, srcp + static_cast<std::size_t>(y + 1) * src_stride);
-      load_row_f32(rn2, srcp + static_cast<std::size_t>(y + 2) * src_stride);
-
-      for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-        const auto p2 = hn::LoadU(d, rp2.data() + x);
-        const auto p1 = hn::LoadU(d, rp1.data() + x);
-        const auto c = hn::LoadU(d, rc.data() + x);
-        const auto n1 = hn::LoadU(d, rn1.data() + x);
-        const auto n2 = hn::LoadU(d, rn2.data() + x);
-
+        const auto p2 = load(-2), n2 = load(2);
         const auto up_p = hn::Clamp(float_add<IsF16>(d, hn::Clamp(float_sub<IsF16>(d, p1, p2), vmin, vmax), p1), vmin, vmax);
         const auto up_n = hn::Clamp(float_add<IsF16>(d, hn::Clamp(float_sub<IsF16>(d, n1, n2), vmin, vmax), n1), vmin, vmax);
         const auto upper = hn::Max(hn::Max(hn::Min(up_p, up_n), p1), n1);
@@ -165,20 +116,15 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
         const auto lo_n = hn::Clamp(float_sub<IsF16>(d, n1, hn::Clamp(float_sub<IsF16>(d, n2, n1), vmin, vmax)), vmin, vmax);
         const auto lower = hn::Min(hn::Min(p1, n1), hn::Max(lo_p, lo_n));
 
-        const auto res = hn::Clamp(c, lower, upper);
-        hn::StoreU(res, d, out_f32.data() + x);
+        result = hn::Clamp(c, lower, upper);
       }
-
-      if constexpr (IsF16) {
-        store_row_f16(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(), width);
-      } else {
-        std::memcpy(dstp + static_cast<std::size_t>(y) * dst_stride, out_f32.data(),
-                    static_cast<std::size_t>(width) * sizeof(float));
-      }
+      auto* dst = dstp + static_cast<std::size_t>(y) * dst_stride + x;
+      if constexpr (IsF16) store_f16(d, result, dst, count);
+      else hn::StoreN(result, d, dst, count);
     }
-    copy_last_n_lines(dstp, srcp, static_cast<std::size_t>(width), static_cast<std::size_t>(height), dst_stride,
-                      src_stride, 2);
   }
+  copy_last_n_lines(dstp, srcp, static_cast<std::size_t>(width), static_cast<std::size_t>(height),
+                    dst_stride, src_stride, radius);
 }
 
 void dispatch_vertical_cleaner_target(DataType dtype, int mode, bool chroma, int bits_per_sample,
