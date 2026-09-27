@@ -27,6 +27,28 @@ HWY_INLINE V avg2_float(D d, V a, V b) {
 }
 
 template <class D, class V = hn::Vec<D>>
+HWY_INLINE V median21(D d, V* v) {
+  #define CS(i, j) compare_swap(d, v[i], v[j])
+CS(0, 1); CS(2, 3); CS(4, 5); CS(6, 7); CS(8, 9); CS(10, 11); CS(12, 13); CS(14, 15); CS(16, 17); CS(18, 19);
+      CS(0, 2); CS(1, 3); CS(4, 6); CS(5, 7); CS(8, 10); CS(9, 11); CS(12, 14); CS(13, 15); CS(16, 18); CS(17, 19);
+      CS(1, 5); CS(2, 6); CS(3, 15); CS(4, 16); CS(13, 17); CS(14, 18);
+      CS(1, 14); CS(2, 13); CS(3, 7); CS(5, 18); CS(6, 17); CS(12, 16);
+      CS(0, 16); CS(1, 2); CS(3, 19); CS(5, 13); CS(6, 14); CS(17, 18);
+      CS(0, 4); CS(5, 14); CS(6, 10); CS(9, 13); CS(15, 19);
+      CS(5, 8); CS(6, 12); CS(7, 13); CS(11, 14);
+      CS(2, 12); CS(7, 17); CS(8, 9); CS(10, 11);
+      CS(3, 9); CS(7, 11); CS(8, 12); CS(10, 16);
+      CS(3, 10); CS(4, 12); CS(7, 15); CS(9, 16);
+      CS(7, 10); CS(9, 12);
+      CS(7, 9); CS(10, 12);
+      CS(9, 10);
+      CS(10, 20);
+      CS(9, 10);
+      return v[10];
+  #undef CS
+}
+
+template <class D, class V = hn::Vec<D>>
 HWY_NOINLINE V eval_temporal_median_int(D d, V* v, int diameter) {
   #define CS(i, j) compare_swap(d, v[i], v[j])
   switch (diameter) {
@@ -205,23 +227,7 @@ HWY_NOINLINE V eval_temporal_median_int(D d, V* v, int diameter) {
       CS(7, 10); CS(9, 12);
       CS(7, 9); CS(10, 12);
       return avg2_int(d, v[9], v[10]);
-    case 21:
-      CS(0, 1); CS(2, 3); CS(4, 5); CS(6, 7); CS(8, 9); CS(10, 11); CS(12, 13); CS(14, 15); CS(16, 17); CS(18, 19);
-      CS(0, 2); CS(1, 3); CS(4, 6); CS(5, 7); CS(8, 10); CS(9, 11); CS(12, 14); CS(13, 15); CS(16, 18); CS(17, 19);
-      CS(1, 5); CS(2, 6); CS(3, 15); CS(4, 16); CS(13, 17); CS(14, 18);
-      CS(1, 14); CS(2, 13); CS(3, 7); CS(5, 18); CS(6, 17); CS(12, 16);
-      CS(0, 16); CS(1, 2); CS(3, 19); CS(5, 13); CS(6, 14); CS(17, 18);
-      CS(0, 4); CS(5, 14); CS(6, 10); CS(9, 13); CS(15, 19);
-      CS(5, 8); CS(6, 12); CS(7, 13); CS(11, 14);
-      CS(2, 12); CS(7, 17); CS(8, 9); CS(10, 11);
-      CS(3, 9); CS(7, 11); CS(8, 12); CS(10, 16);
-      CS(3, 10); CS(4, 12); CS(7, 15); CS(9, 16);
-      CS(7, 10); CS(9, 12);
-      CS(7, 9); CS(10, 12);
-      CS(9, 10);
-      CS(10, 20);
-      CS(9, 10);
-      return v[10];
+    case 21: return median21(d, v);
     default:
       return v[0];
   }
@@ -407,23 +413,7 @@ HWY_NOINLINE V eval_temporal_median_float(D d, V* v, int diameter) {
       CS(7, 10); CS(9, 12);
       CS(7, 9); CS(10, 12);
       return avg2_float<IsF16>(d, v[9], v[10]);
-    case 21:
-      CS(0, 1); CS(2, 3); CS(4, 5); CS(6, 7); CS(8, 9); CS(10, 11); CS(12, 13); CS(14, 15); CS(16, 17); CS(18, 19);
-      CS(0, 2); CS(1, 3); CS(4, 6); CS(5, 7); CS(8, 10); CS(9, 11); CS(12, 14); CS(13, 15); CS(16, 18); CS(17, 19);
-      CS(1, 5); CS(2, 6); CS(3, 15); CS(4, 16); CS(13, 17); CS(14, 18);
-      CS(1, 14); CS(2, 13); CS(3, 7); CS(5, 18); CS(6, 17); CS(12, 16);
-      CS(0, 16); CS(1, 2); CS(3, 19); CS(5, 13); CS(6, 14); CS(17, 18);
-      CS(0, 4); CS(5, 14); CS(6, 10); CS(9, 13); CS(15, 19);
-      CS(5, 8); CS(6, 12); CS(7, 13); CS(11, 14);
-      CS(2, 12); CS(7, 17); CS(8, 9); CS(10, 11);
-      CS(3, 9); CS(7, 11); CS(8, 12); CS(10, 16);
-      CS(3, 10); CS(4, 12); CS(7, 15); CS(9, 16);
-      CS(7, 10); CS(9, 12);
-      CS(7, 9); CS(10, 12);
-      CS(9, 10);
-      CS(10, 20);
-      CS(9, 10);
-      return v[10];
+    case 21: return median21(d, v);
     default:
       return v[0];
   }
@@ -455,9 +445,37 @@ void temporal_median_int_impl(int diameter, const T* const* srcp_planes, T* dstp
   }
 }
 
+// The largest fixed window can keep its selection network in registers.
+// Other diameters retain the shared evaluator and their existing code size.
+template <bool IsF16, typename StorageT>
+void temporal_median21_float(const StorageT* const* planes, StorageT* dstp,
+    int width, int height, std::size_t src_stride, std::size_t dst_stride) {
+  const hn::ScalableTag<FloatLane<IsF16>> d;
+  const auto lanes = hn::Lanes(d);
+  for (int y = 0; y < height; ++y) {
+    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+      const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+      hn::Vec<decltype(d)> values[21];
+      for (int i = 0; i < 21; ++i) {
+        const auto* src = planes[i] + static_cast<std::size_t>(y) * src_stride + x;
+        if constexpr (IsF16) values[i] = load_f16(d, src, count);
+        else values[i] = hn::LoadN(d, src, count);
+      }
+      const auto result = median21(d, values);
+      auto* dst = dstp + static_cast<std::size_t>(y) * dst_stride + x;
+      if constexpr (IsF16) store_f16(d, result, dst, count);
+      else hn::StoreN(result, d, dst, count);
+    }
+  }
+}
+
 template <bool IsF16, typename StorageT>
 void temporal_median_float_impl(int diameter, const StorageT* const* srcp_planes, StorageT* dstp,
                                 int width, int height, std::size_t src_stride, std::size_t dst_stride) {
+  if (diameter == 21) {
+    temporal_median21_float<IsF16>(srcp_planes, dstp, width, height, src_stride, dst_stride);
+    return;
+  }
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
