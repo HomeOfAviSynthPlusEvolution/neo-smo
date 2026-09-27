@@ -18,6 +18,141 @@ namespace HWY_NAMESPACE {
 
 namespace {
 
+// Split a native integer vector into FP32-sized groups without widening the
+// reference pixels before their comparisons.
+template <int Part, class D, class V>
+HWY_INLINE auto ttempsmooth_group(D /*d*/, V value) {
+  constexpr int groups = sizeof(float) / sizeof(hn::TFromD<D>);
+  const hn::Half<D> dh;
+  const auto half = [&] {
+    if constexpr (Part < groups / 2) return hn::LowerHalf(dh, value);
+    else return hn::UpperHalf(dh, value);
+  }();
+  if constexpr (groups == 2) {
+    return half;
+  } else {
+    const hn::Half<decltype(dh)> dq;
+    if constexpr (Part % 2 == 0) return hn::LowerHalf(dq, half);
+    else return hn::UpperHalf(dq, half);
+  }
+}
+
+template <int Part, class D>
+HWY_INLINE auto ttempsmooth_mask_group(D /*d*/, hn::Mask<D> value) {
+  constexpr int groups = sizeof(float) / sizeof(hn::TFromD<D>);
+  const hn::Half<D> dh;
+  const auto half = [&] {
+    if constexpr (Part < groups / 2) return hn::LowerHalfOfMask(dh, value);
+    else return hn::UpperHalfOfMask(dh, value);
+  }();
+  if constexpr (groups == 2) {
+    return half;
+  } else {
+    const hn::Half<decltype(dh)> dq;
+    if constexpr (Part % 2 == 0) return hn::LowerHalfOfMask(dq, half);
+    else return hn::UpperHalfOfMask(dq, half);
+  }
+}
+
+template <typename T>
+HWY_NOINLINE void ttempsmooth_temporal_integer_row(
+    int width, std::size_t src_stride, std::size_t ref_stride,
+    std::size_t dst_stride, int y, const T* curr_plane,
+    const T* curr_ref_plane, const T* const* prev_planes,
+    const T* const* prev_ref_planes, const T* const* next_planes,
+    const T* const* next_ref_planes, T* dst_plane,
+    int num_prev, int num_next, float threshold, bool fp,
+    int bits_per_sample, float center_weight, const float* temporal_weights) {
+  const hn::ScalableTag<T> dt;
+  const hn::ScalableTag<float> df;
+  const hn::RebindToSigned<decltype(df)> di;
+  const hn::Rebind<T, decltype(df)> dg;
+  const hn::Half<decltype(dt)> dh;
+  constexpr int groups = sizeof(float) / sizeof(T);
+  const std::size_t lanes = hn::Lanes(dt);
+  const float format_max = static_cast<float>((1u << bits_per_sample) - 1u);
+  // diff < threshold is equivalent to diff <= ceil(threshold)-1 for integer
+  // pixels. This also represents the inclusive 255/65535 upper bound.
+  const auto limit = hn::Set(dt, static_cast<T>(
+      std::min(format_max, std::max(0.0f, std::ceil(threshold) - 1.0f))));
+  const auto valid = hn::FirstN(dt, threshold > 0.0f ? lanes : 0);
+  const auto center = hn::Set(df, center_weight);
+  const auto one = hn::Set(df, 1.0f);
+  const auto maximum = hn::Set(df, format_max);
+  const T* curr = curr_plane + static_cast<std::size_t>(y) * src_stride;
+  const T* ref = curr_ref_plane + static_cast<std::size_t>(y) * ref_stride;
+  T* dst = dst_plane + static_cast<std::size_t>(y) * dst_stride;
+  const auto as_float = [&](auto group) {
+    return hn::ConvertTo(df, hn::PromoteTo(di, group));
+  };
+  const auto diff = [](auto a, auto b) {
+    return hn::Sub(hn::Max(a, b), hn::Min(a, b));
+  };
+  for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+    const std::size_t count = std::min(lanes, static_cast<std::size_t>(width - x));
+    const auto current_ref = hn::LoadN(dt, ref + x, count);
+    const auto current = hn::LoadN(dt, curr + x, count);
+    const auto c0 = as_float(ttempsmooth_group<0>(dt, current));
+    const auto c1 = as_float(ttempsmooth_group<1>(dt, current));
+    auto c2 = hn::Zero(df), c3 = hn::Zero(df);
+    if constexpr (groups == 4) {
+      c2 = as_float(ttempsmooth_group<2>(dt, current));
+      c3 = as_float(ttempsmooth_group<3>(dt, current));
+    }
+    auto s0 = hn::Mul(c0, center), s1 = hn::Mul(c1, center);
+    auto s2 = hn::Mul(c2, center), s3 = hn::Mul(c3, center);
+    auto w0 = center, w1 = center, w2 = center, w3 = center;
+    for (int dir = 0; dir < 2; ++dir) {
+      const int frames = dir == 0 ? num_prev : num_next;
+      if (frames <= 0) break;  // Preserve upstream's scene-boundary behavior.
+      const T* const* sources = dir == 0 ? prev_planes : next_planes;
+      const T* const* refs = dir == 0 ? prev_ref_planes : next_ref_planes;
+      auto active = valid;
+      auto previous = current_ref;
+      for (int i = 0; i < frames; ++i) {
+        const auto neighbor = hn::LoadN(dt,
+            refs[i] + static_cast<std::size_t>(y) * ref_stride + x, count);
+        active = hn::And(active, hn::Le(diff(current_ref, neighbor), limit));
+        if (i != 0) active = hn::And(active, hn::Le(diff(previous, neighbor), limit));
+        const auto source = hn::LoadN(dt,
+            sources[i] + static_cast<std::size_t>(y) * src_stride + x, count);
+        const auto weight = hn::Set(df, temporal_weights[1 + i]);
+        const auto update = [&](auto& sum, auto& weights, auto pixels, auto group_mask) {
+          const auto mask = hn::PromoteMaskTo(df, dg, group_mask);
+          weights = hn::IfThenElse(mask, hn::Add(weights, weight), weights);
+          sum = hn::IfThenElse(mask, hn::Add(sum, hn::Mul(as_float(pixels), weight)), sum);
+        };
+        update(s0, w0, ttempsmooth_group<0>(dt, source), ttempsmooth_mask_group<0>(dt, active));
+        update(s1, w1, ttempsmooth_group<1>(dt, source), ttempsmooth_mask_group<1>(dt, active));
+        if constexpr (groups == 4) {
+          update(s2, w2, ttempsmooth_group<2>(dt, source), ttempsmooth_mask_group<2>(dt, active));
+          update(s3, w3, ttempsmooth_group<3>(dt, source), ttempsmooth_mask_group<3>(dt, active));
+        }
+        previous = neighbor;
+      }
+    }
+    const auto finish = [&](auto c, auto sum, auto weights) {
+      const auto value = fp ? hn::Add(hn::Mul(c, hn::Sub(one, weights)), sum)
+                            : hn::Div(sum, weights);
+      // The clamped nonnegative range permits direct conversion and packing.
+      // The predecessor of 0.5 avoids rounding a value just below 0.5 up to 1.
+      const auto clamped = hn::Min(hn::Max(value, hn::Zero(df)), maximum);
+      const auto rounded = hn::ConvertInRangeTo(di, hn::Add(clamped, hn::Set(df, 0x1.fffffep-2f)));
+      const hn::RebindToUnsigned<decltype(di)> du;
+      return hn::TruncateTo(dg, hn::BitCast(du, rounded));
+    };
+    const auto o0 = finish(c0, s0, w0), o1 = finish(c1, s1, w1);
+    if constexpr (groups == 4) {
+      const auto o2 = finish(c2, s2, w2), o3 = finish(c3, s3, w3);
+      hn::StoreN(hn::Combine(dt, hn::Combine(dh, o3, o2), hn::Combine(dh, o1, o0)),
+                 dt, dst + x, count);
+    } else {
+      hn::StoreN(hn::Combine(dt, o1, o0), dt, dst + x, count);
+    }
+  }
+}
+
+
 template <typename T>
 HWY_NOINLINE void ttempsmooth_row_impl(
     int width,
@@ -167,6 +302,17 @@ void ttempsmooth_plane_impl(
     const float* temporal_weights,
     const float* temporal_difference_weights
 ) {
+  if constexpr (!std::is_floating_point_v<T> && hn::MaxLanes(hn::ScalableTag<T>()) >= sizeof(float) / sizeof(T)) {
+    if (weight_mode == 1 && width >= static_cast<int>(hn::Lanes(hn::ScalableTag<T>()))) {
+      for (int y = 0; y < height; ++y) {
+        ttempsmooth_temporal_integer_row(width, src_stride, ref_stride, dst_stride, y,
+          curr_plane, curr_ref_plane, prev_planes, prev_ref_planes, next_planes,
+          next_ref_planes, dst_plane, num_prev, num_next, threshold, fp,
+          bits_per_sample, center_weight, temporal_weights);
+      }
+      return;
+    }
+  }
   for (int y = 0; y < height; ++y) {
     ttempsmooth_row_impl(
         width, src_stride, ref_stride, dst_stride, y,

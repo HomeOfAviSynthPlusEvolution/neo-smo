@@ -109,6 +109,75 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
     neo_smo::process_ttempsmooth_plane(type,width,height,pitch,pitch,pitch,src[3],src[3],prev,prev,next,next,dst[0],1,1,1,0.01f,true,bits,1,0.5f,weights2,nullptr);
   }
 }
+// Exercise each packed comparison group, independent reference clips, and
+// unequal pitches. Binary-exact weights keep this oracle independent of FMA.
+template <class T>
+void check_ttempsmooth_packed(int bits, int width, bool end) {
+  constexpr int height = 2;
+  const int scale = 1 << (bits - 8);
+  const int source_pitch = width + 3, reference_pitch = width + 5, output_pitch = width + 7;
+  std::vector<std::unique_ptr<Guarded>> storage;
+  std::array<const uint8_t*, 7> source{}, reference{};
+  for (int frame = 0; frame < 7; ++frame) {
+    for (int is_ref = 0; is_ref < 2; ++is_ref) {
+      const int pitch = is_ref ? reference_pitch : source_pitch;
+      storage.push_back(std::make_unique<Guarded>((pitch + width) * sizeof(T), end));
+      auto* data = reinterpret_cast<T*>(storage.back()->data);
+      (is_ref ? reference : source)[frame] = storage.back()->data;
+      for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+        const int value = is_ref ? 100 + (x * 13 + x / 7 + frame * 3 +
+            (frame % 2) * ((x >> 4) % 5) + y) % 9 : (x * 97 + frame * 33 + y * 9) % 256;
+        data[y * pitch + x] = static_cast<T>(value * scale + (is_ref ? 0 : frame % scale));
+      }
+    }
+  }
+  storage.push_back(std::make_unique<Guarded>((output_pitch + width) * sizeof(T), end));
+  uint8_t* output = storage.back()->data;
+  const uint8_t* prev[] = {source[2], source[1], source[0]};
+  const uint8_t* next[] = {source[4], source[5], source[6]};
+  const uint8_t* prev_ref[] = {reference[2], reference[1], reference[0]};
+  const uint8_t* next_ref[] = {reference[4], reference[5], reference[6]};
+  const float weights[] = {0.25f, 0.125f, 0.0625f, 0.0625f};
+  const auto value = [](const uint8_t* plane, int index) {
+    return float(reinterpret_cast<const T*>(plane)[index]);
+  };
+  for (int threshold : {1, 2, 256}) for (bool fp : {false, true}) {
+    for (int num_prev : {0, 1, 3}) for (int num_next : {0, 3}) {
+      neo_smo::process_ttempsmooth_plane(sizeof(T) == 1 ? neo_smo::DataType::U8 : neo_smo::DataType::U16,
+          width, height, source_pitch * sizeof(T), reference_pitch * sizeof(T), output_pitch * sizeof(T),
+          source[3], reference[3], prev, prev_ref, next, next_ref, output,
+          3, num_prev, num_next, float(threshold * scale), fp, bits, 1, weights[0], weights, nullptr);
+      for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+        const float current = value(source[3], y * source_pitch + x);
+        const float current_ref = value(reference[3], y * reference_pitch + x);
+        float sum = current * weights[0], total = weights[0];
+        for (int dir = 0; dir < 2; ++dir) {
+          const int frames = dir == 0 ? num_prev : num_next;
+          if (frames == 0) break;
+          float previous = current_ref;
+          for (int i = 0; i < frames; ++i) {
+            const auto* refs = dir == 0 ? prev_ref : next_ref;
+            const auto* sources = dir == 0 ? prev : next;
+            const float neighbor = value(refs[i], y * reference_pitch + x);
+            if (std::abs(current_ref - neighbor) >= threshold * scale ||
+                (i != 0 && std::abs(previous - neighbor) >= threshold * scale)) break;
+            total += weights[1 + i];
+            sum += value(sources[i], y * source_pitch + x) * weights[1 + i];
+            previous = neighbor;
+          }
+        }
+        const float expected = std::round(fp ? current * (1.f - total) + sum : sum / total);
+        const float got = value(output, y * output_pitch + x);
+        if (got != expected) {
+          std::fprintf(stderr, "TTempSmooth packed bits=%d width=%d xy=%d,%d threshold=%d fp=%d prev=%d next=%d got=%g expected=%g\n",
+              bits, width, x, y, threshold, fp, num_prev, num_next, got, expected);
+          throw std::runtime_error("TTempSmooth packed scalar oracle mismatch");
+        }
+      }
+    }
+  }
+}
+
 int main() {
   for(auto target:hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
@@ -117,6 +186,11 @@ int main() {
       check<uint16_t>(neo_smo::DataType::U16,width,height,end);
       check<uint16_t>(neo_smo::DataType::F16,width,height,end);
       check<float>(neo_smo::DataType::F32,width,height,end);
+    }
+    for (bool end : {false, true}) for (int width : {1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127}) {
+      check_ttempsmooth_packed<uint8_t>(8, width, end);
+      check_ttempsmooth_packed<uint16_t>(10, width, end);
+      check_ttempsmooth_packed<uint16_t>(16, width, end);
     }
     std::printf("%s: Phase5 oracles and guarded tails passed\n",hwy::TargetName(target));
   }
