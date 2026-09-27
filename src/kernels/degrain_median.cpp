@@ -178,7 +178,12 @@ V eval_dgm_int(D d, const Grid& prev, const Grid& curr, const Grid& next,
 }
 
 template <int Mode, bool NoRow, bool IsF16, class D, class Grid, class V = hn::Vec<D>>
-HWY_NOINLINE V eval_dgm_float(D d, const Grid& prev, const Grid& curr, const Grid& next,
+#if HWY_TARGET == HWY_EMU128 || HWY_TARGET == HWY_SCALAR || (defined(_MSC_VER) && !defined(__clang__))
+HWY_NOINLINE
+#else
+HWY_INLINE
+#endif
+V eval_dgm_float(D d, const Grid& prev, const Grid& curr, const Grid& next,
                               V limit, V pixel_min, V pixel_max) {
   if constexpr (Mode == 0) {
     V diff = pixel_max;
@@ -298,10 +303,8 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
                                int width, int height, std::size_t prev_stride,
                                std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
   using ComputeT = FloatLane<IsF16>;
-  constexpr int kRadius = 1;
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
-  const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
   const auto pixel_min = hn::Set(d, chroma ? -0.5f : 0.0f);
   const auto pixel_max = hn::Set(d, chroma ? 0.5f : 1.0f);
   const auto limit_vec = hn::Set(d, limit);
@@ -314,58 +317,26 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, skip_rows);
 
-  std::vector<ComputeT> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
-  std::vector<ComputeT> b_out(static_cast<std::size_t>(width) + lanes);
-  std::array<ComputeT*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
-  std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
-  std::array<ComputeT*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
-
+  // The output border is copied unchanged, so all processed neighborhoods
+  // lie in the source plane. Load them directly instead of copying nine rows.
   for (int y = skip_rows; y < height - skip_rows; ++y) {
-    if constexpr (IsF16) {
-      fill_mirrored_row_f16(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
-      fill_mirrored_row_f16(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
-      fill_mirrored_row_f16(r_prev[2] - kRadius, prevp + static_cast<std::size_t>(y + skip_rows) * prev_stride, width, kRadius);
-
-      fill_mirrored_row_f16(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - skip_rows) * curr_stride, width, kRadius);
-      fill_mirrored_row_f16(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
-      fill_mirrored_row_f16(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + skip_rows) * curr_stride, width, kRadius);
-
-      fill_mirrored_row_f16(r_next[0] - kRadius, nextp + static_cast<std::size_t>(y - skip_rows) * next_stride, width, kRadius);
-      fill_mirrored_row_f16(r_next[1] - kRadius, nextp + static_cast<std::size_t>(y) * next_stride, width, kRadius);
-      fill_mirrored_row_f16(r_next[2] - kRadius, nextp + static_cast<std::size_t>(y + skip_rows) * next_stride, width, kRadius);
-    } else {
-      fill_mirrored_row(r_prev[0] - kRadius, prevp + static_cast<std::size_t>(y - skip_rows) * prev_stride, width, kRadius);
-      fill_mirrored_row(r_prev[1] - kRadius, prevp + static_cast<std::size_t>(y) * prev_stride, width, kRadius);
-      fill_mirrored_row(r_prev[2] - kRadius, prevp + static_cast<std::size_t>(y + skip_rows) * prev_stride, width, kRadius);
-
-      fill_mirrored_row(r_curr[0] - kRadius, currp + static_cast<std::size_t>(y - skip_rows) * curr_stride, width, kRadius);
-      fill_mirrored_row(r_curr[1] - kRadius, currp + static_cast<std::size_t>(y) * curr_stride, width, kRadius);
-      fill_mirrored_row(r_curr[2] - kRadius, currp + static_cast<std::size_t>(y + skip_rows) * curr_stride, width, kRadius);
-
-      fill_mirrored_row(r_next[0] - kRadius, nextp + static_cast<std::size_t>(y - skip_rows) * next_stride, width, kRadius);
-      fill_mirrored_row(r_next[1] - kRadius, nextp + static_cast<std::size_t>(y) * next_stride, width, kRadius);
-      fill_mirrored_row(r_next[2] - kRadius, nextp + static_cast<std::size_t>(y + skip_rows) * next_stride, width, kRadius);
-    }
-
-    StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
-    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto gp = Grid3x3<decltype(d)>::load(d, r_prev[0], r_prev[1], r_prev[2], x);
-      const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
-      const auto gn = Grid3x3<decltype(d)>::load(d, r_next[0], r_next[1], r_next[2], x);
-
+    auto* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
+    const auto end = static_cast<std::size_t>(width - 1);
+    for (std::size_t x = 1; x < end; x += lanes) {
+      const auto count = std::min(lanes, end - x);
+      auto grid = [&](const StorageT* plane, std::size_t stride) HWY_ATTR {
+        auto load = [&](int dy, int dx) HWY_ATTR {
+          const auto* ptr = plane + static_cast<std::size_t>(y + dy * skip_rows) * stride + x + dx;
+          if constexpr (IsF16) return load_f16(d, ptr, count);
+          else return hn::LoadN(d, ptr, count);
+        };
+        return Grid3x3<decltype(d)>{load(-1, -1), load(-1, 0), load(-1, 1),
+            load(0, -1), load(0, 0), load(0, 1), load(1, -1), load(1, 0), load(1, 1)};
+      };
+      const auto gp = grid(prevp, prev_stride), gc = grid(currp, curr_stride), gn = grid(nextp, next_stride);
       const auto res = eval_dgm_float<Mode, NoRow, IsF16>(d, gp, gc, gn, limit_vec, pixel_min, pixel_max);
-
-      if constexpr (IsF16) {
-        hn::StoreU(res, d, b_out.data() + x);
-      } else {
-        const std::size_t rem = static_cast<std::size_t>(width - x);
-        if (rem >= lanes) hn::StoreU(res, d, dst_row + x);
-        else hn::StoreN(res, d, dst_row + x, rem);
-      }
-    }
-
-    if constexpr (IsF16) {
-      store_row_f16(dst_row, b_out.data(), width);
+      if constexpr (IsF16) store_f16(d, res, dst_row + x, count);
+      else hn::StoreN(res, d, dst_row + x, count);
     }
     dst_row[0] = currp[static_cast<std::size_t>(y) * curr_stride];
     dst_row[width - 1] = currp[static_cast<std::size_t>(y) * curr_stride + width - 1];
