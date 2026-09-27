@@ -39,7 +39,7 @@ HWY_INLINE hn::Vec<D> ccd_distance(D d, hn::Vec<D> a, hn::Vec<D> b, hn::Vec<D> c
   return float_add<Half>(d, float_add<Half>(d, aa, float_mul<Half>(d, db, db)), float_mul<Half>(d, dc, dc));
 }
 
-template <class T, bool Half, bool RGB, bool Interior, bool SpatialFloat = false>
+template <class T, bool Half, bool RGB, bool Interior, bool ReciprocalFloat = false>
 HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
     T* const* destinations, float threshold, int radius, const float* weights,
@@ -96,8 +96,8 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     }
     if constexpr (!integer) {
       if constexpr (std::is_same_v<T, float>) {
-        // The five-frame FP32 average permits reciprocal rounding, as with FMA.
-        if (radius == 2) ssd = hn::Mul(ssd, hn::Set(d, 0.2f));
+        // FP32 averaging permits reciprocal rounding, as with FMA.
+        if (radius == 1 || radius == 2) ssd = hn::Mul(ssd, hn::Set(d, 1.0f / (radius * 2 + 1)));
         else if (radius) ssd = float_div<Half>(d, ssd, div);
       } else if (radius) ssd = float_div<Half>(d, ssd, div);
     }
@@ -108,7 +108,7 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
   }
   auto inverse_count = hn::Zero(d);
-  if constexpr (SpatialFloat) {
+  if constexpr (ReciprocalFloat) {
     // Counts are finite and >= 1. One Newton step refines the hardware
     // reciprocal to FP32 rounding precision, shared across output channels.
     const auto estimate = hn::ApproximateReciprocal(accepted);
@@ -130,7 +130,7 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
             hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
       }
       weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
-    } else if constexpr (SpatialFloat) {
+    } else if constexpr (ReciprocalFloat) {
       hn::StoreN(hn::Mul(total, inverse_count), d, destinations[plane] + y * stride + x, count);
     } else {
       weighted_store<Half>(d, float_div<Half>(d, total, accepted), destinations[plane] + y * stride + x, count);
@@ -214,9 +214,9 @@ HWY_NOINLINE void ccd_fixed_float(int width, int height, std::size_t stride_byte
       const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
           static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
           static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
-      if (interior) ccd_block<float, false, RGB, true, Radius == 0>(width, height, stride_bytes, src, ref,
+      if (interior) ccd_block<float, false, RGB, true, Radius != 2>(width, height, stride_bytes, src, ref,
           dst, threshold, Radius, weights, points, num_points, 32, x, y);
-      else ccd_block<float, false, RGB, false, Radius == 0>(width, height, stride_bytes, src, ref,
+      else ccd_block<float, false, RGB, false, Radius != 2>(width, height, stride_bytes, src, ref,
           dst, threshold, Radius, weights, points, num_points, 32, x, y);
     }
   }
@@ -240,11 +240,12 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     }
   }
   if constexpr (std::is_same_v<T, float>) {
-    if (radius == 0 || radius == 2) {
+    if (radius >= 0 && radius <= 2) {
       float* dst[3] = {reinterpret_cast<float*>(dst_r), reinterpret_cast<float*>(dst_g), reinterpret_cast<float*>(dst_b)};
       if (radius == 0 && num_points == 4) ccd_fixed_float<RGB, 0, 4>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       else if (radius == 0 && num_points == 8) ccd_fixed_float<RGB, 0, 8>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       else if (radius == 0) ccd_fixed_float<RGB, 0>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
+      else if (radius == 1) ccd_fixed_float<RGB, 1>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       else ccd_fixed_float<RGB, 2>(width, height, stride_bytes, src, ref, dst, threshold, weights, points, num_points);
       return;
     }

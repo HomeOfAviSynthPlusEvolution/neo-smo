@@ -44,7 +44,7 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
                                    {0,0},{-1,0},{1,0},{0,-1}};
   const float weights[] = {0.70710677f, 1.f, 0.68163878f};
   for (bool rgb : {false,true}) for (int radius : {0,1}) for (int num_points : {4,8}) {
-    if (num_points == 8 && type != neo_smo::DataType::F32) continue;
+    if (num_points == 8 && type != neo_smo::DataType::F32 && type != neo_smo::DataType::U8) continue;
     const float threshold = integer ? 123456.f : 0.0003f;
     const auto* sources = radius ? src.data() : src.data()+3;
     neo_smo::process_ccd_planes(type,rgb,width,height,pitch,sources,sources,dst[0],dst[1],dst[2],threshold,radius,
