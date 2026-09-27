@@ -86,26 +86,37 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
   }
   if(integer) {
     std::array<uint8_t,256> table{}; for(int i=0;i<256;++i) table[i]=uint8_t(255-i);
-    std::array<const uint8_t*,3> neighbors[2] = {{{src[0],src[1],src[2]}},{{src[6],src[7],src[8]}}};
-    for(int mode=0;mode<4;++mode) {
-      neo_smo::process_cnr4_frame(type,width,height,pitch,bits,1,0,mode,src.data()+3,src.data()+3,neighbors,neighbors,2,dst[1],dst[2],table.data(),table.data(),table.data());
-      const float tw=mode==0?1.f:mode==1?std::sqrt(0.5f):mode==2?std::sin(1.f):0.5f;
-      const uint64_t max=uint64_t{1}<<(bits*2);
-      for(size_t i=0;i<size;++i) for(int p=1;p<3;++p) {
-        uint64_t sum=0;
-        auto value=[&](int f,int plane) {return uint64_t(reinterpret_cast<const T*>(src[f*3+plane])[i]);};
-        for(int f:{0,2}) {
-          const uint64_t dy=uint64_t(std::abs(int64_t(value(1,0))-int64_t(value(f,0))));
-          const uint64_t dc=uint64_t(std::abs(int64_t(value(1,p))-int64_t(value(f,p))));
-          uint64_t weight=(uint64_t(table[dy>>(bits-8)])*table[dc>>(bits-8)])<<((bits-8)*2);
-          weight=uint64_t(std::round(float(weight)*tw));
-          const uint64_t result=(weight*value(f,p)+(max-weight)*value(1,p)+max/2)>>(bits*2);
-          sum+=(max-dy-dc)*result;
+    std::array<const uint8_t*,3> neighbors[20];
+    for (int radius : {1, 2, 10}) {
+      for (int i = 0; i < 2 * radius; ++i) {
+        const int frame = i < radius ? 0 : 2;
+        neighbors[i] = {src[frame * 3], src[frame * 3 + 1], src[frame * 3 + 2]};
+      }
+      for(int mode=0;mode<4;++mode) {
+        neo_smo::process_cnr4_frame(type,width,height,pitch,bits,radius,0,mode,src.data()+3,src.data()+3,neighbors,neighbors,2*radius,dst[1],dst[2],table.data(),table.data(),table.data());
+        const uint64_t max=uint64_t{1}<<(bits*2);
+        for(size_t i=0;i<size;++i) for(int p=1;p<3;++p) {
+          uint64_t sum=0;
+          auto value=[&](int f,int plane) {return uint64_t(reinterpret_cast<const T*>(src[f*3+plane])[i]);};
+          for(int j = 0; j < 2 * radius; ++j) {
+            const int f = j < radius ? 0 : 2;
+            const float weight_distance = float(j < radius ? j + 1 : 2 * radius - j);
+            const float tw = mode == 0 ? 1.f : mode == 1 ? std::sqrt(weight_distance / float(2 * radius)) :
+                mode == 2 ? std::sin((weight_distance + 1) / float(2 * radius)) :
+                1.f / float(j < radius ? radius - j + 1 : j - radius + 2);
+            const uint64_t dy=uint64_t(std::abs(int64_t(value(1,0))-int64_t(value(f,0))));
+            const uint64_t dc=uint64_t(std::abs(int64_t(value(1,p))-int64_t(value(f,p))));
+            uint64_t weight=(uint64_t(table[dy>>(bits-8)])*table[dc>>(bits-8)])<<((bits-8)*2);
+            weight=uint64_t(std::round(float(weight)*tw));
+            const uint64_t result=(weight*value(f,p)+(max-weight)*value(1,p)+max/2)>>(bits*2);
+            sum+=(max-dy-dc)*result;
+          }
+          if(reinterpret_cast<T*>(dst[p])[i]!=(sum+max*radius)/(max*2*radius)) throw std::runtime_error("Cnr4 exact integer oracle mismatch");
         }
-        if(reinterpret_cast<T*>(dst[p])[i]!=(sum+max)/(max*2)) throw std::runtime_error("Cnr4 exact integer oracle mismatch");
       }
     }
   }
+
   if(!half) {
     const float weights2[]={0.5f,0.25f};
     const uint8_t* prev[]={src[0]},*next[]={src[6]};

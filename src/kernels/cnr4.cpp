@@ -55,10 +55,12 @@ HWY_NOINLINE void cnr4_process_frame_impl(
     const std::array<const T*, 3>* src, const std::array<const T*, 3>* ref,
     const float* temporal_weights, const std::uint8_t* table_y,
     const std::uint8_t* table_u, const std::uint8_t* table_v, T* dst_u, T* dst_v) {
-  // Every product and sum is an integer below 2^53, including 16-bit/radius-10
-  // accumulation. Binary64 SIMD therefore keeps exact integer arithmetic while
-  // supporting division on all of the generated x86 targets.
-  const hn::ScalableTag<double> d;
+  // U8 per-neighbor products fit exactly in binary32; accumulate them in I32.
+  // U16 products need binary64, including at the maximum temporal radius.
+  using Compute = std::conditional_t<sizeof(T) == 1, float, double>;
+  using Accumulator = std::conditional_t<sizeof(T) == 1, std::int32_t, double>;
+  const hn::ScalableTag<Compute> d;
+  const hn::Rebind<Accumulator, decltype(d)> da;
   const hn::Rebind<float, decltype(d)> df;
   const hn::Rebind<std::int32_t, decltype(d)> di;
   const std::size_t lanes = hn::Lanes(d);
@@ -72,6 +74,14 @@ HWY_NOINLINE void cnr4_process_frame_impl(
   const std::uint8_t* input_tables[3] = {table_y, table_u, table_v};
   for (int p = 0; p < 3; ++p)
     for (int i = 0; i < 256; ++i) tables[p][i] = input_tables[p][i];
+  auto to_float = [&](auto v) HWY_ATTR {
+    if constexpr (sizeof(T) == 1) return v;
+    else return hn::DemoteTo(df, v);
+  };
+  auto from_float = [&](auto v) HWY_ATTR {
+    if constexpr (sizeof(T) == 1) return v;
+    else return hn::PromoteTo(d, v);
+  };
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; x += static_cast<int>(lanes)) {
       const auto count = std::min(lanes, static_cast<std::size_t>(width - x));
@@ -80,30 +90,49 @@ HWY_NOINLINE void cnr4_process_frame_impl(
       };
       const auto current_u = load(curr, 1), current_v = load(curr, 2);
       const auto ry = load(curr_ref, 0), ru = load(curr_ref, 1), rv = load(curr_ref, 2);
-      auto total_u = hn::Zero(d), total_v = hn::Zero(d);
+      auto total_u = hn::Zero(da), total_v = hn::Zero(da);
       for (int i = 0; i < radius * 2; ++i) {
         const auto dy = hn::Abs(hn::Sub(ry, load(ref[i].data(), 0)));
         const auto du = hn::Abs(hn::Sub(ru, load(ref[i].data(), 1)));
         const auto dv = hn::Abs(hn::Sub(rv, load(ref[i].data(), 2)));
         auto lookup = [&](auto diff, int p) HWY_ATTR {
-          const auto idx = hn::ConvertTo(di, hn::DemoteTo(df, hn::Min(hn::Mul(diff, index_scale), hn::Set(d, 255))));
-          return hn::PromoteTo(d, hn::GatherIndex(df, tables[p].data(), idx));
+          const auto idx = hn::ConvertTo(di, to_float(hn::Min(hn::Mul(diff, index_scale), hn::Set(d, 255))));
+          return from_float(hn::GatherIndex(df, tables[p].data(), idx));
         };
         const auto wy = lookup(dy, 0);
         auto blend = [&](auto diff, auto center, int p) HWY_ATTR {
           auto weight = hn::Mul(hn::Mul(wy, lookup(diff, p)), weight_scale);
-          const auto weighted = hn::Mul(hn::DemoteTo(df, weight), hn::Set(df, temporal_weights[i]));
-          weight = hn::PromoteTo(d, weighted_round(df, weighted));
+          const auto weighted = hn::Mul(to_float(weight), hn::Set(df, temporal_weights[i]));
+          weight = from_float(weighted_round(df, weighted));
           const auto numerator = hn::Add(hn::Add(hn::Mul(weight, load(src[i].data(), p)),
                                                 hn::Mul(hn::Sub(max, weight), center)), half);
           return hn::Mul(hn::Sub(max, hn::Add(dy, diff)), hn::Floor(hn::Div(numerator, max)));
         };
-        total_u = hn::Add(total_u, blend(du, current_u, 1));
-        total_v = hn::Add(total_v, blend(dv, current_v, 2));
+        if constexpr (sizeof(T) == 1) {
+          total_u = hn::Add(total_u, hn::ConvertTo(di, blend(du, current_u, 1)));
+          total_v = hn::Add(total_v, hn::ConvertTo(di, blend(dv, current_v, 2)));
+        } else {
+          total_u = hn::Add(total_u, blend(du, current_u, 1));
+          total_v = hn::Add(total_v, blend(dv, current_v, 2));
+        }
       }
-      const auto rounding = hn::Set(d, max_value * radius);
-      weighted_store<false>(d, hn::Floor(hn::Div(hn::Add(total_u, rounding), divisor)), dst_u + y * stride_uv + x, count);
-      weighted_store<false>(d, hn::Floor(hn::Div(hn::Add(total_v, rounding), divisor)), dst_v + y * stride_uv + x, count);
+      if constexpr (sizeof(T) == 1) {
+        auto finish = [&](auto total, T* output) HWY_ATTR {
+          const auto numerator = hn::Add(total, hn::Set(di, static_cast<std::int32_t>(max_value * radius)));
+          const auto denominator = hn::Set(di, static_cast<std::int32_t>(max_value * radius * 2));
+          auto q = hn::ConvertTo(di, hn::Div(hn::ConvertTo(d, numerator), divisor));
+          // Correct the floating quotient at integer boundaries; all products fit I32.
+          q = hn::Sub(q, hn::IfThenElse(hn::Gt(hn::Mul(q, denominator), numerator), hn::Set(di, 1), hn::Zero(di)));
+          q = hn::Add(q, hn::IfThenElse(hn::Ge(hn::Sub(numerator, hn::Mul(q, denominator)), denominator), hn::Set(di, 1), hn::Zero(di)));
+          weighted_store<false>(d, hn::ConvertTo(d, q), output, count);
+        };
+        finish(total_u, dst_u + y * stride_uv + x);
+        finish(total_v, dst_v + y * stride_uv + x);
+      } else {
+        const auto rounding = hn::Set(d, max_value * radius);
+        weighted_store<false>(d, hn::Floor(hn::Div(hn::Add(total_u, rounding), divisor)), dst_u + y * stride_uv + x, count);
+        weighted_store<false>(d, hn::Floor(hn::Div(hn::Add(total_v, rounding), divisor)), dst_v + y * stride_uv + x, count);
+      }
     }
   }
 }
