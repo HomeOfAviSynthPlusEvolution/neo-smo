@@ -184,6 +184,64 @@ void check_ttempsmooth_packed(int bits, int width, bool end) {
   }
 }
 
+void check_ccd_packed(int width, bool end) {
+  constexpr int height = 5;
+  const std::size_t pitch = width * sizeof(uint16_t);
+  std::vector<std::unique_ptr<Guarded>> storage;
+  std::array<const uint8_t*, 3> src{}, ref{};
+  std::array<uint8_t*, 3> dst{};
+  for (int p = 0; p < 3; ++p) {
+    for (int kind = 0; kind < 3; ++kind) {
+      storage.push_back(std::make_unique<Guarded>(height * pitch, end));
+      auto* data = storage.back()->data;
+      if (kind == 0) src[p] = data;
+      else if (kind == 1) ref[p] = data;
+      else dst[p] = data;
+    }
+  }
+  std::vector<neo_smo::Point> points(127);
+  for (int i = 0; i < 127; ++i) points[i] = {i % 5 - 2, i % 3 - 1};
+  const float weight = 1;
+  for (int bits : {10, 16}) {
+    const int peak = (1 << bits) - 1;
+    for (int p = 0; p < 3; ++p) for (int i = 0; i < width * height; ++i) {
+      reinterpret_cast<uint16_t*>(const_cast<uint8_t*>(src[p]))[i] = uint16_t((i * 17113 + p * 113) & peak);
+      reinterpret_cast<uint16_t*>(const_cast<uint8_t*>(ref[p]))[i] = uint16_t(i % 3 == 0 ? peak : (i % 3 == 1 ? 0 : (i * 7919 + p * 211) & peak));
+    }
+    auto sample = [&](const auto& planes, int p, int x, int y) -> int64_t {
+      return reinterpret_cast<const uint16_t*>(planes[p])[reflect(y, height) * width + reflect(x, width)];
+    };
+    for (bool rgb : {false, true}) for (int count : {4, 127})
+      for (float threshold : {0.f, 1.f, 123456.f, 4294836224.f, 4294967296.f, 1.e12f}) {
+        neo_smo::process_ccd_planes(neo_smo::DataType::U16, rgb, width, height, pitch,
+            src.data(), ref.data(), dst[0], dst[1], dst[2], threshold, 0, &weight,
+            points.data(), count, 5, 1.f, bits);
+        for (int y = 0; y < height; ++y) for (int x = 0; x < width; ++x) {
+          int64_t sum[3] = {sample(src, 0, x, y), sample(src, 1, x, y), sample(src, 2, x, y)};
+          int accepted = 1;
+          for (int i = 0; i < count; ++i) {
+            const int px = x + points[i].x, py = y + points[i].y;
+            int64_t distance = 0;
+            for (int p = 0; p < 3; ++p) {
+              const auto diff = sample(ref, p, px, py) - sample(ref, p, x, y);
+              distance += diff * diff * (!rgb && p == 0 ? 4 : 1);
+            }
+            if (double(distance) < std::floor(double(threshold))) {
+              for (int p = 0; p < 3; ++p) sum[p] += sample(src, p, px, py);
+              ++accepted;
+            }
+          }
+          for (int p = rgb ? 0 : 1; p < 3; ++p) {
+            const auto expected = (2 * sum[p] + accepted) / (2 * accepted);
+            if (reinterpret_cast<const uint16_t*>(dst[p])[y * width + x] != expected)
+              throw std::runtime_error("CCD packed exact integer oracle mismatch");
+          }
+        }
+      }
+  }
+}
+
+
 int main() {
   for(auto target:hwy::SupportedAndGeneratedTargets()) {
     hwy::SetSupportedTargetsForTest(target);
@@ -193,6 +251,7 @@ int main() {
       check<uint16_t>(neo_smo::DataType::F16,width,height,end);
       check<float>(neo_smo::DataType::F32,width,height,end);
     }
+    for (bool end : {false, true}) for (int width : {17, 33, 65}) check_ccd_packed(width, end);
     for (bool end : {false, true}) for (int width : {1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127}) {
       check_ttempsmooth_packed<uint8_t>(8, width, end);
       check_ttempsmooth_packed<uint16_t>(10, width, end);

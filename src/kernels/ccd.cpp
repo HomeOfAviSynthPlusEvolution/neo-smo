@@ -124,6 +124,60 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
   store(tb, 1); store(tc, 2);
 }
 
+// Full interior blocks only. Widening products preserve all 16-bit squared
+// distances while the accumulators process twice as many pixels as binary64.
+template <bool RGB, class D>
+HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
+    const std::uint8_t* const* src, const std::uint8_t* const* ref,
+    std::uint16_t* const* dst, float threshold, const Point* points,
+    int num_points, int bits, int x, int y) {
+  const hn::Rebind<std::uint16_t, D> ds;
+  const hn::Rebind<float, D> df;
+  const hn::Repartition<std::int64_t, D> dw;
+  auto load = [&](const std::uint8_t* const* planes, int p, int px, int py) HWY_ATTR {
+    return hn::PromoteTo(d, hn::LoadU(ds, reinterpret_cast<const std::uint16_t*>(planes[p]) + py * stride + px));
+  };
+  const auto ca = load(ref, 0, x, y), cb = load(ref, 1, x, y), cc = load(ref, 2, x, y);
+  auto ta = hn::Zero(d), tb = load(src, 1, x, y), tc = load(src, 2, x, y);
+  if constexpr (RGB) ta = load(src, 0, x, y);
+  auto accepted = hn::Set(d, 1);
+  constexpr std::int64_t max_distance = 6LL * 65535 * 65535;
+  const auto cutoff = hn::Set(dw, static_cast<std::int64_t>(std::clamp(
+      std::floor(static_cast<double>(threshold)), 0.0, double(max_distance + 1))));
+  for (int p = 0; p < num_points; ++p) {
+    const int px = x + points[p].x, py = y + points[p].y;
+    const auto da = hn::Sub(load(ref, 0, px, py), ca);
+    const auto db = hn::Sub(load(ref, 1, px, py), cb);
+    const auto dc = hn::Sub(load(ref, 2, px, py), cc);
+    auto square_sum = [&](auto a, auto b, auto c) HWY_ATTR {
+      auto aa = hn::MulEven(a, a);
+      if constexpr (!RGB) aa = hn::ShiftLeft<2>(aa);
+      return hn::Add(hn::Add(aa, hn::MulEven(b, b)), hn::MulEven(c, c));
+    };
+    const auto even = square_sum(da, db, dc);
+    const auto odd = square_sum(hn::ShiftRightLanes<1>(d, da), hn::ShiftRightLanes<1>(d, db), hn::ShiftRightLanes<1>(d, dc));
+    const auto mask = hn::MaskFromVec(hn::OddEven(
+        hn::BitCast(d, hn::VecFromMask(dw, hn::Lt(odd, cutoff))),
+        hn::BitCast(d, hn::VecFromMask(dw, hn::Lt(even, cutoff)))));
+    if constexpr (RGB) ta = hn::IfThenElse(mask, hn::Add(ta, load(src, 0, px, py)), ta);
+    tb = hn::IfThenElse(mask, hn::Add(tb, load(src, 1, px, py)), tb);
+    tc = hn::IfThenElse(mask, hn::Add(tc, load(src, 2, px, py)), tc);
+    accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
+  }
+  const auto denominator = hn::Add(accepted, accepted);
+  auto store = [&](auto total, int p) HWY_ATTR {
+    const auto numerator = hn::Add(hn::Add(total, total), accepted);
+    auto result = hn::ConvertTo(d, hn::Div(hn::ConvertTo(df, numerator), hn::ConvertTo(df, denominator)));
+    const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
+    result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
+        hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
+    hn::StoreU(hn::DemoteTo(ds, hn::Min(result, hn::Set(d, (1u << bits) - 1))), ds, dst[p] + y * stride + x);
+  };
+  if constexpr (RGB) store(ta, 0);
+  store(tb, 1); store(tc, 2);
+}
+
+
 template <class T, bool Half, bool RGB>
 HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
@@ -143,6 +197,21 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   }
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+      if constexpr (wide_integer) {
+        const hn::ScalableTag<std::int32_t> di;
+        if constexpr (hn::MaxLanes(di) >= 2) {
+          const auto packed_lanes = hn::Lanes(di);
+          // At most 128 samples keep 2 * total + count exactly in FP32.
+          if (radius == 0 && num_points <= 127 &&
+              static_cast<int64_t>(x) + min_x >= 0 &&
+              static_cast<int64_t>(x) + packed_lanes + max_x <= static_cast<std::size_t>(width) &&
+              static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height) {
+            ccd_spatial_u16_block<RGB>(di, stride, src, ref, destinations, threshold, points, num_points, bits, x, y);
+            x += static_cast<int>(packed_lanes - lanes);
+            continue;
+          }
+        }
+      }
       const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
           static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
           static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;
