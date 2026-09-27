@@ -23,7 +23,7 @@ template <int Part, class D>
 HWY_INLINE auto ttempsmooth_mask_group(D /*d*/, hn::Mask<D> value) {
   constexpr int groups = sizeof(float) / sizeof(hn::TFromD<D>);
   const hn::Half<D> dh;
-  const auto half = [&] {
+  const auto half = [&]() HWY_ATTR {
     if constexpr (Part < groups / 2) return hn::LowerHalfOfMask(dh, value);
     else return hn::UpperHalfOfMask(dh, value);
   }();
@@ -64,13 +64,13 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
   const T* curr = curr_plane + static_cast<std::size_t>(y) * src_stride;
   const T* ref = curr_ref_plane + static_cast<std::size_t>(y) * ref_stride;
   T* dst = dst_plane + static_cast<std::size_t>(y) * dst_stride;
-  const auto as_float = [&](auto group) {
+  const auto as_float = [&](auto group) HWY_ATTR {
     return hn::ConvertTo(df, hn::PromoteTo(di, group));
   };
-  const auto load_group = [&](const T* row, std::size_t group) {
+  const auto load_group = [&](const T* row, std::size_t group) HWY_ATTR {
     return as_float(hn::LoadU(dg, row + group * hn::Lanes(df)));
   };
-  const auto diff = [](auto a, auto b) {
+  const auto diff = [](auto a, auto b) HWY_ATTR {
     return hn::Sub(hn::Max(a, b), hn::Min(a, b));
   };
   for (int x = 0; x < width; x += static_cast<int>(lanes)) {
@@ -100,7 +100,7 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
         if (i != 0) active = hn::And(active, hn::Le(diff(previous, neighbor), limit));
         const T* source = sources[i] + static_cast<std::size_t>(y) * src_stride + x;
         const auto weight = hn::Set(df, temporal_weights[1 + i]);
-        const auto update = [&](auto& sum, auto& weights, auto pixels, auto group_mask) {
+        const auto update = [&](auto& sum, auto& weights, auto pixels, auto group_mask) HWY_ATTR {
           const auto mask = hn::PromoteMaskTo(df, dg, group_mask);
           weights = hn::IfThenElse(mask, hn::Add(weights, weight), weights);
           sum = hn::IfThenElse(mask, hn::Add(sum, hn::Mul(pixels, weight)), sum);
@@ -114,7 +114,7 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
         previous = neighbor;
       }
     }
-    const auto finish = [&](auto c, auto sum, auto weights) {
+    const auto finish = [&](auto c, auto sum, auto weights) HWY_ATTR {
       const auto value = fp ? hn::Add(hn::Mul(c, hn::Sub(one, weights)), sum)
                             : hn::Div(sum, weights);
       // The clamped nonnegative range permits direct conversion and packing.

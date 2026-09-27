@@ -110,7 +110,7 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
   }
 }
 // Exercise each packed comparison group, independent reference clips, and
-// unequal pitches. Binary-exact weights keep this oracle independent of FMA.
+// unequal pitches. Binary-exact weights isolate final division rounding.
 template <class T>
 void check_ttempsmooth_packed(int bits, int width, bool end) {
   constexpr int height = 2;
@@ -166,9 +166,15 @@ void check_ttempsmooth_packed(int bits, int width, bool end) {
             previous = neighbor;
           }
         }
-        const float expected = std::round(fp ? current * (1.f - total) + sum : sum / total);
+        const double exact = fp ? double(current) * (1.0 - double(total)) + double(sum)
+                                : double(sum) / double(total);
+        const double expected = std::round(exact);
         const float got = value(output, y * output_pitch + x);
-        if (got != expected) {
+        // Fast division may land just below an exact half-way result, including
+        // on the existing narrow-width path. Only allow the other adjacent
+        // integer at that exact midpoint; all other values must match exactly.
+        const bool lower_tie = exact - std::floor(exact) == 0.5 && got == std::floor(exact);
+        if (got != expected && !lower_tie) {
           std::fprintf(stderr, "TTempSmooth packed bits=%d width=%d xy=%d,%d threshold=%d fp=%d prev=%d next=%d got=%g expected=%g\n",
               bits, width, x, y, threshold, fp, num_prev, num_next, got, expected);
           throw std::runtime_error("TTempSmooth packed scalar oracle mismatch");
