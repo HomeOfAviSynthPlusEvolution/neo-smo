@@ -302,23 +302,33 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
   const auto format_max = hn::Set(d, chroma ? 0.5f : 1.0f);
 
   std::vector<ComputeT> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
-  std::vector<ComputeT> b_src(static_cast<std::size_t>(width) + lanes), b_out(static_cast<std::size_t>(width) + lanes);
+  std::vector<ComputeT> b_src(IsF16 ? static_cast<std::size_t>(width) + lanes : 0),
+      b_out(IsF16 ? static_cast<std::size_t>(width) + lanes : 0);
   std::array<ComputeT*, 3> r_prev{b_prev.data() + 0 * padded_len + kRadius, b_prev.data() + 1 * padded_len + kRadius, b_prev.data() + 2 * padded_len + kRadius};
   std::array<ComputeT*, 3> r_curr{b_curr.data() + 0 * padded_len + kRadius, b_curr.data() + 1 * padded_len + kRadius, b_curr.data() + 2 * padded_len + kRadius};
   std::array<ComputeT*, 3> r_next{b_next.data() + 0 * padded_len + kRadius, b_next.data() + 1 * padded_len + kRadius, b_next.data() + 2 * padded_len + kRadius};
 
+  std::array<int, 3> cached_y{-1, -1, -1};
   for (int y = 0; y < height; ++y) {
     for (int dy = -1; dy <= 1; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      if constexpr (IsF16) {
-        fill_mirrored_row_f16(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
-        fill_mirrored_row_f16(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
-        fill_mirrored_row_f16(r_next[static_cast<std::size_t>(dy + 1)] - kRadius, nextp + my * next_stride, width, kRadius);
-      } else {
-        fill_mirrored_row(r_prev[static_cast<std::size_t>(dy + 1)] - kRadius, prevp + my * prev_stride, width, kRadius);
-        fill_mirrored_row(r_curr[static_cast<std::size_t>(dy + 1)] - kRadius, currp + my * curr_stride, width, kRadius);
-        fill_mirrored_row(r_next[static_cast<std::size_t>(dy + 1)] - kRadius, nextp + my * next_stride, width, kRadius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % 3;
+      auto* p = b_prev.data() + slot * padded_len + kRadius;
+      auto* c = b_curr.data() + slot * padded_len + kRadius;
+      auto* n = b_next.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        if constexpr (IsF16) {
+          fill_mirrored_row_f16(p - kRadius, prevp + my * prev_stride, width, kRadius);
+          fill_mirrored_row_f16(c - kRadius, currp + my * curr_stride, width, kRadius);
+          fill_mirrored_row_f16(n - kRadius, nextp + my * next_stride, width, kRadius);
+        } else {
+          fill_mirrored_row(p - kRadius, prevp + my * prev_stride, width, kRadius);
+          fill_mirrored_row(c - kRadius, currp + my * curr_stride, width, kRadius);
+          fill_mirrored_row(n - kRadius, nextp + my * next_stride, width, kRadius);
+        }
+        cached_y[slot] = static_cast<int>(my);
       }
+      r_prev[dy + 1] = p; r_curr[dy + 1] = c; r_next[dy + 1] = n;
     }
 
     if constexpr (IsF16) {
