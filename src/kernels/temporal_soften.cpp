@@ -74,8 +74,8 @@ void temporal_soften_float_impl(int diameter, float threshold, const StorageT* c
 #if HWY_HAVE_FLOAT16
           if constexpr (std::is_same_v<ComputeT, hwy::float16_t>) {
             const auto diff = hn::Abs(hn::Sub(hn::PromoteTo(df, curr), hn::PromoteTo(df, f_val)));
-            chosen = hn::DemoteTo(d, hn::IfThenElse(hn::Le(diff, hn::Set(df, threshold)),
-                                                  hn::PromoteTo(df, f_val), hn::PromoteTo(df, curr)));
+            // Compare in F32, but select the original half lanes without a conversion back.
+            chosen = hn::IfThenElse(hn::DemoteMaskTo(d, df, hn::Le(diff, hn::Set(df, threshold))), f_val, curr);
           } else
 #endif
           {
