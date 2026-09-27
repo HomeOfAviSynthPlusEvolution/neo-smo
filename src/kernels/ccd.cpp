@@ -162,6 +162,7 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
   auto load = [&](const std::uint8_t* const* planes, int p, int px, int py) HWY_ATTR {
     return hn::PromoteTo(d, hn::LoadU(ds, reinterpret_cast<const std::uint16_t*>(planes[p]) + py * stride + px));
   };
+  const bool shared_reference = src[0] == ref[0] && src[1] == ref[1] && src[2] == ref[2];
   const auto ca = load(ref, 0, x, y), cb = load(ref, 1, x, y), cc = load(ref, 2, x, y);
   auto ta = hn::Zero(d), tb = load(src, 1, x, y), tc = load(src, 2, x, y);
   if constexpr (RGB) ta = load(src, 0, x, y);
@@ -171,9 +172,10 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
       std::floor(static_cast<double>(threshold)), 0.0, double(max_distance + 1))));
   for (int p = 0; p < num_points; ++p) {
     const int px = x + points[p].x, py = y + points[p].y;
-    const auto da = hn::Sub(load(ref, 0, px, py), ca);
-    const auto db = hn::Sub(load(ref, 1, px, py), cb);
-    const auto dc = hn::Sub(load(ref, 2, px, py), cc);
+    const auto ra = load(ref, 0, px, py), rb = load(ref, 1, px, py), rc = load(ref, 2, px, py);
+    const auto da = hn::Sub(ra, ca);
+    const auto db = hn::Sub(rb, cb);
+    const auto dc = hn::Sub(rc, cc);
     auto square_sum = [&](auto a, auto b, auto c) HWY_ATTR {
       auto aa = hn::MulEven(a, a);
       if constexpr (!RGB) aa = hn::ShiftLeft<2>(aa);
@@ -184,9 +186,9 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
     const auto mask = hn::MaskFromVec(hn::OddEven(
         hn::BitCast(d, hn::VecFromMask(dw, hn::Lt(odd, cutoff))),
         hn::BitCast(d, hn::VecFromMask(dw, hn::Lt(even, cutoff)))));
-    if constexpr (RGB) ta = hn::IfThenElse(mask, hn::Add(ta, load(src, 0, px, py)), ta);
-    tb = hn::IfThenElse(mask, hn::Add(tb, load(src, 1, px, py)), tb);
-    tc = hn::IfThenElse(mask, hn::Add(tc, load(src, 2, px, py)), tc);
+    if constexpr (RGB) ta = hn::IfThenElse(mask, hn::Add(ta, shared_reference ? ra : load(src, 0, px, py)), ta);
+    tb = hn::IfThenElse(mask, hn::Add(tb, shared_reference ? rb : load(src, 1, px, py)), tb);
+    tc = hn::IfThenElse(mask, hn::Add(tc, shared_reference ? rc : load(src, 2, px, py)), tc);
     accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
   }
   const auto denominator = hn::Add(accepted, accepted);
