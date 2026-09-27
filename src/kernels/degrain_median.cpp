@@ -110,7 +110,14 @@ HWY_INLINE V limit_pixel_correction_float(D d, V old_pixel, V new_pixel, V limit
 }
 
 template <int Mode, bool NoRow, class D, class Grid, class V = hn::Vec<D>>
-HWY_NOINLINE V eval_dgm_int(D d, const Grid& prev, const Grid& curr, const Grid& next,
+// Keep native MSVC's compile-cost boundary; other compilers can keep the
+// neighborhood in registers instead of passing three grids through memory.
+#if defined(_MSC_VER) && !defined(__clang__)
+HWY_NOINLINE
+#else
+HWY_INLINE
+#endif
+V eval_dgm_int(D d, const Grid& prev, const Grid& curr, const Grid& next,
                             V limit, V pixel_max) {
   if constexpr (Mode == 0) {
     V diff = pixel_max;
