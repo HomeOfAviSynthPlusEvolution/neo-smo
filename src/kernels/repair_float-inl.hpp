@@ -6,7 +6,12 @@
 
 // Evaluate Repair mode on floating-point lanes
 template <bool IsF16, class D, class V = hn::Vec<D>>
-HWY_NOINLINE V eval_repair_float(D d, int mode, V src, const Grid3x3<D>& g, V vmin, V vmax) {
+#if defined(_MSC_VER) && !defined(__clang__)
+HWY_NOINLINE
+#else
+HWY_INLINE
+#endif
+V eval_repair_float(D d, int mode, V src, const Grid3x3<D>& g, V vmin, V vmax) {
   const V c = g.center_center;
   const V two = hn::Set(d, 2.0f);
 
@@ -321,8 +326,9 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
-  std::vector<ComputeT> src_f32(static_cast<std::size_t>(width) + kSimdPad, ComputeT(0));
-  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::vector<ComputeT> src_f32(IsF16 ? static_cast<std::size_t>(width) + kSimdPad : 0, ComputeT(0));
+  std::array<int, 3> cached_y{-1, -1, -1};
+  std::vector<ComputeT> out_f32(IsF16 ? static_cast<std::size_t>(width) + kSimdPad : 0);
 
   const float max_val = chroma ? 0.5f : 1.0f;
   const float min_val = chroma ? -0.5f : 0.0f;
@@ -334,33 +340,42 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
 
     for (int dy = -1; dy <= 1; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      if constexpr (IsF16) {
-        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + 1)] - kRadius,
-                                       repairp + my * repair_stride, width, kRadius);
-      } else {
-        fill_mirrored_row(rows[static_cast<std::size_t>(dy + 1)] - kRadius,
-                          repairp + my * repair_stride, width, kRadius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % 3;
+      auto* row = row_buffers.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        if constexpr (IsF16) {
+          fill_mirrored_row_f16(row - kRadius, repairp + my * repair_stride, width, kRadius);
+        } else {
+          fill_mirrored_row(row - kRadius, repairp + my * repair_stride, width, kRadius);
+        }
+        cached_y[slot] = static_cast<int>(my);
       }
+      rows[dy + 1] = row;
     }
 
     if constexpr (IsF16) {
       fill_mirrored_row_f16(src_f32.data(), src_row, width, 0);
-    } else {
-      std::memcpy(src_f32.data(), src_row, static_cast<std::size_t>(width) * sizeof(float));
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
-      const auto s = hn::LoadU(d, src_f32.data() + x);
+      hn::Vec<decltype(d)> s;
+      if constexpr (IsF16) {
+        s = hn::LoadU(d, src_f32.data() + x);
+      } else {
+        s = hn::LoadN(d, src_row + x, std::min(lanes, static_cast<std::size_t>(width) - x));
+      }
       const auto res = eval_repair_float<IsF16>(d, mode, s, g, vmin, vmax);
-      hn::StoreU(res, d, out_f32.data() + x);
+      if constexpr (IsF16) {
+        hn::StoreU(res, d, out_f32.data() + x);
+      } else {
+        hn::StoreN(res, d, dst_row + x, std::min(lanes, static_cast<std::size_t>(width) - x));
+      }
     }
 
     if constexpr (IsF16) {
       store_row_f16(dst_row, out_f32.data(), width);
-    } else {
-      std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }
   }
 }

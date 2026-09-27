@@ -588,7 +588,8 @@ void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, Storag
       row_buffers.data() + 1 * padded_len + kRadius,
       row_buffers.data() + 2 * padded_len + kRadius,
   };
-  std::vector<ComputeT> out_f32(static_cast<std::size_t>(width) + kSimdPad);
+  std::array<int, 3> cached_y{-1, -1, -1};
+  std::vector<ComputeT> out_f32(IsF16 ? static_cast<std::size_t>(width) + kSimdPad : 0);
 
   for (int y = 0; y < height; ++y) {
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
@@ -599,25 +600,32 @@ void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, Storag
     }
 
     for (int dy = -1; dy <= 1; ++dy) {
-      const std::size_t my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
-      if constexpr (IsF16) {
-        fill_mirrored_row_f16(rows[static_cast<std::size_t>(dy + 1)] - kRadius, srcp + my * src_stride, width,
-                                       kRadius);
-      } else {
-        fill_mirrored_row(rows[static_cast<std::size_t>(dy + 1)] - kRadius, srcp + my * src_stride, width, kRadius);
+      const auto my = mirror_index(static_cast<std::int64_t>(y) + dy, height);
+      const auto slot = my % 3;
+      auto* row = row_buffers.data() + slot * padded_len + kRadius;
+      if (cached_y[slot] != static_cast<int>(my)) {
+        if constexpr (IsF16) {
+          fill_mirrored_row_f16(row - kRadius, srcp + my * src_stride, width, kRadius);
+        } else {
+          fill_mirrored_row(row - kRadius, srcp + my * src_stride, width, kRadius);
+        }
+        cached_y[slot] = static_cast<int>(my);
       }
+      rows[dy + 1] = row;
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
       const auto res = eval_rg_float<IsF16>(d, mode, g, chroma);
-      hn::StoreU(res, d, out_f32.data() + x);
+      if constexpr (IsF16) {
+        hn::StoreU(res, d, out_f32.data() + x);
+      } else {
+        hn::StoreN(res, d, dst_row + x, std::min(lanes, static_cast<std::size_t>(width) - x));
+      }
     }
 
     if constexpr (IsF16) {
       store_row_f16(dst_row, out_f32.data(), width);
-    } else {
-      std::memcpy(dst_row, out_f32.data(), static_cast<std::size_t>(width) * sizeof(float));
     }
   }
 }
