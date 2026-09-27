@@ -48,10 +48,11 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
   }
 }
 
-template <bool IsF16, typename StorageT>
-void temporal_soften_float_impl(int diameter, float threshold, const StorageT* const* srcp_planes,
+template <bool IsF16, typename StorageT, int FixedDiameter = 0>
+void temporal_soften_float_impl(int runtime_diameter, float threshold, const StorageT* const* srcp_planes,
                                 StorageT* dstp, int width, int height, std::size_t src_stride,
                                 std::size_t dst_stride) {
+  const int diameter = FixedDiameter ? FixedDiameter : runtime_diameter;
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<float> df;
   const hn::Rebind<ComputeT, decltype(df)> d;
@@ -124,7 +125,8 @@ void temporal_soften_float_impl(int diameter, float threshold, const StorageT* c
   }
 }
 
-void dispatch_temporal_soften_target(DataType dtype, int diameter, float threshold,
+template <int FixedDiameter>
+void temporal_soften_dispatch_impl(DataType dtype, int diameter, float threshold,
                                      const std::uint8_t* const* srcp_planes, std::uint8_t* dstp,
                                      std::size_t width, std::size_t height,
                                      std::size_t src_stride_bytes, std::size_t dst_stride_bytes) {
@@ -149,13 +151,25 @@ void dispatch_temporal_soften_target(DataType dtype, int diameter, float thresho
         diameter, th, u16_planes.data(),
         reinterpret_cast<std::uint16_t*>(dstp), w, h, src_stride_bytes / 2, dst_stride_bytes / 2);
   } else if (dtype == DataType::F16) {
-    temporal_soften_float_impl<true, std::uint16_t>(
+    temporal_soften_float_impl<true, std::uint16_t, FixedDiameter>(
         diameter, threshold, u16_planes.data(),
         reinterpret_cast<std::uint16_t*>(dstp), w, h, src_stride_bytes / 2, dst_stride_bytes / 2);
   } else if (dtype == DataType::F32) {
-    temporal_soften_float_impl<false, float>(
+    temporal_soften_float_impl<false, float, FixedDiameter>(
         diameter, threshold, f32_planes.data(),
         reinterpret_cast<float*>(dstp), w, h, src_stride_bytes / 4, dst_stride_bytes / 4);
+  }
+}
+
+void dispatch_temporal_soften_target(DataType dtype, int diameter, float threshold,
+    const std::uint8_t* const* srcp_planes, std::uint8_t* dstp,
+    std::size_t width, std::size_t height, std::size_t src_stride_bytes, std::size_t dst_stride_bytes) {
+  if (diameter == 21 && (dtype == DataType::F16 || dtype == DataType::F32)) {
+    temporal_soften_dispatch_impl<21>(dtype, diameter, threshold, srcp_planes, dstp,
+        width, height, src_stride_bytes, dst_stride_bytes);
+  } else {
+    temporal_soften_dispatch_impl<0>(dtype, diameter, threshold, srcp_planes, dstp,
+        width, height, src_stride_bytes, dst_stride_bytes);
   }
 }
 
