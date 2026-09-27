@@ -12,6 +12,7 @@ namespace neo_smo {
 namespace HWY_NAMESPACE {
 
 #include "common/grid.hpp"
+#include "common/rank_clamp.hpp"
 
 #include "common/float_arithmetic.hpp"
 #include "common/fp16_rows.hpp"
@@ -508,6 +509,15 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
 template <typename T>
 void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int height, std::size_t src_stride,
                            std::size_t dst_stride) {
+  // Sorting modes only need the unsigned sample range, not arithmetic headroom.
+#define NEO_SMO_RG_RANK(M) case M: rank_clamp_integer_plane<false, M>(srcp, srcp, dstp, width, height, src_stride, src_stride, dst_stride); return
+  switch (mode) {
+    NEO_SMO_RG_RANK(1);
+    NEO_SMO_RG_RANK(2);
+    NEO_SMO_RG_RANK(3);
+    NEO_SMO_RG_RANK(4);
+  }
+#undef NEO_SMO_RG_RANK
   constexpr int kRadius = 1;
   using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
   hn::ScalableTag<ComputeT> d;
