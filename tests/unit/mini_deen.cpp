@@ -91,6 +91,12 @@ int main() {
       hwy::SetSupportedTargetsForTest(target);
       std::printf("target %s\n", hwy::TargetName(target));
       guard_edges();
+      run(8, 65, 17, 7, 255);
+      run(16, 65, 17, 7, 255);
+      // Exercise all 227 contributions at the maximum byte value.
+      std::vector<std::uint8_t> full(65 * 17, 255), full_out(full.size());
+      mini_deen_process(full.data(), 65, full_out.data(), 65, 65, 17, 8, 7, 255);
+      check(full == full_out);
 
       for (int bits = 8; bits <= 16; ++bits)
         for (int r = 1; r <= 7; ++r)
