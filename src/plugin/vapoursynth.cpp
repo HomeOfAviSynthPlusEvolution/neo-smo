@@ -1,5 +1,7 @@
+#include "plugin/deen.hpp"
 #include "plugin/descriptors.hpp"
 #include "plugin/dct_filter.hpp"
+#include "plugin/mini_deen.hpp"
 #include "common/temporal_window.hpp"
 #include "neo_smo_version.hpp"
 #include <vapoursynth/VapourSynth4.h>
@@ -2225,4 +2227,9 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
                            cnr4_create, nullptr, plugin);
   vspapi->registerFunction("DCTFilter", "clip:vnode;factors:float[];planes:int[]:opt;", "clip:vnode;",
                            dct_filter_create, nullptr, plugin);
+  vspapi->registerFunction("Deen", "clip:vnode;mode:data:opt;rad:int:opt;thrY:float:opt;thrUV:float:opt;"
+                           "tthY:float:opt;tthUV:float:opt;min:float:opt;scd:float:opt;scenechange:int:opt;planes:int[]:opt:empty;",
+                           "clip:vnode;", deen_create, nullptr, plugin);
+  vspapi->registerFunction("MiniDeen", "clip:vnode;radius:int[]:opt:empty;threshold:int[]:opt:empty;planes:int[]:opt:empty;",
+                           "clip:vnode;", mini_deen_create, nullptr, plugin);
 }

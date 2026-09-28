@@ -10,6 +10,13 @@ option(NEO_SMO_BUILD_VAPOURSYNTH "Build the VapourSynth v4 plugin" ON)
 include(cmake/Dependencies.cmake)
 
 add_library(neo_smo_core STATIC
+  src/algorithms/mini_deen.cpp
+  src/kernels/mini_deen.cpp
+  src/algorithms/deen.cpp
+  src/kernels/deen.cpp
+  src/kernels/deen_c.cpp
+  src/kernels/deen_w.cpp
+  src/kernels/deen_a.cpp
   src/algorithms/plan.cpp
   src/algorithms/dct_filter.cpp
   src/kernels/dct_pixels.cpp
@@ -60,6 +67,16 @@ target_compile_options(neo_smo_core PRIVATE ${NEO_SMO_FP_OPTIONS})
 
 target_compile_definitions(neo_smo_core PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 
+# Deen validates finite values and bounds rounding errors before exact boundary
+# comparisons. Reassociation would invalidate those bounds and compensated sums.
+# SIMD specialization is a separate, deferred change.
+if(MSVC)
+  set_property(SOURCE src/algorithms/deen.cpp src/kernels/deen_c.cpp src/kernels/deen_w.cpp src/kernels/deen_a.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
+else()
+  set_property(SOURCE src/algorithms/deen.cpp src/kernels/deen_c.cpp src/kernels/deen_w.cpp src/kernels/deen_a.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=off)
+endif()
+
+
 # Limit expansion of the EMU128 sorting network in MSVC. Hardware SIMD targets
 # retain normal inlining and optimization.
 if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
@@ -96,7 +113,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5 dct)
+  foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5 dct deen mini_deen)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)
     target_include_directories(neo_smo_${test}_tests PRIVATE tests)
     target_link_libraries(neo_smo_${test}_tests PRIVATE neo_smo_core)
@@ -104,9 +121,17 @@ if(BUILD_TESTING)
     if(MINGW)
       target_link_options(neo_smo_${test}_tests PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
-    add_test(NAME core.${test} COMMAND "${Python3_EXECUTABLE}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_${test}_tests>")
-    set_tests_properties(core.${test} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+    if(test STREQUAL "deen")
+      foreach(mode c2d c3d w2d w3d a2d a3d)
+        add_test(NAME core.deen.${mode} COMMAND "${Python3_EXECUTABLE}"
+          "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_deen_tests>" ${mode})
+        set_tests_properties(core.deen.${mode} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+      endforeach()
+    else()
+      add_test(NAME core.${test} COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_${test}_tests>")
+      set_tests_properties(core.${test} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+    endif()
   endforeach()
   # Exercise production arithmetic, but generate expectations and check results
   # in a separate translation unit without fast-math assumptions.
@@ -142,7 +167,7 @@ if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
   endif()
   if(NEO_SMO_BUILD_VAPOURSYNTH)
     include(cmake/VapourSynth.cmake)
-    target_sources(neo_smo PRIVATE src/plugin/vapoursynth.cpp src/plugin/dct_filter.cpp)
+    target_sources(neo_smo PRIVATE src/plugin/vapoursynth.cpp src/plugin/dct_filter.cpp src/plugin/deen.cpp src/plugin/mini_deen.cpp)
     target_include_directories(neo_smo SYSTEM PRIVATE "${NEO_SMO_VS_INCLUDE}")
   endif()
   target_link_libraries(neo_smo PRIVATE neo_smo_core DualSynth::dualsynth)
@@ -150,7 +175,7 @@ if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
     target_compile_options(neo_smo PRIVATE /EHsc)
   endif()
   if(BUILD_TESTING AND NEO_SMO_BUILD_VAPOURSYNTH)
-    add_executable(neo_smo_frame_errors_tests tests/unit/frame_errors.cpp src/plugin/dct_filter.cpp)
+    add_executable(neo_smo_frame_errors_tests tests/unit/frame_errors.cpp src/plugin/dct_filter.cpp src/plugin/deen.cpp src/plugin/mini_deen.cpp)
     target_include_directories(neo_smo_frame_errors_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated" "${NEO_SMO_VS_INCLUDE}")
     target_link_libraries(neo_smo_frame_errors_tests PRIVATE neo_smo_core)
     if(MSVC)
@@ -162,6 +187,30 @@ if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
     add_test(NAME vs.frame_errors COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_frame_errors_tests>")
     set_tests_properties(vs.frame_errors PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+    add_executable(neo_smo_deen_vs_errors_tests tests/unit/deen_vs_errors.cpp)
+    target_include_directories(neo_smo_deen_vs_errors_tests PRIVATE "${NEO_SMO_VS_INCLUDE}")
+    target_link_libraries(neo_smo_deen_vs_errors_tests PRIVATE neo_smo_core)
+    if(MSVC)
+      target_compile_options(neo_smo_deen_vs_errors_tests PRIVATE /EHsc)
+    endif()
+    if(MINGW)
+      target_link_options(neo_smo_deen_vs_errors_tests PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME vs.deen.errors COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_deen_vs_errors_tests>")
+    set_tests_properties(vs.deen.errors PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+    add_executable(neo_smo_mini_deen_vs_errors_tests tests/unit/mini_deen_vs_errors.cpp)
+    target_include_directories(neo_smo_mini_deen_vs_errors_tests PRIVATE "${NEO_SMO_VS_INCLUDE}")
+    target_link_libraries(neo_smo_mini_deen_vs_errors_tests PRIVATE neo_smo_core)
+    if(MSVC)
+      target_compile_options(neo_smo_mini_deen_vs_errors_tests PRIVATE /EHsc)
+    endif()
+    if(MINGW)
+      target_link_options(neo_smo_mini_deen_vs_errors_tests PRIVATE -static -static-libgcc -static-libstdc++)
+    endif()
+    add_test(NAME vs.mini_deen.errors COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_mini_deen_vs_errors_tests>")
+    set_tests_properties(vs.mini_deen.errors PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
   endif()
   set_target_properties(neo_smo PROPERTIES
     PREFIX ""
@@ -221,6 +270,16 @@ if(BUILD_TESTING AND NEO_SMO_TEST_VAPOURSYNTH)
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/vapoursynth/smoke.py" --plugin "$<TARGET_FILE:neo_smo>")
   set_tests_properties(vs.smoke PROPERTIES LABELS "spec;vapoursynth" RUN_SERIAL TRUE TIMEOUT 90)
+  add_test(NAME vs.mini_deen COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vapoursynth/mini_deen.py" --plugin "$<TARGET_FILE:neo_smo>")
+  set_tests_properties(vs.mini_deen PROPERTIES LABELS "spec;vapoursynth" RUN_SERIAL TRUE TIMEOUT 90)
+  foreach(mode c2d c3d w2d w3d a2d a3d)
+    add_test(NAME vs.deen.${mode} COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/vapoursynth/deen.py" --plugin "$<TARGET_FILE:neo_smo>" --mode ${mode})
+    set_tests_properties(vs.deen.${mode} PROPERTIES LABELS "spec;vapoursynth" RUN_SERIAL TRUE TIMEOUT 90)
+  endforeach()
 endif()
 
 option(NEO_SMO_TEST_AVISYNTH "Run AviSynth host acceptance tests" OFF)
