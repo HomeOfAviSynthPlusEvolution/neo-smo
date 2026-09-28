@@ -26,9 +26,9 @@ core.neo_smo.TemporalSoften(clip, radius=4, threshold=None, scenechange=0,
 |---|---|
 | 0（默认） | 不检查场景属性 |
 | −1 | 使用已有属性；属性缺失时没有可用的切点 |
-| 1–254 | 调用 `misc.SCDetect`，阈值为此值 / 255；不支持 RGB 自动检测 |
+| 1–254 | 自动检测，阈值为此值 / 255；VS 调用 `misc.SCDetect`，AVS 使用内置检测；不支持 RGB 自动检测 |
 
-因此传 `scenechange=True` 等价于数值 1，会开启自动检测，而不是表示“只读取已有属性”。
+在 VapourSynth 的 Python 调用中，传 `scenechange=True` 等价于数值 1，会开启自动检测，而不是表示“只读取已有属性”。
 
 ```python
 out = core.neo_smo.TemporalMedian(src, radius=2)
@@ -39,3 +39,26 @@ out = core.neo_smo.TemporalMedian(sc, radius=2, scenechange=True)
 ```
 
 参见[时域原理](../../knowledge/zh-CN/temporal.md)和[边界行为表](../../knowledge/zh-CN/shared/temporal-boundaries.md)。
+
+## AviSynth
+
+```text
+neo_smo_TemporalMedian(clip, radius=1, planes=Undefined(), scenechange=false)
+neo_smo_TemporalSoften(clip, radius=4, threshold=Undefined(), scenechange=0, scalep=false, planes=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+TemporalMedian 的 `scenechange` 是布尔值：`true` 只读取已有整数 `_SceneChangePrev` / `_SceneChangeNext` 属性，不会自动检测。TemporalSoften 的同名参数是整数：0 关闭，−1 读已有属性，1–254 使用内置亮度帧差检测，阈值为参数 /255，无需 misc 插件。AVS 不接受用布尔值替代这个整数参数。自动检测只支持至少两帧的 Gray/YUV。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_TemporalMedian(src, radius=2, scenechange=false)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_TemporalSoften(src, radius=3, threshold=[4, 6, 6], scenechange=12, scalep=true)
+```

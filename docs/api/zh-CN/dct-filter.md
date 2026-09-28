@@ -6,7 +6,7 @@
 core.neo_smo.DCTFilter(clip, factors, planes=None)
 ```
 
-对每个选中平面的固定 8×8 块执行 DCT、频率系数加权和逆变换。它只处理当前帧，不做运动补偿或时间平均。支持固定格式、固定尺寸的 Gray、RGB、YUV，采样类型为 8–16 位整数、F16、F32。输出格式、尺寸和帧属性保持不变。
+对每个选中平面的固定 8×8 块执行 DCT、频率系数加权和逆变换。它只处理当前帧，不做运动补偿或时间平均。支持固定格式、固定尺寸的 Gray、RGB、YUV，采样类型为 8–16 位整数、F16、F32（F16 仅限 VapourSynth）。输出格式、尺寸和帧属性保持不变。
 
 ## 参数
 
@@ -44,3 +44,19 @@ blocks = core.neo_smo.DCTFilter(
 ```
 
 原理与数值约定见[块 DCT 与频率加权](../../knowledge/zh-CN/dct-filter.md)。
+
+## AviSynth
+
+```text
+neo_smo_DCTFilter(clip, factors, planes=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+`factors` 必须为恰好八项的数值数组，不自动重复单值；AVS 示例须显式列出八项，不能照抄 Python 的 `[1] * 8` 写法。`planes` 接受整数或数组。AVS 支持平面整数与 F32，不支持 F16；DCT 仍以 F32 计算。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_DCTFilter(src, factors=[1, 0.9, 0.7, 0.5, 0.3, 0.2, 0.1, 0], planes=[0])
+```

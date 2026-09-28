@@ -32,7 +32,7 @@ core.neo_smo.Cnr4(clip, mode="oxx", radius=2, sense=[35, 47, 47],
 
 wmode 0 等权，1 使用平方根距离权重，2 使用正弦距离权重，3 按距离倒数衰减。它与 mode 的曲线选择是独立参数。
 
-默认 scenechange=True 要求主片具有 `_SceneChangePrev` 和 `_SceneChangeNext` 属性。没有预先检测时可显式关闭；开启时按主片属性判定窗口边界，并用中心替代被排除的样本。片头片尾重复边界帧。参考亮度需与色度尺寸对齐，内部使用 `std`/`resize` 构造参考路径。
+默认 scenechange=True 要求主片具有 `_SceneChangePrev` 和 `_SceneChangeNext` 属性。没有预先检测时可显式关闭；开启时按主片属性判定窗口边界，并用中心替代被排除的样本。片头片尾重复边界帧。参考亮度需与色度尺寸对齐，VapourSynth 使用 `std`/`resize` 构造参考路径；AVS 使用内置缩放。
 
 ```python
 out = core.neo_smo.Cnr4(src, scenechange=False)
@@ -42,3 +42,19 @@ out = core.neo_smo.Cnr4(sc)
 ```
 
 曲线与参考片作用见[色彩去噪原理](../../knowledge/zh-CN/chroma.md)。
+
+## AviSynth
+
+```text
+neo_smo_Cnr4(clip, mode="oxx", radius=2, sense=[35, 47, 47], str=[192, 255, 255], pow=[1.0, 1.0, 1.0], tmode=0, wmode=0, scenechange=true, ref=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+仅接受平面整数 YUV。`mode` 是三个字符的字符串，`sense`、`str`、`pow` 各须恰好三项，不能以单值代替三项。默认 `scenechange=true` 只读取主片已有的场景属性；没有属性时应如示例关闭，或先准备 `_SceneChangePrev` / `_SceneChangeNext`。AVS 使用 `ExtractY` / `BilinearResize` 对齐主片和参考片亮度，缩放取整差异可能影响输出。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Cnr4(src, mode="oxx", sense=[35, 47, 47], str=[192, 255, 255], pow=[1.0, 1.0, 1.0], scenechange=false)
+```

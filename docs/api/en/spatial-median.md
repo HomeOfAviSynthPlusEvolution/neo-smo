@@ -30,3 +30,33 @@ out = core.neo_smo.SmartMedian(src, radius=[1], threshold=[50], scalep=True)
 ```
 
 See [Spatial order statistics and clamping](../../knowledge/en/spatial.md) for the algorithms and worked examples.
+
+## AviSynth
+
+```text
+neo_smo_Median(clip, radius=[1], planes=Undefined())
+neo_smo_InterQuartileMean(clip, radius=[1], planes=Undefined())
+neo_smo_SmartMedian(clip, radius=[1], threshold=Undefined(), scalep=false, planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`radius`, `threshold`, and `planes` accept numeric arrays or scalars. SmartMedian takes a boolean `scalep`; omitting `threshold` retains the radius-dependent internal default.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Median(src, radius=[1], planes=[0])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_InterQuartileMean(src, radius=[2])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_SmartMedian(src, radius=[1], threshold=[50], scalep=true)
+```

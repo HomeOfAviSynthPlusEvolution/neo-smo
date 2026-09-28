@@ -32,3 +32,19 @@ out = core.neo_smo.RemoveGrain(src, mode=[2, 0, 0])
 ```
 
 See [Spatial order statistics and clamping](../../knowledge/en/spatial.md) for formulas and direction selection.
+
+## AviSynth
+
+```text
+neo_smo_RemoveGrain(clip, mode)
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`mode` is required and accepts an integer or array; short arrays repeat their last element. There are no `planes` or `y/u/v` arguments. Use mode 0 to preserve a plane.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_RemoveGrain(src, mode=[2, 0, 0])
+```

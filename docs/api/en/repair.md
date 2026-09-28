@@ -29,3 +29,20 @@ out = core.neo_smo.Repair(filtered, src, mode=[1])
 ```
 
 This example limits the filtered result's deviation from the original clip; the reference is not simply another layer blended into the output. See [Spatial order statistics and clamping](../../knowledge/en/spatial.md).
+
+## AviSynth
+
+```text
+neo_smo_Repair(clip, repairclip, mode)
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`repairclip` is required and must match the source format and dimensions. `mode` is a required integer or array. The reference uses the same frame number without automatic temporal alignment. There is no `planes` argument; mode 0 copies that source plane.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+filtered = neo_smo_RemoveGrain(src, mode=[2])
+return neo_smo_Repair(filtered, src, mode=[1])
+```

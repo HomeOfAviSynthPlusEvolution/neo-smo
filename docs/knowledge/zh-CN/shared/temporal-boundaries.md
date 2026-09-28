@@ -32,3 +32,5 @@ TTempSmooth 在有 pfclip 时使用该引导路径的场景属性。Cnr4 的场�
 TemporalMedian/Soften/TTempSmooth 会根据切点限制候选时间范围；Cnr4 保持窗口结构，将被边界判定排除的样本替换为中心。不同窗口形状与替代方式会造成输出差异，不能将这些选项视为同一个通用布尔开关。
 
 RGB 不能直接走 TemporalSoften/TTempSmooth 的自动 SCDetect 路径。若要在 RGB 上使用已有属性，应先在合适的检测素材上生成并正确传递场景属性，再选读取模式。
+
+自动检测在 VapourSynth 中调用 `misc.SCDetect`；AviSynth+ 内置按亮度平面归一化平均绝对帧差的检测，使用相同阈值单位和属性名。自动检测要求至少两帧，RGB 仍需外部提供场景属性。

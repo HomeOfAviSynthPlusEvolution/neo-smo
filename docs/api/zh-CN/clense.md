@@ -26,3 +26,33 @@ out = core.neo_smo.ForwardClense(src)
 ```
 
 公式见[时域去噪与修复](../../knowledge/zh-CN/temporal.md)。
+
+## AviSynth
+
+```text
+neo_smo_Clense(clip, previous=Undefined(), next=Undefined(), planes=Undefined())
+neo_smo_ForwardClense(clip, planes=Undefined())
+neo_smo_BackwardClense(clip, planes=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+Clense 的 `previous`、`next` 接受剪辑，省略时各自使用主片；内部读取的是 n−1 / n+1，调用方不应额外偏移。三者的 `planes` 接受整数或数组，均不读取场景切换属性。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Clense(src, planes=[0])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_ForwardClense(src)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_BackwardClense(src)
+```

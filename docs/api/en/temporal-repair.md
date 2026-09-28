@@ -26,3 +26,20 @@ out = core.neo_smo.TemporalRepair(filtered, src, mode=[0], planes=[0])
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md).
+
+## AviSynth
+
+```text
+neo_smo_TemporalRepair(clip, repairclip, mode=[0], planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`repairclip` is required; its previous, current, and next frames are requested internally. `mode=0` still repairs pixels; use `planes` to select which planes to process. The reference must match the source format and dimensions and provide the requested frames.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+filtered = neo_smo_Median(src, radius=[1])
+return neo_smo_TemporalRepair(filtered, src, mode=[0], planes=[0])
+```

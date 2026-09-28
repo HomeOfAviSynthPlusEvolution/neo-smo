@@ -32,7 +32,7 @@ Accepts only 8–16-bit integer YUV. Only U/V are modified; Y retains the main c
 
 wmode 0 uses equal weights; 1 uses square-root distance weights; 2 uses sine distance weights; 3 uses inverse-distance decay. This is independent of the curve selected by mode.
 
-The default `scenechange=True` requires `_SceneChangePrev` and `_SceneChangeNext` properties on the main clip. Disable it explicitly if no scene detection has been performed. When enabled, main-clip properties determine the window boundaries, and excluded samples are replaced by the center. Clip boundaries repeat the first or last frame. Reference luma must be aligned to chroma dimensions; the reference path is constructed using `std`/`resize`.
+The default `scenechange=True` requires `_SceneChangePrev` and `_SceneChangeNext` properties on the main clip. Disable it explicitly if no scene detection has been performed. When enabled, main-clip properties determine the window boundaries, and excluded samples are replaced by the center. Clip boundaries repeat the first or last frame. Reference luma must be aligned to chroma dimensions; VapourSynth uses `std`/`resize`, while AviSynth uses its built-in resizer.
 
 ```python
 out = core.neo_smo.Cnr4(src, scenechange=False)
@@ -42,3 +42,19 @@ out = core.neo_smo.Cnr4(sc)
 ```
 
 See [Color denoising](../../knowledge/en/chroma.md) for the curves and the role of the reference clip.
+
+## AviSynth
+
+```text
+neo_smo_Cnr4(clip, mode="oxx", radius=2, sense=[35, 47, 47], str=[192, 255, 255], pow=[1.0, 1.0, 1.0], tmode=0, wmode=0, scenechange=true, ref=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+Only planar integer YUV is accepted. `mode` is a three-character string; `sense`, `str`, and `pow` each require exactly three elements, not a scalar substitute. The default `scenechange=true` only reads existing source properties. Disable it as shown when properties are absent, or first supply `_SceneChangePrev` / `_SceneChangeNext`. AVS aligns source and reference luma with `ExtractY` / `BilinearResize`; resizer rounding can affect output.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Cnr4(src, mode="oxx", sense=[35, 47, 47], str=[192, 255, 255], pow=[1.0, 1.0, 1.0], scenechange=false)
+```

@@ -6,7 +6,7 @@
 core.neo_smo.DCTFilter(clip, factors, planes=None)
 ```
 
-Applies a DCT, frequency-coefficient weighting, and an inverse transform to fixed 8×8 blocks in each selected plane. It operates on the current frame only, without motion compensation or temporal averaging. Supports constant-format, constant-size Gray, RGB, and YUV with 8–16-bit integer, F16, or F32 samples. Output retains the input format, dimensions, and frame properties.
+Applies a DCT, frequency-coefficient weighting, and an inverse transform to fixed 8×8 blocks in each selected plane. It operates on the current frame only, without motion compensation or temporal averaging. Supports constant-format, constant-size Gray, RGB, and YUV with 8–16-bit integer, F16, or F32 samples (F16 is available only in VapourSynth). Output retains the input format, dimensions, and frame properties.
 
 ## Parameters
 
@@ -44,3 +44,19 @@ blocks = core.neo_smo.DCTFilter(
 ```
 
 See [Block DCT and frequency weighting](../../knowledge/en/dct-filter.md) for the algorithm and numerical conventions.
+
+## AviSynth
+
+```text
+neo_smo_DCTFilter(clip, factors, planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`factors` must contain exactly eight numbers; scalars are not repeated. List all eight values explicitly in AVS rather than copying Python syntax such as `[1] * 8`. `planes` accepts an integer or array. AVS supports planar integer and F32 input, not F16; DCT computation remains F32.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_DCTFilter(src, factors=[1, 0.9, 0.7, 0.5, 0.3, 0.2, 0.1, 0], planes=[0])
+```

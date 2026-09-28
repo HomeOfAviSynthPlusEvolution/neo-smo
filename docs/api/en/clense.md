@@ -26,3 +26,33 @@ out = core.neo_smo.ForwardClense(src)
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md) for the formulas.
+
+## AviSynth
+
+```text
+neo_smo_Clense(clip, previous=Undefined(), next=Undefined(), planes=Undefined())
+neo_smo_ForwardClense(clip, planes=Undefined())
+neo_smo_BackwardClense(clip, planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+Clense accepts clips for `previous` and `next`, each defaulting to the source. The internal requests already use n−1 / n+1; do not shift the reference again. All three accept an integer or array for `planes` and do not read scene-change properties.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Clense(src, planes=[0])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_ForwardClense(src)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_BackwardClense(src)
+```

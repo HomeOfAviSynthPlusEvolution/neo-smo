@@ -22,7 +22,7 @@ Accepts Gray/RGB/YUV with 8–16-bit integer or F32 samples. **F16 is not suppor
 
 Short thresh/mdiff arrays repeat their last element. There is no `scalep` parameter: these values always use their specified 8-bit scale. `pfclip` must match the main clip's format and dimensions and be temporally aligned with it.
 
-`scthresh>0` invokes `misc.SCDetect` with threshold `scthresh/100`, detecting on the reference clip when pfclip is supplied. RGB does not support this automatic detection path. Zero disables scene checks completely. Negative values read existing scene properties; use −1. Missing properties supply no cut point in this mode. The default 12.0 therefore requires the misc plugin providing SCDetect.
+In VapourSynth, `scthresh>0` invokes `misc.SCDetect` with threshold `scthresh/100`, detecting on the reference clip when pfclip is supplied. RGB does not support this automatic detection path. Zero disables scene checks completely. Negative values read existing scene properties; use −1. Missing properties supply no cut point in this mode. In VapourSynth, the default 12.0 therefore requires the misc plugin providing SCDetect. AviSynth+ includes equivalent detection without an additional plugin.
 
 `fp=True` assigns unused normalized weight to the center pixel. `False` renormalizes using the weight actually accumulated. This changes filter behavior; it is not a speed preset.
 
@@ -37,3 +37,20 @@ out = core.neo_smo.TTempSmooth(src, pfclip=guide, scthresh=0)
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md).
+
+## AviSynth
+
+```text
+neo_smo_TTempSmooth(clip, maxr=3, thresh=[4, 5, 5], mdiff=[2, 3, 3], strength=2, scthresh=12.0, fp=true, pfclip=Undefined(), planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`thresh`, `mdiff`, and `planes` accept integer arrays or scalars; `fp` takes a boolean and `pfclip` takes a clip. The default `scthresh=12.0` uses built-in detection on `pfclip` when supplied, without the misc plugin. For RGB, use 0 to disable detection or −1 to read previously supplied properties. F16 is also unsupported on AVS.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+guide = neo_smo_Median(src, radius=[1])
+return neo_smo_TTempSmooth(src, pfclip=guide, scthresh=12.0, fp=true)
+```

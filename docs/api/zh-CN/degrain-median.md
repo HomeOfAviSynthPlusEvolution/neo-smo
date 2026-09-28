@@ -28,3 +28,19 @@ out = core.neo_smo.DegrainMedian(src, limit=[4, 0, 0], mode=[1], scalep=True)
 ```
 
 模式代价和方向解释见[时域去噪与修复](../../knowledge/zh-CN/temporal.md)。
+
+## AviSynth
+
+```text
+neo_smo_DegrainMedian(clip, limit=Undefined(), mode=[1], interlaced=false, norow=false, scalep=false)
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+`limit`、`mode` 接受数值数组或单值，`interlaced`、`norow`、`scalep` 接受布尔值。没有 `planes` 参数；下例以非零亮度 limit、零色度 limit 仅处理亮度。省略 limit 仍使用原生数值 4。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_DegrainMedian(src, limit=[4, 0, 0], mode=[1], interlaced=false, norow=false, scalep=true)
+```

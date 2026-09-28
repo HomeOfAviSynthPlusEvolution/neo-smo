@@ -22,7 +22,7 @@ core.neo_smo.TTempSmooth(clip, maxr=3, thresh=[4, 5, 5], mdiff=[2, 3, 3],
 
 thresh/mdiff 的短数组重复最后一项；没有 `scalep` 参数，始终使用其规定的 8 位标度。`pfclip` 须匹配主片格式和尺寸，并与主片时间对齐。
 
-`scthresh>0` 自动调用 `misc.SCDetect`，其阈值为 `scthresh/100`，有 pfclip 时在参考片上检测；RGB 不支持这条自动检测路径。0 完全关闭场景检查；负值读取已有场景属性，推荐写 −1，属性缺失时不会得到切点。默认值 12.0 因而需要安装提供 SCDetect 的 misc 插件。
+在 VapourSynth 中，`scthresh>0` 自动调用 `misc.SCDetect`，其阈值为 `scthresh/100`，有 pfclip 时在参考片上检测；RGB 不支持这条自动检测路径。0 完全关闭场景检查；负值读取已有场景属性，推荐写 −1，属性缺失时不会得到切点。在 VapourSynth 中，默认值 12.0 因而需要安装提供 SCDetect 的 misc 插件。AviSynth+ 内置同类检测，无需额外插件。
 
 `fp=True` 将没有使用的归一化权重补到中心像素；`False` 按实际累加权重重新归一化。它改变滤镜行为，不是速度预设。
 
@@ -37,3 +37,20 @@ out = core.neo_smo.TTempSmooth(src, pfclip=guide, scthresh=0)
 ```
 
 原理见[时域去噪与修复](../../knowledge/zh-CN/temporal.md)。
+
+## AviSynth
+
+```text
+neo_smo_TTempSmooth(clip, maxr=3, thresh=[4, 5, 5], mdiff=[2, 3, 3], strength=2, scthresh=12.0, fp=true, pfclip=Undefined(), planes=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+`thresh`、`mdiff`、`planes` 接受整数数组或单值，`fp` 接受布尔值，`pfclip` 接受剪辑。默认 `scthresh=12.0` 使用内置检测；有 `pfclip` 时检测参考片，无需 misc 插件。RGB 须设为 0 关闭，或设为 −1 读取预先准备的属性。AVS 同样不接受 F16。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+guide = neo_smo_Median(src, radius=[1])
+return neo_smo_TTempSmooth(src, pfclip=guide, scthresh=12.0, fp=true)
+```

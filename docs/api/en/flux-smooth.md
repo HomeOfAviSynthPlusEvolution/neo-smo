@@ -21,3 +21,26 @@ out = core.neo_smo.FluxSmoothST(src, temporal_threshold=[7],
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md) for how its denominator differs from TemporalSoften's.
+
+## AviSynth
+
+```text
+neo_smo_FluxSmoothT(clip, temporal_threshold=Undefined(), planes=Undefined(), scalep=false)
+neo_smo_FluxSmoothST(clip, temporal_threshold=Undefined(), spatial_threshold=Undefined(), planes=Undefined(), scalep=false)
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+Thresholds and `planes` accept numeric arrays or scalars; `scalep` takes a boolean. Omitted thresholds use scaled defaults; explicit thresholds use native units unless scaling is enabled. Boundary copying and negative thresholds follow the rules above. Neither function has a scene-change argument.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_FluxSmoothT(src, temporal_threshold=[7], scalep=true)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_FluxSmoothST(src, temporal_threshold=[7], spatial_threshold=[5], planes=[0], scalep=true)
+```

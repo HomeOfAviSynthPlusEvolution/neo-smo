@@ -21,3 +21,26 @@ out = core.neo_smo.FluxSmoothST(src, temporal_threshold=[7],
 ```
 
 与 TemporalSoften 的分母区别见[时域原理](../../knowledge/zh-CN/temporal.md)。
+
+## AviSynth
+
+```text
+neo_smo_FluxSmoothT(clip, temporal_threshold=Undefined(), planes=Undefined(), scalep=false)
+neo_smo_FluxSmoothST(clip, temporal_threshold=Undefined(), spatial_threshold=Undefined(), planes=Undefined(), scalep=false)
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+阈值和 `planes` 接受数值数组或单值，`scalep` 接受布尔值。省略阈值使用自动缩放的默认值；显式阈值默认按原生单位解释。首尾复制与负阈值行为同上，两者都没有场景切换参数。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_FluxSmoothT(src, temporal_threshold=[7], scalep=true)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_FluxSmoothST(src, temporal_threshold=[7], spatial_threshold=[5], planes=[0], scalep=true)
+```

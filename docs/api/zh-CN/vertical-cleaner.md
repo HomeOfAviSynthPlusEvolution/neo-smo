@@ -21,3 +21,19 @@ out = core.neo_smo.VerticalCleaner(src, mode=[1, 0, 0])
 ```
 
 模式 2 不是五点中值，见[空间排序与限幅](../../knowledge/zh-CN/spatial.md)。
+
+## AviSynth
+
+```text
+neo_smo_VerticalCleaner(clip, mode)
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+`mode` 必填，可传整数或数组。没有 `planes` 或 `y/u/v` 参数；例如 `[1, 0, 0]` 只处理 YUV 的亮度或 RGB 的 R 平面。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_VerticalCleaner(src, mode=[1, 0, 0])
+```

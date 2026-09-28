@@ -28,3 +28,19 @@ out = core.neo_smo.DegrainMedian(src, limit=[4, 0, 0], mode=[1], scalep=True)
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md) for direction selection and mode costs.
+
+## AviSynth
+
+```text
+neo_smo_DegrainMedian(clip, limit=Undefined(), mode=[1], interlaced=false, norow=false, scalep=false)
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`limit` and `mode` accept numeric arrays or scalars; `interlaced`, `norow`, and `scalep` take booleans. There is no `planes` argument. The example processes only luma by setting chroma limits to zero. Omitting `limit` still uses the native value 4.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_DegrainMedian(src, limit=[4, 0, 0], mode=[1], interlaced=false, norow=false, scalep=true)
+```

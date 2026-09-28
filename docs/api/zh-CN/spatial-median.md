@@ -30,3 +30,33 @@ out = core.neo_smo.SmartMedian(src, radius=[1], threshold=[50], scalep=True)
 ```
 
 原理与计算例子见[空间排序与限幅](../../knowledge/zh-CN/spatial.md)。
+
+## AviSynth
+
+```text
+neo_smo_Median(clip, radius=[1], planes=Undefined())
+neo_smo_InterQuartileMean(clip, radius=[1], planes=Undefined())
+neo_smo_SmartMedian(clip, radius=[1], threshold=Undefined(), scalep=false, planes=Undefined())
+```
+
+参数名称、顺序与上方共用说明一致；宿主格式、数组写法及音频/场序保留见 [API 目录](README.md#avisynth-调用与构建)。
+
+`radius`、`threshold` 和 `planes` 接受数值数组或单值。SmartMedian 的 `scalep` 使用布尔值；省略 `threshold` 仍按半径选择内部默认值。
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_Median(src, radius=[1], planes=[0])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_InterQuartileMean(src, radius=[2])
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_SmartMedian(src, radius=[1], threshold=[50], scalep=true)
+```

@@ -21,3 +21,19 @@ out = core.neo_smo.VerticalCleaner(src, mode=[1, 0, 0])
 ```
 
 Mode 2 is not a five-point median. See [Spatial order statistics and clamping](../../knowledge/en/spatial.md).
+
+## AviSynth
+
+```text
+neo_smo_VerticalCleaner(clip, mode)
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+`mode` is required and accepts an integer or array. There are no `planes` or `y/u/v` arguments; `[1, 0, 0]` processes only Y in YUV or R in RGB.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_VerticalCleaner(src, mode=[1, 0, 0])
+```

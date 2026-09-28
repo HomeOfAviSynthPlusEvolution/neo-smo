@@ -32,3 +32,5 @@ When pfclip is supplied, TTempSmooth uses scene properties from that guide path.
 TemporalMedian, TemporalSoften, and TTempSmooth restrict the candidate temporal range at cuts. Cnr4 keeps the window structure and replaces samples excluded by scene boundaries with the center. Different window shapes and replacement rules produce different output; these options are not interchangeable versions of one Boolean switch.
 
 RGB cannot directly use TemporalSoften/TTempSmooth's automatic SCDetect path. To use existing properties on RGB, first detect scenes on suitable material, transfer the properties correctly, then select the mode that reads them.
+
+Automatic detection invokes `misc.SCDetect` in VapourSynth. AviSynth+ includes normalized mean absolute luma difference detection with the same threshold units and property names. Automatic detection requires at least two frames; RGB still requires externally supplied scene properties.

@@ -26,9 +26,9 @@ A neighboring frame's sample is used if its absolute difference from the center 
 |---|---|
 | 0 (default) | Do not check scene properties |
 | −1 | Use existing properties; missing properties provide no usable cut point |
-| 1–254 | Invoke `misc.SCDetect` with this value / 255 as its threshold; automatic detection is unsupported for RGB |
+| 1–254 | Detect with threshold value / 255: VS uses `misc.SCDetect`, AVS uses built-in detection; RGB is unsupported |
 
-Thus `scenechange=True` equals numeric 1 and enables automatic detection; it does not mean "read existing properties only."
+In VapourSynth Python calls, `scenechange=True` equals numeric 1 and enables automatic detection; it does not mean "read existing properties only." AviSynth requires an integer for this argument.
 
 ```python
 out = core.neo_smo.TemporalMedian(src, radius=2)
@@ -39,3 +39,26 @@ out = core.neo_smo.TemporalMedian(sc, radius=2, scenechange=True)
 ```
 
 See [Temporal denoising and repair](../../knowledge/en/temporal.md) and the [boundary behavior tables](../../knowledge/en/shared/temporal-boundaries.md).
+
+## AviSynth
+
+```text
+neo_smo_TemporalMedian(clip, radius=1, planes=Undefined(), scenechange=false)
+neo_smo_TemporalSoften(clip, radius=4, threshold=Undefined(), scenechange=0, scalep=false, planes=Undefined())
+```
+
+Parameter names and order follow the shared description above. See the [API index](README.md#avisynth-calls-and-builds) for host formats, array syntax, and audio/parity preservation.
+
+TemporalMedian takes a boolean `scenechange`: `true` reads existing integer `_SceneChangePrev` / `_SceneChangeNext` properties without automatic detection. TemporalSoften instead takes an integer: 0 disables checks, −1 reads existing properties, and 1–254 enables built-in luma difference detection at value /255 without the misc plugin. AVS does not accept a boolean in place of this integer argument. Automatic detection requires Gray/YUV with at least two frames.
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_TemporalMedian(src, radius=2, scenechange=false)
+```
+
+```avs
+LoadPlugin("/path/to/neo-smo.dll")
+src = BlankClip(width=640, height=480, length=24, pixel_type="YUV420P10")
+return neo_smo_TemporalSoften(src, radius=3, threshold=[4, 6, 6], scenechange=12, scalep=true)
+```
