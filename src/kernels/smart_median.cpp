@@ -49,7 +49,7 @@ HWY_INLINE V smart_median_result(D d, V center, V median_left, V median_right, V
 }
 
 template <int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
+HWY_INLINE V eval_smart_median_int32(D d, V center, VectorArrayView<V> values, V threshold) {
   constexpr int kSide = 2 * Radius + 1;
   constexpr int kCount = kSide * kSide;
   constexpr int kEvenCount = kCount - 1;
@@ -79,7 +79,8 @@ HWY_INLINE V eval_smart_median_int32(D d, V center, V* values, V threshold) {
 }
 
 template <int Radius, class D>
-HWY_INLINE hn::Vec<D> eval_smart_median_u8(D d, hn::Vec<D> center, hn::Vec<D>* values, hn::Vec<D> threshold) {
+HWY_INLINE hn::Vec<D> eval_smart_median_u8(D d, hn::Vec<D> center, VectorArrayView<hn::Vec<D>> values,
+                                           hn::Vec<D> threshold) {
   constexpr int count = (2 * Radius + 1) * (2 * Radius + 1) - 1;
   if constexpr (Radius == 1) median8_even(d, values);
   else if constexpr (Radius == 2) median24_even(d, values);
@@ -102,7 +103,7 @@ HWY_INLINE hn::Vec<D> eval_smart_median_u8(D d, hn::Vec<D> center, hn::Vec<D>* v
 }
 
 template <bool IsF16, int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_smart_median_float(D d, V center, V* values, V threshold) {
+HWY_INLINE V eval_smart_median_float(D d, V center, VectorArrayView<V> values, V threshold) {
   constexpr int kSide = 2 * Radius + 1;
   constexpr int kCount = kSide * kSide;
   constexpr int kEvenCount = kCount - 1;
@@ -188,7 +189,7 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> values[kEvenCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), values, kEvenCount);
       hn::Vec<decltype(d)> center{};
       int flat_idx = 0;
       int val_idx = 0;
@@ -255,7 +256,7 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
 
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> values[kEvenCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), values, kEvenCount);
       hn::Vec<decltype(d)> center{};
       int flat_idx = 0;
       int val_idx = 0;

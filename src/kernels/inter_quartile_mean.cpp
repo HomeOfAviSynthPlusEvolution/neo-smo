@@ -17,7 +17,7 @@ namespace HWY_NAMESPACE {
 #include "common/fp16_rows.hpp"
 
 template <int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_iqm_int(D d, V* vals) {
+HWY_INLINE V eval_iqm_int(D d, VectorArrayView<V> vals) {
   const V three = hn::Set(d, 3);
   const V two = hn::Set(d, 2);
 
@@ -67,7 +67,7 @@ HWY_INLINE V eval_iqm_int(D d, V* vals) {
 }
 
 template <bool IsF16, int Radius, class D, class V = hn::Vec<D>>
-HWY_INLINE V eval_iqm_float(D d, V* vals) {
+HWY_INLINE V eval_iqm_float(D d, VectorArrayView<V> vals) {
   const V three_quarters = float_set(d, 0.75f);
   if constexpr (Radius == 1) {
     sort9(d, vals);
@@ -128,7 +128,7 @@ void iqm_native_int(D d, const T* srcp, T* dstp,
       rows[dy + Radius] = row;
     }
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<D> values[count];
+      NEO_SMO_VECTOR_ARRAY(D, values, count);
       for (int ky = 0; ky < side; ++ky) for (int kx = -Radius; kx <= Radius; ++kx)
         values[ky * side + kx + Radius] = hn::LoadU(d, rows[ky] + x + kx);
       if constexpr (Radius == 1) sort9(d, values);
@@ -202,7 +202,7 @@ void iqm_int_impl(const T* srcp, T* dstp, int width, int height, std::size_t src
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> vals[kCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), vals, kCount);
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
         const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
@@ -260,7 +260,7 @@ void iqm_float_impl(const StorageT* srcp, StorageT* dstp, int width, int height,
 
     StorageT* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> vals[kCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), vals, kCount);
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
         const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];

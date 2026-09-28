@@ -46,7 +46,7 @@ HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_m
     case 2:
     case 3:
     case 4: {
-      V a[8];
+      NEO_SMO_VECTOR_ARRAY(D, a, 8);
       g.sort_without_center(d, a);
       const int lo = mode - 1;
       const int hi = 8 - mode;
@@ -58,10 +58,10 @@ HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_m
     case 8:
     case 9: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V clamp1 = hn::Clamp(c, s.min1, s.max1);
-      const V clamp2 = hn::Clamp(c, s.min2, s.max2);
-      const V clamp3 = hn::Clamp(c, s.min3, s.max3);
-      const V clamp4 = hn::Clamp(c, s.min4, s.max4);
+      const V clamp1 = hn::Clamp(c, s.min1(), s.max1());
+      const V clamp2 = hn::Clamp(c, s.min2(), s.max2());
+      const V clamp3 = hn::Clamp(c, s.min3(), s.max3());
+      const V clamp4 = hn::Clamp(c, s.min4(), s.max4());
 
       V c1, c2, c3, c4;
       if (mode == 5) {
@@ -70,10 +70,10 @@ HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_m
         c3 = hn::AbsDiff(c, clamp3);
         c4 = hn::AbsDiff(c, clamp4);
       } else {
-        const V d1 = hn::Sub(s.max1, s.min1);
-        const V d2 = hn::Sub(s.max2, s.min2);
-        const V d3 = hn::Sub(s.max3, s.min3);
-        const V d4 = hn::Sub(s.max4, s.min4);
+        const V d1 = hn::Sub(s.max1(), s.min1());
+        const V d2 = hn::Sub(s.max2(), s.min2());
+        const V d3 = hn::Sub(s.max3(), s.min3());
+        const V d4 = hn::Sub(s.max4(), s.min4());
         if (mode == 6) {
           c1 = hn::Min(hn::Add(hn::ShiftLeft<1>(hn::AbsDiff(c, clamp1)), d1), vmax);
           c2 = hn::Min(hn::Add(hn::ShiftLeft<1>(hn::AbsDiff(c, clamp2)), d2), vmax);
@@ -164,8 +164,8 @@ HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_m
     }
     case 17: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V l = hn::Max(hn::Max(s.min1, s.min2), hn::Max(s.min3, s.min4));
-      const V u = hn::Min(hn::Min(s.max1, s.max2), hn::Min(s.max3, s.max4));
+      const V l = hn::Max(hn::Max(s.min1(), s.min2()), hn::Max(s.min3(), s.min4()));
+      const V u = hn::Min(hn::Min(s.max1(), s.max2()), hn::Min(s.max3(), s.max4()));
       return hn::Clamp(c, hn::Min(l, u), hn::Max(l, u));
     }
     case 18: {
@@ -226,41 +226,41 @@ HWY_INLINE V eval_rg_int(D d, int mode, const Grid3x3<D>& g, std::int32_t type_m
     }
     case 23: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V ld1 = hn::Sub(s.max1, s.min1);
-      const V ld2 = hn::Sub(s.max2, s.min2);
-      const V ld3 = hn::Sub(s.max3, s.min3);
-      const V ld4 = hn::Sub(s.max4, s.min4);
-      const V h1 = hn::Min(hn::Sub(c, s.max1), ld1);
-      const V h2 = hn::Min(hn::Sub(c, s.max2), ld2);
-      const V h3 = hn::Min(hn::Sub(c, s.max3), ld3);
-      const V h4 = hn::Min(hn::Sub(c, s.max4), ld4);
+      const V ld1 = hn::Sub(s.max1(), s.min1());
+      const V ld2 = hn::Sub(s.max2(), s.min2());
+      const V ld3 = hn::Sub(s.max3(), s.min3());
+      const V ld4 = hn::Sub(s.max4(), s.min4());
+      const V h1 = hn::Min(hn::Sub(c, s.max1()), ld1);
+      const V h2 = hn::Min(hn::Sub(c, s.max2()), ld2);
+      const V h3 = hn::Min(hn::Sub(c, s.max3()), ld3);
+      const V h4 = hn::Min(hn::Sub(c, s.max4()), ld4);
       const V h = hn::Max(zero, hn::Max(hn::Max(h1, h2), hn::Max(h3, h4)));
-      const V l1 = hn::Min(hn::Sub(s.min1, c), ld1);
-      const V l2 = hn::Min(hn::Sub(s.min2, c), ld2);
-      const V l3 = hn::Min(hn::Sub(s.min3, c), ld3);
-      const V l4 = hn::Min(hn::Sub(s.min4, c), ld4);
+      const V l1 = hn::Min(hn::Sub(s.min1(), c), ld1);
+      const V l2 = hn::Min(hn::Sub(s.min2(), c), ld2);
+      const V l3 = hn::Min(hn::Sub(s.min3(), c), ld3);
+      const V l4 = hn::Min(hn::Sub(s.min4(), c), ld4);
       const V l = hn::Max(zero, hn::Max(hn::Max(l1, l2), hn::Max(l3, l4)));
       return hn::Add(hn::Sub(c, h), l);
     }
     case 24: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V ld1 = hn::Sub(s.max1, s.min1);
-      const V ld2 = hn::Sub(s.max2, s.min2);
-      const V ld3 = hn::Sub(s.max3, s.min3);
-      const V ld4 = hn::Sub(s.max4, s.min4);
-      const V th1 = hn::Sub(c, s.max1);
-      const V th2 = hn::Sub(c, s.max2);
-      const V th3 = hn::Sub(c, s.max3);
-      const V th4 = hn::Sub(c, s.max4);
+      const V ld1 = hn::Sub(s.max1(), s.min1());
+      const V ld2 = hn::Sub(s.max2(), s.min2());
+      const V ld3 = hn::Sub(s.max3(), s.min3());
+      const V ld4 = hn::Sub(s.max4(), s.min4());
+      const V th1 = hn::Sub(c, s.max1());
+      const V th2 = hn::Sub(c, s.max2());
+      const V th3 = hn::Sub(c, s.max3());
+      const V th4 = hn::Sub(c, s.max4());
       const V h1 = hn::Min(th1, hn::Sub(ld1, th1));
       const V h2 = hn::Min(th2, hn::Sub(ld2, th2));
       const V h3 = hn::Min(th3, hn::Sub(ld3, th3));
       const V h4 = hn::Min(th4, hn::Sub(ld4, th4));
       const V h = hn::Max(zero, hn::Max(hn::Max(h1, h2), hn::Max(h3, h4)));
-      const V tl1 = hn::Sub(s.min1, c);
-      const V tl2 = hn::Sub(s.min2, c);
-      const V tl3 = hn::Sub(s.min3, c);
-      const V tl4 = hn::Sub(s.min4, c);
+      const V tl1 = hn::Sub(s.min1(), c);
+      const V tl2 = hn::Sub(s.min2(), c);
+      const V tl3 = hn::Sub(s.min3(), c);
+      const V tl4 = hn::Sub(s.min4(), c);
       const V l1 = hn::Min(tl1, hn::Sub(ld1, tl1));
       const V l2 = hn::Min(tl2, hn::Sub(ld2, tl2));
       const V l3 = hn::Min(tl3, hn::Sub(ld3, tl3));
@@ -294,7 +294,7 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
     case 2:
     case 3:
     case 4: {
-      V a[8];
+      NEO_SMO_VECTOR_ARRAY(D, a, 8);
       g.sort_without_center(d, a);
       const int lo = mode - 1;
       const int hi = 8 - mode;
@@ -306,10 +306,10 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
     case 8:
     case 9: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V clamp1 = hn::Clamp(c, s.min1, s.max1);
-      const V clamp2 = hn::Clamp(c, s.min2, s.max2);
-      const V clamp3 = hn::Clamp(c, s.min3, s.max3);
-      const V clamp4 = hn::Clamp(c, s.min4, s.max4);
+      const V clamp1 = hn::Clamp(c, s.min1(), s.max1());
+      const V clamp2 = hn::Clamp(c, s.min2(), s.max2());
+      const V clamp3 = hn::Clamp(c, s.min3(), s.max3());
+      const V clamp4 = hn::Clamp(c, s.min4(), s.max4());
 
       V c1, c2, c3, c4;
       if (mode == 5) {
@@ -318,10 +318,10 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
         c3 = float_abs_diff<IsF16>(d, c, clamp3);
         c4 = float_abs_diff<IsF16>(d, c, clamp4);
       } else {
-        const V d1 = float_sub<IsF16>(d, s.max1, s.min1);
-        const V d2 = float_sub<IsF16>(d, s.max2, s.min2);
-        const V d3 = float_sub<IsF16>(d, s.max3, s.min3);
-        const V d4 = float_sub<IsF16>(d, s.max4, s.min4);
+        const V d1 = float_sub<IsF16>(d, s.max1(), s.min1());
+        const V d2 = float_sub<IsF16>(d, s.max2(), s.min2());
+        const V d3 = float_sub<IsF16>(d, s.max3(), s.min3());
+        const V d4 = float_sub<IsF16>(d, s.max4(), s.min4());
         if (mode == 6) {
           c1 = hn::Min(float_add<IsF16>(d, float_mul<IsF16>(d, float_abs_diff<IsF16>(d, c, clamp1), two), d1), vmax);
           c2 = hn::Min(float_add<IsF16>(d, float_mul<IsF16>(d, float_abs_diff<IsF16>(d, c, clamp2), two), d2), vmax);
@@ -415,8 +415,8 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
     }
     case 17: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V l = hn::Max(hn::Max(s.min1, s.min2), hn::Max(s.min3, s.min4));
-      const V u = hn::Min(hn::Min(s.max1, s.max2), hn::Min(s.max3, s.max4));
+      const V l = hn::Max(hn::Max(s.min1(), s.min2()), hn::Max(s.min3(), s.min4()));
+      const V u = hn::Min(hn::Min(s.max1(), s.max2()), hn::Min(s.max3(), s.max4()));
       return hn::Clamp(c, hn::Min(l, u), hn::Max(l, u));
     }
     case 18: {
@@ -459,41 +459,41 @@ HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
     }
     case 23: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V ld1 = float_sub<IsF16>(d, s.max1, s.min1);
-      const V ld2 = float_sub<IsF16>(d, s.max2, s.min2);
-      const V ld3 = float_sub<IsF16>(d, s.max3, s.min3);
-      const V ld4 = float_sub<IsF16>(d, s.max4, s.min4);
-      const V h1 = hn::Min(float_sub<IsF16>(d, c, s.max1), ld1);
-      const V h2 = hn::Min(float_sub<IsF16>(d, c, s.max2), ld2);
-      const V h3 = hn::Min(float_sub<IsF16>(d, c, s.max3), ld3);
-      const V h4 = hn::Min(float_sub<IsF16>(d, c, s.max4), ld4);
+      const V ld1 = float_sub<IsF16>(d, s.max1(), s.min1());
+      const V ld2 = float_sub<IsF16>(d, s.max2(), s.min2());
+      const V ld3 = float_sub<IsF16>(d, s.max3(), s.min3());
+      const V ld4 = float_sub<IsF16>(d, s.max4(), s.min4());
+      const V h1 = hn::Min(float_sub<IsF16>(d, c, s.max1()), ld1);
+      const V h2 = hn::Min(float_sub<IsF16>(d, c, s.max2()), ld2);
+      const V h3 = hn::Min(float_sub<IsF16>(d, c, s.max3()), ld3);
+      const V h4 = hn::Min(float_sub<IsF16>(d, c, s.max4()), ld4);
       const V h = hn::Max(zero, hn::Max(hn::Max(h1, h2), hn::Max(h3, h4)));
-      const V l1 = hn::Min(float_sub<IsF16>(d, s.min1, c), ld1);
-      const V l2 = hn::Min(float_sub<IsF16>(d, s.min2, c), ld2);
-      const V l3 = hn::Min(float_sub<IsF16>(d, s.min3, c), ld3);
-      const V l4 = hn::Min(float_sub<IsF16>(d, s.min4, c), ld4);
+      const V l1 = hn::Min(float_sub<IsF16>(d, s.min1(), c), ld1);
+      const V l2 = hn::Min(float_sub<IsF16>(d, s.min2(), c), ld2);
+      const V l3 = hn::Min(float_sub<IsF16>(d, s.min3(), c), ld3);
+      const V l4 = hn::Min(float_sub<IsF16>(d, s.min4(), c), ld4);
       const V l = hn::Max(zero, hn::Max(hn::Max(l1, l2), hn::Max(l3, l4)));
       return float_add<IsF16>(d, float_sub<IsF16>(d, c, h), l);
     }
     case 24: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V ld1 = float_sub<IsF16>(d, s.max1, s.min1);
-      const V ld2 = float_sub<IsF16>(d, s.max2, s.min2);
-      const V ld3 = float_sub<IsF16>(d, s.max3, s.min3);
-      const V ld4 = float_sub<IsF16>(d, s.max4, s.min4);
-      const V th1 = float_sub<IsF16>(d, c, s.max1);
-      const V th2 = float_sub<IsF16>(d, c, s.max2);
-      const V th3 = float_sub<IsF16>(d, c, s.max3);
-      const V th4 = float_sub<IsF16>(d, c, s.max4);
+      const V ld1 = float_sub<IsF16>(d, s.max1(), s.min1());
+      const V ld2 = float_sub<IsF16>(d, s.max2(), s.min2());
+      const V ld3 = float_sub<IsF16>(d, s.max3(), s.min3());
+      const V ld4 = float_sub<IsF16>(d, s.max4(), s.min4());
+      const V th1 = float_sub<IsF16>(d, c, s.max1());
+      const V th2 = float_sub<IsF16>(d, c, s.max2());
+      const V th3 = float_sub<IsF16>(d, c, s.max3());
+      const V th4 = float_sub<IsF16>(d, c, s.max4());
       const V h1 = hn::Min(th1, float_sub<IsF16>(d, ld1, th1));
       const V h2 = hn::Min(th2, float_sub<IsF16>(d, ld2, th2));
       const V h3 = hn::Min(th3, float_sub<IsF16>(d, ld3, th3));
       const V h4 = hn::Min(th4, float_sub<IsF16>(d, ld4, th4));
       const V h = hn::Max(zero, hn::Max(hn::Max(h1, h2), hn::Max(h3, h4)));
-      const V tl1 = float_sub<IsF16>(d, s.min1, c);
-      const V tl2 = float_sub<IsF16>(d, s.min2, c);
-      const V tl3 = float_sub<IsF16>(d, s.min3, c);
-      const V tl4 = float_sub<IsF16>(d, s.min4, c);
+      const V tl1 = float_sub<IsF16>(d, s.min1(), c);
+      const V tl2 = float_sub<IsF16>(d, s.min2(), c);
+      const V tl3 = float_sub<IsF16>(d, s.min3(), c);
+      const V tl4 = float_sub<IsF16>(d, s.min4(), c);
       const V l1 = hn::Min(tl1, float_sub<IsF16>(d, ld1, tl1));
       const V l2 = hn::Min(tl2, float_sub<IsF16>(d, ld2, tl2));
       const V l3 = hn::Min(tl3, float_sub<IsF16>(d, ld3, tl3));
@@ -570,7 +570,7 @@ void remove_grain_int_impl(int mode, const T* srcp, T* dstp, int width, int heig
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
+      const Grid3x3<decltype(d)> g = NEO_SMO_LOAD_GRID(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
       const auto res = eval_rg_int(d, mode, g, type_max);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
                  std::min(lanes, static_cast<std::size_t>(width) - x));
@@ -621,7 +621,7 @@ void remove_grain_float_impl(int mode, bool chroma, const StorageT* srcp, Storag
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
+      const Grid3x3<decltype(d)> g = NEO_SMO_LOAD_GRID(d, rows[0], rows[1], rows[2], static_cast<std::size_t>(x));
       const auto res = eval_rg_float<IsF16>(d, mode, g, chroma);
       if constexpr (IsF16) {
         hn::StoreU(res, d, out_f32.data() + x);

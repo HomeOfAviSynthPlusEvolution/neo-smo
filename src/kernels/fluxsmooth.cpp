@@ -245,7 +245,7 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
       const auto active = std::min(lanes, static_cast<std::size_t>(width) - x);
       const auto p = hn::PromoteTo(d, hn::LoadN(ds, prevp + static_cast<std::size_t>(y) * prev_stride + x, active));
       const auto n = hn::PromoteTo(d, hn::LoadN(ds, nextp + static_cast<std::size_t>(y) * next_stride + x, active));
-      const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
+      const Grid3x3<decltype(d)> gc = NEO_SMO_LOAD_GRID(d, r_curr[0], r_curr[1], r_curr[2], x);
       const auto c = gc.center_center;
 
       const auto prevnextless = hn::And(hn::Lt(p, c), hn::Lt(n, c));
@@ -264,11 +264,15 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
       count = hn::Add(count, hn::IfThenElse(n_match, one, zero));
 
       // 8 spatial neighbors in current frame
-      const hn::Vec<decltype(d)> spatial_neighbors[8] = {
-          gc.top_left, gc.top_center, gc.top_right,
-          gc.center_left, gc.center_right,
-          gc.bottom_left, gc.bottom_center, gc.bottom_right,
-      };
+      NEO_SMO_VECTOR_ARRAY(decltype(d), spatial_neighbors, 8);
+      spatial_neighbors[0] = gc.top_left;
+      spatial_neighbors[1] = gc.top_center;
+      spatial_neighbors[2] = gc.top_right;
+      spatial_neighbors[3] = gc.center_left;
+      spatial_neighbors[4] = gc.center_right;
+      spatial_neighbors[5] = gc.bottom_left;
+      spatial_neighbors[6] = gc.bottom_center;
+      spatial_neighbors[7] = gc.bottom_right;
 
       for (int i = 0; i < 8; ++i) {
         const auto sn = spatial_neighbors[i];
@@ -349,7 +353,7 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
         p = hn::LoadN(d, prevp + static_cast<std::size_t>(y) * prev_stride + x, count_lanes);
         n = hn::LoadN(d, nextp + static_cast<std::size_t>(y) * next_stride + x, count_lanes);
       }
-      const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
+      const Grid3x3<decltype(d)> gc = NEO_SMO_LOAD_GRID(d, r_curr[0], r_curr[1], r_curr[2], x);
       const auto c = gc.center_center;
 
       const auto prevnextless = hn::And(hn::Lt(p, c), hn::Lt(n, c));
@@ -371,11 +375,15 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
       count = float_add<IsF16>(d, count, hn::IfThenElse(n_match, one, zero));
 
       // 8 spatial neighbors
-      const hn::Vec<decltype(d)> spatial_neighbors[8] = {
-          gc.top_left, gc.top_center, gc.top_right,
-          gc.center_left, gc.center_right,
-          gc.bottom_left, gc.bottom_center, gc.bottom_right,
-      };
+      NEO_SMO_VECTOR_ARRAY(decltype(d), spatial_neighbors, 8);
+      spatial_neighbors[0] = gc.top_left;
+      spatial_neighbors[1] = gc.top_center;
+      spatial_neighbors[2] = gc.top_right;
+      spatial_neighbors[3] = gc.center_left;
+      spatial_neighbors[4] = gc.center_right;
+      spatial_neighbors[5] = gc.bottom_left;
+      spatial_neighbors[6] = gc.bottom_center;
+      spatial_neighbors[7] = gc.bottom_right;
 
       for (int i = 0; i < 8; ++i) {
         const auto sn = spatial_neighbors[i];

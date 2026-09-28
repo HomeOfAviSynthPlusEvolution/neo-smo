@@ -12,6 +12,7 @@ namespace neo_smo {
 namespace HWY_NAMESPACE {
 
 #include "common/float_arithmetic.hpp"
+#include "common/vector_array.hpp"
 #include "common/fp16_rows.hpp"
 
 // Saturated subtraction and addition helpers for vectors
@@ -225,7 +226,9 @@ void temporal_repair_st_int_impl(int mode, int bits_per_sample, const T* srcp, c
 
       const auto s = hn::LoadN(d, srcp + static_cast<std::size_t>(y) * src_stride + x, count);
 
-      hn::Vec<decltype(d)> gp[9], gc[9], gn[9];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gp, 9);
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gc, 9);
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gn, 9);
       int idx = 0;
       for (int ky = 0; ky < 3; ++ky) {
         for (int kx = -1; kx <= 1; ++kx) {
@@ -345,7 +348,9 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
         s = hn::LoadN(d, srcp + static_cast<std::size_t>(y) * src_stride + x, std::min(lanes, rem));
       }
 
-      hn::Vec<decltype(d)> gp[9], gc[9], gn[9];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gp, 9);
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gc, 9);
+      NEO_SMO_VECTOR_ARRAY(decltype(d), gn, 9);
       int idx = 0;
       for (int ky = 0; ky < 3; ++ky) {
         for (int kx = -1; kx <= 1; ++kx) {

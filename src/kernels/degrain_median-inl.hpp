@@ -261,20 +261,25 @@ void degrain_median_int_impl(int bits_per_sample, T limit, bool interlaced, cons
     std::size_t x = 1;
     const auto end = static_cast<std::size_t>(width - 1);
     for (; x + lanes <= end; x += lanes) {
-      const auto gp = Grid3x3<decltype(d)>::load(d, r_prev[0], r_prev[1], r_prev[2], x);
-      const auto gc = Grid3x3<decltype(d)>::load(d, r_curr[0], r_curr[1], r_curr[2], x);
-      const auto gn = Grid3x3<decltype(d)>::load(d, r_next[0], r_next[1], r_next[2], x);
+      const Grid3x3<decltype(d)> gp = NEO_SMO_LOAD_GRID(d, r_prev[0], r_prev[1], r_prev[2], x);
+      const Grid3x3<decltype(d)> gc = NEO_SMO_LOAD_GRID(d, r_curr[0], r_curr[1], r_curr[2], x);
+      const Grid3x3<decltype(d)> gn = NEO_SMO_LOAD_GRID(d, r_next[0], r_next[1], r_next[2], x);
       hn::StoreU(eval_dgm_int<Mode, NoRow>(d, gp, gc, gn, limit_vec, pixel_max), d, dst_row + x);
     }
     if (x < end) {
       const auto count = end - x;
-      auto load_tail = [&](const auto& rows) HWY_ATTR {
-        return Grid3x3<decltype(d)>{
-            hn::LoadN(d, rows[0] + x - 1, count), hn::LoadN(d, rows[0] + x, count), hn::LoadN(d, rows[0] + x + 1, count),
-            hn::LoadN(d, rows[1] + x - 1, count), hn::LoadN(d, rows[1] + x, count), hn::LoadN(d, rows[1] + x + 1, count),
-            hn::LoadN(d, rows[2] + x - 1, count), hn::LoadN(d, rows[2] + x, count), hn::LoadN(d, rows[2] + x + 1, count)};
+      auto load_tail = [&](const auto& rows, int dy, int dx) HWY_ATTR {
+        return hn::LoadN(d, rows[dy + 1] + x + dx, count);
       };
-      const auto gp = load_tail(r_prev), gc = load_tail(r_curr), gn = load_tail(r_next);
+      const Grid3x3<decltype(d)> gp{load_tail(r_prev, -1, -1), load_tail(r_prev, -1, 0), load_tail(r_prev, -1, 1),
+                                    load_tail(r_prev, 0, -1),  load_tail(r_prev, 0, 0),  load_tail(r_prev, 0, 1),
+                                    load_tail(r_prev, 1, -1),  load_tail(r_prev, 1, 0),  load_tail(r_prev, 1, 1)};
+      const Grid3x3<decltype(d)> gc{load_tail(r_curr, -1, -1), load_tail(r_curr, -1, 0), load_tail(r_curr, -1, 1),
+                                    load_tail(r_curr, 0, -1),  load_tail(r_curr, 0, 0),  load_tail(r_curr, 0, 1),
+                                    load_tail(r_curr, 1, -1),  load_tail(r_curr, 1, 0),  load_tail(r_curr, 1, 1)};
+      const Grid3x3<decltype(d)> gn{load_tail(r_next, -1, -1), load_tail(r_next, -1, 0), load_tail(r_next, -1, 1),
+                                    load_tail(r_next, 0, -1),  load_tail(r_next, 0, 0),  load_tail(r_next, 0, 1),
+                                    load_tail(r_next, 1, -1),  load_tail(r_next, 1, 0),  load_tail(r_next, 1, 1)};
       hn::StoreN(eval_dgm_int<Mode, NoRow>(d, gp, gc, gn, limit_vec, pixel_max), d, dst_row + x, count);
     }
 
@@ -312,16 +317,25 @@ void degrain_median_float_impl(float limit, bool interlaced, bool chroma, const 
     const auto end = static_cast<std::size_t>(width - 1);
     for (std::size_t x = 1; x < end; x += lanes) {
       const auto count = std::min(lanes, end - x);
-      auto grid = [&](const StorageT* plane, std::size_t stride) HWY_ATTR {
-        auto load = [&](int dy, int dx) HWY_ATTR {
-          const auto* ptr = plane + static_cast<std::size_t>(y + dy * skip_rows) * stride + x + dx;
-          if constexpr (IsF16) return load_f16(d, ptr, count);
-          else return hn::LoadN(d, ptr, count);
-        };
-        return Grid3x3<decltype(d)>{load(-1, -1), load(-1, 0), load(-1, 1),
-            load(0, -1), load(0, 0), load(0, 1), load(1, -1), load(1, 0), load(1, 1)};
+      auto load = [&](const StorageT* plane, std::size_t stride, int dy, int dx) HWY_ATTR {
+        const auto* ptr = plane + static_cast<std::size_t>(y + dy * skip_rows) * stride + x + dx;
+        if constexpr (IsF16)
+          return load_f16(d, ptr, count);
+        else
+          return hn::LoadN(d, ptr, count);
       };
-      const auto gp = grid(prevp, prev_stride), gc = grid(currp, curr_stride), gn = grid(nextp, next_stride);
+      const Grid3x3<decltype(d)> gp{
+          load(prevp, prev_stride, -1, -1), load(prevp, prev_stride, -1, 0), load(prevp, prev_stride, -1, 1),
+          load(prevp, prev_stride, 0, -1),  load(prevp, prev_stride, 0, 0),  load(prevp, prev_stride, 0, 1),
+          load(prevp, prev_stride, 1, -1),  load(prevp, prev_stride, 1, 0),  load(prevp, prev_stride, 1, 1)};
+      const Grid3x3<decltype(d)> gc{
+          load(currp, curr_stride, -1, -1), load(currp, curr_stride, -1, 0), load(currp, curr_stride, -1, 1),
+          load(currp, curr_stride, 0, -1),  load(currp, curr_stride, 0, 0),  load(currp, curr_stride, 0, 1),
+          load(currp, curr_stride, 1, -1),  load(currp, curr_stride, 1, 0),  load(currp, curr_stride, 1, 1)};
+      const Grid3x3<decltype(d)> gn{
+          load(nextp, next_stride, -1, -1), load(nextp, next_stride, -1, 0), load(nextp, next_stride, -1, 1),
+          load(nextp, next_stride, 0, -1),  load(nextp, next_stride, 0, 0),  load(nextp, next_stride, 0, 1),
+          load(nextp, next_stride, 1, -1),  load(nextp, next_stride, 1, 0),  load(nextp, next_stride, 1, 1)};
       const auto res = eval_dgm_float<Mode, NoRow, IsF16>(d, gp, gc, gn, limit_vec, pixel_min, pixel_max);
       if constexpr (IsF16) store_f16(d, res, dst_row + x, count);
       else hn::StoreN(res, d, dst_row + x, count);

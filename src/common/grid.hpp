@@ -3,30 +3,18 @@
 
 template <class D, class V = hn::Vec<D>>
 struct Grid3x3 {
-  V top_left;
-  V top_center;
-  V top_right;
-  V center_left;
-  V center_center;
-  V center_right;
-  V bottom_left;
-  V bottom_center;
-  V bottom_right;
-
-  template <typename T>
-  static HWY_INLINE Grid3x3 load(D d, const T* row_top, const T* row_center, const T* row_bottom, std::size_t x) {
-    return Grid3x3{
-      hn::LoadU(d, row_top + x - 1),
-      hn::LoadU(d, row_top + x),
-      hn::LoadU(d, row_top + x + 1),
-      hn::LoadU(d, row_center + x - 1),
-      hn::LoadU(d, row_center + x),
-      hn::LoadU(d, row_center + x + 1),
-      hn::LoadU(d, row_bottom + x - 1),
-      hn::LoadU(d, row_bottom + x),
-      hn::LoadU(d, row_bottom + x + 1),
-    };
-  }
+  // Direct brace initialization extends loaded-vector temporaries to the grid's
+  // lifetime on scalable targets. Do not return these reference-backed grids.
+  using Member = std::conditional_t<NEO_SMO_SIZELESS, const V&, V>;
+  Member top_left;
+  Member top_center;
+  Member top_right;
+  Member center_left;
+  Member center_center;
+  Member center_right;
+  Member bottom_left;
+  Member bottom_center;
+  Member bottom_right;
 
   HWY_INLINE V min_without_center(D d) const {
     (void)d;
@@ -52,7 +40,7 @@ struct Grid3x3 {
     return hn::Max(max_without_center(d), center_center);
   }
 
-  HWY_INLINE void sort_without_center(D d, V (&out)[8]) const {
+  HWY_INLINE void sort_without_center(D d, VectorArrayView<V> out) const {
     out[0] = top_left;
     out[1] = top_center;
     out[2] = top_right;
@@ -64,7 +52,7 @@ struct Grid3x3 {
     sort8(d, out);
   }
 
-  HWY_INLINE void sort_with_center(D d, V (&out)[9]) const {
+  HWY_INLINE void sort_with_center(D d, VectorArrayView<V> out) const {
     out[0] = top_left;
     out[1] = top_center;
     out[2] = top_right;
@@ -77,11 +65,59 @@ struct Grid3x3 {
     sort9(d, out);
   }
 
+#if NEO_SMO_SIZELESS
   struct Opposites {
-    V max1, min1;
-    V max2, min2;
-    V max3, min3;
-    V max4, min4;
+    const Grid3x3* grid;
+    bool with_center;
+    HWY_INLINE V max1() const {
+      const auto value = hn::Max(grid->top_left, grid->bottom_right);
+      return with_center ? hn::Max(value, grid->center_center) : value;
+    }
+    HWY_INLINE V min1() const {
+      const auto value = hn::Min(grid->top_left, grid->bottom_right);
+      return with_center ? hn::Min(value, grid->center_center) : value;
+    }
+    HWY_INLINE V max2() const {
+      const auto value = hn::Max(grid->top_center, grid->bottom_center);
+      return with_center ? hn::Max(value, grid->center_center) : value;
+    }
+    HWY_INLINE V min2() const {
+      const auto value = hn::Min(grid->top_center, grid->bottom_center);
+      return with_center ? hn::Min(value, grid->center_center) : value;
+    }
+    HWY_INLINE V max3() const {
+      const auto value = hn::Max(grid->top_right, grid->bottom_left);
+      return with_center ? hn::Max(value, grid->center_center) : value;
+    }
+    HWY_INLINE V min3() const {
+      const auto value = hn::Min(grid->top_right, grid->bottom_left);
+      return with_center ? hn::Min(value, grid->center_center) : value;
+    }
+    HWY_INLINE V max4() const {
+      const auto value = hn::Max(grid->center_left, grid->center_right);
+      return with_center ? hn::Max(value, grid->center_center) : value;
+    }
+    HWY_INLINE V min4() const {
+      const auto value = hn::Min(grid->center_left, grid->center_right);
+      return with_center ? hn::Min(value, grid->center_center) : value;
+    }
+  };
+  HWY_INLINE Opposites min_max_opposites_without_center(D) const { return {this, false}; }
+  HWY_INLINE Opposites min_max_opposites_with_center(D) const { return {this, true}; }
+#else
+  struct Opposites {
+    V max1_, min1_;
+    V max2_, min2_;
+    V max3_, min3_;
+    V max4_, min4_;
+    HWY_INLINE V max1() const { return max1_; }
+    HWY_INLINE V min1() const { return min1_; }
+    HWY_INLINE V max2() const { return max2_; }
+    HWY_INLINE V min2() const { return min2_; }
+    HWY_INLINE V max3() const { return max3_; }
+    HWY_INLINE V min3() const { return min3_; }
+    HWY_INLINE V max4() const { return max4_; }
+    HWY_INLINE V min4() const { return min4_; }
   };
 
   HWY_INLINE Opposites min_max_opposites_without_center(D d) const {
@@ -103,4 +139,13 @@ struct Grid3x3 {
       hn::Max(hn::Max(center_left, center_right), center_center), hn::Min(hn::Min(center_left, center_right), center_center),
     };
   }
+#endif
 };
+
+// Expand at the declaration, rather than returning a reference-backed aggregate
+// from a helper: the vector temporaries must outlive all uses of the grid->
+#undef NEO_SMO_LOAD_GRID
+#define NEO_SMO_LOAD_GRID(d, top, center, bottom, x)                                                                   \
+  {hn::LoadU(d, (top) + (x) - 1),    hn::LoadU(d, (top) + (x)),    hn::LoadU(d, (top) + (x) + 1),                      \
+   hn::LoadU(d, (center) + (x) - 1), hn::LoadU(d, (center) + (x)), hn::LoadU(d, (center) + (x) + 1),                   \
+   hn::LoadU(d, (bottom) + (x) - 1), hn::LoadU(d, (bottom) + (x)), hn::LoadU(d, (bottom) + (x) + 1)}

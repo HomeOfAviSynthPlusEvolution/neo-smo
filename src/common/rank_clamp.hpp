@@ -27,7 +27,7 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
     }
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
-      const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
+      const Grid3x3<decltype(d)> g = NEO_SMO_LOAD_GRID(d, rows[0], rows[1], rows[2], x);
       auto value = g.center_center;
       if constexpr (WithCenter) value = hn::LoadN(d, src + y * src_stride + x, count);
       auto lo = hn::Zero(d), hi = hn::Zero(d);
@@ -56,17 +56,18 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
             else return hn::SaturatedAdd(hn::SaturatedAdd(delta, delta), range);
           }
         };
-        const auto c1 = pair_cost(pairs.min1, pairs.max1), c2 = pair_cost(pairs.min2, pairs.max2);
-        const auto c3 = pair_cost(pairs.min3, pairs.max3), c4 = pair_cost(pairs.min4, pairs.max4);
+        const auto c1 = pair_cost(pairs.min1(), pairs.max1()), c2 = pair_cost(pairs.min2(), pairs.max2());
+        const auto c3 = pair_cost(pairs.min3(), pairs.max3()), c4 = pair_cost(pairs.min4(), pairs.max4());
         const auto cost = hn::Min(hn::Min(c1, c2), hn::Min(c3, c4));
         // Match upstream tie priority: horizontal, vertical, diagonal 3, diagonal 1.
-        lo = pairs.min1; hi = pairs.max1;
-        lo = hn::IfThenElse(hn::Eq(cost, c3), pairs.min3, lo);
-        hi = hn::IfThenElse(hn::Eq(cost, c3), pairs.max3, hi);
-        lo = hn::IfThenElse(hn::Eq(cost, c2), pairs.min2, lo);
-        hi = hn::IfThenElse(hn::Eq(cost, c2), pairs.max2, hi);
-        lo = hn::IfThenElse(hn::Eq(cost, c4), pairs.min4, lo);
-        hi = hn::IfThenElse(hn::Eq(cost, c4), pairs.max4, hi);
+        lo = pairs.min1();
+        hi = pairs.max1();
+        lo = hn::IfThenElse(hn::Eq(cost, c3), pairs.min3(), lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c3), pairs.max3(), hi);
+        lo = hn::IfThenElse(hn::Eq(cost, c2), pairs.min2(), lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c2), pairs.max2(), hi);
+        lo = hn::IfThenElse(hn::Eq(cost, c4), pairs.min4(), lo);
+        hi = hn::IfThenElse(hn::Eq(cost, c4), pairs.max4(), hi);
         if constexpr (WithCenter && Mode >= 15) {
           lo = hn::Min(lo, g.center_center);
           hi = hn::Max(hi, g.center_center);
@@ -80,8 +81,8 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
         hi = hn::Max(hn::Max(a, b), hn::Max(c, e));
       } else if constexpr (Mode == 17) {
         const auto pairs = g.min_max_opposites_without_center(d);
-        const auto lower = hn::Max(hn::Max(pairs.min1, pairs.min2), hn::Max(pairs.min3, pairs.min4));
-        const auto upper = hn::Min(hn::Min(pairs.max1, pairs.max2), hn::Min(pairs.max3, pairs.max4));
+        const auto lower = hn::Max(hn::Max(pairs.min1(), pairs.min2()), hn::Max(pairs.min3(), pairs.min4()));
+        const auto upper = hn::Min(hn::Min(pairs.max1(), pairs.max2()), hn::Min(pairs.max3(), pairs.max4()));
         lo = hn::Min(lower, upper);
         hi = hn::Max(lower, upper);
         if constexpr (WithCenter) {
@@ -90,9 +91,16 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
         }
       } else if constexpr (Mode >= 19) {
         const auto center = Mode >= 22 ? value : g.center_center;
-        const hn::Vec<decltype(d)> neighbors[8] = {g.top_left, g.top_center, g.top_right,
-            g.center_left, g.center_right, g.bottom_left, g.bottom_center, g.bottom_right};
-        hn::Vec<decltype(d)> diff[8];
+        NEO_SMO_VECTOR_ARRAY(decltype(d), neighbors, 8);
+        neighbors[0] = g.top_left;
+        neighbors[1] = g.top_center;
+        neighbors[2] = g.top_right;
+        neighbors[3] = g.center_left;
+        neighbors[4] = g.center_right;
+        neighbors[5] = g.bottom_left;
+        neighbors[6] = g.bottom_center;
+        neighbors[7] = g.bottom_right;
+        NEO_SMO_VECTOR_ARRAY(decltype(d), diff, 8);
         for (int i = 0; i < 8; ++i) diff[i] = hn::Sub(hn::Max(center, neighbors[i]), hn::Min(center, neighbors[i]));
         auto radius = hn::Zero(d);
         if constexpr (Mode == 21 || Mode == 24) {
@@ -116,16 +124,16 @@ void rank_clamp_plane(const T* src, const T* reference, T* dst,
         hi = hn::SaturatedAdd(center, radius);
         if constexpr (Mode >= 22) value = g.center_center;
       } else if constexpr (Mode >= 12) {
-        hn::Vec<decltype(d)> sorted[8];
+        NEO_SMO_VECTOR_ARRAY(decltype(d), sorted, 8);
         g.sort_without_center(d, sorted);
         lo = hn::Min(sorted[Mode - 11], g.center_center);
         hi = hn::Max(sorted[18 - Mode], g.center_center);
       } else if constexpr (WithCenter) {
-        hn::Vec<decltype(d)> sorted[9];
+        NEO_SMO_VECTOR_ARRAY(decltype(d), sorted, 9);
         g.sort_with_center(d, sorted);
         lo = sorted[Mode - 1]; hi = sorted[9 - Mode];
       } else {
-        hn::Vec<decltype(d)> sorted[8];
+        NEO_SMO_VECTOR_ARRAY(decltype(d), sorted, 8);
         g.sort_without_center(d, sorted);
         lo = sorted[Mode - 1]; hi = sorted[8 - Mode];
       }

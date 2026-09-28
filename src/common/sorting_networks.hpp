@@ -1,5 +1,6 @@
 // Included inside `namespace neo_smo { namespace HWY_NAMESPACE { ... } }` per Highway target.
 namespace hn = hwy::HWY_NAMESPACE;
+#include "common/vector_array.hpp"
 
 template <class D, class V = hn::Vec<D>>
 #if defined(NEO_SMO_OUTLINE_EMU_COMPARE_SWAP) && HWY_TARGET == HWY_EMU128
@@ -23,8 +24,8 @@ HWY_INLINE V median3(D d, V a, V b, V c) {
 
 // Full sort of 8 elements (SorterHunter N8L19D6 - used by RemoveGrain sortWithoutCenter)
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void sort8(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void sort8(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7);
   NEO_SMO_CS(0, 4); NEO_SMO_CS(1, 5); NEO_SMO_CS(2, 6); NEO_SMO_CS(3, 7);
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7);
@@ -36,8 +37,8 @@ HWY_INLINE void sort8(D d, V* v) {
 
 // Full sort of 9 elements (SorterHunter N9L25D7 - used by Repair sortWithCenter)
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void sort9(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void sort9(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 3); NEO_SMO_CS(1, 7); NEO_SMO_CS(2, 5); NEO_SMO_CS(4, 8);
   NEO_SMO_CS(0, 7); NEO_SMO_CS(2, 4); NEO_SMO_CS(3, 8); NEO_SMO_CS(5, 6);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(7, 8);
@@ -50,8 +51,8 @@ HWY_INLINE void sort9(D d, V* v) {
 
 // Median network for 9 elements (SorterHunter N9L19D7 - returns v[4])
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE V median9(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE V median9(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 7); NEO_SMO_CS(1, 2); NEO_SMO_CS(3, 5); NEO_SMO_CS(4, 8);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 5); NEO_SMO_CS(3, 8); NEO_SMO_CS(4, 7);
   NEO_SMO_CS(0, 3); NEO_SMO_CS(1, 4); NEO_SMO_CS(2, 8); NEO_SMO_CS(5, 7);
@@ -65,8 +66,8 @@ HWY_INLINE V median9(D d, V* v) {
 
 // Median network for 25 elements (SorterHunter N25L85D16 - returns v[12])
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE V median25(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE V median25(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7); NEO_SMO_CS(8, 9); NEO_SMO_CS(10, 11); NEO_SMO_CS(12, 13); NEO_SMO_CS(14, 15); NEO_SMO_CS(16, 17); NEO_SMO_CS(18, 19); NEO_SMO_CS(20, 21); NEO_SMO_CS(22, 23);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7); NEO_SMO_CS(8, 10); NEO_SMO_CS(9, 11); NEO_SMO_CS(12, 14); NEO_SMO_CS(13, 15); NEO_SMO_CS(16, 18); NEO_SMO_CS(17, 19); NEO_SMO_CS(20, 22); NEO_SMO_CS(21, 23);
   NEO_SMO_CS(0, 4); NEO_SMO_CS(1, 5); NEO_SMO_CS(2, 6); NEO_SMO_CS(3, 7); NEO_SMO_CS(8, 12); NEO_SMO_CS(9, 13); NEO_SMO_CS(10, 14); NEO_SMO_CS(11, 15); NEO_SMO_CS(16, 20); NEO_SMO_CS(17, 21); NEO_SMO_CS(18, 22); NEO_SMO_CS(19, 23);
@@ -89,8 +90,8 @@ HWY_INLINE V median25(D d, V* v) {
 
 // Median network for 49 elements (SorterHunter N49L231D25 - returns v[24])
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE V median49(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE V median49(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7); NEO_SMO_CS(8, 9); NEO_SMO_CS(10, 11); NEO_SMO_CS(12, 13); NEO_SMO_CS(14, 15); NEO_SMO_CS(16, 17); NEO_SMO_CS(18, 19); NEO_SMO_CS(20, 21); NEO_SMO_CS(22, 23); NEO_SMO_CS(24, 25); NEO_SMO_CS(26, 27); NEO_SMO_CS(28, 29); NEO_SMO_CS(30, 31); NEO_SMO_CS(32, 33); NEO_SMO_CS(34, 35); NEO_SMO_CS(36, 37); NEO_SMO_CS(38, 39); NEO_SMO_CS(40, 41); NEO_SMO_CS(42, 43); NEO_SMO_CS(44, 45); NEO_SMO_CS(46, 47);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7); NEO_SMO_CS(8, 10); NEO_SMO_CS(9, 11); NEO_SMO_CS(12, 14); NEO_SMO_CS(13, 15); NEO_SMO_CS(16, 18); NEO_SMO_CS(17, 19); NEO_SMO_CS(20, 22); NEO_SMO_CS(21, 23); NEO_SMO_CS(24, 26); NEO_SMO_CS(25, 27); NEO_SMO_CS(28, 30); NEO_SMO_CS(29, 31); NEO_SMO_CS(32, 34); NEO_SMO_CS(33, 35); NEO_SMO_CS(36, 38); NEO_SMO_CS(37, 39); NEO_SMO_CS(40, 42); NEO_SMO_CS(41, 43); NEO_SMO_CS(44, 46); NEO_SMO_CS(45, 47);
   NEO_SMO_CS(0, 4); NEO_SMO_CS(1, 5); NEO_SMO_CS(2, 6); NEO_SMO_CS(3, 7); NEO_SMO_CS(8, 12); NEO_SMO_CS(9, 13); NEO_SMO_CS(10, 14); NEO_SMO_CS(11, 15); NEO_SMO_CS(16, 20); NEO_SMO_CS(17, 21); NEO_SMO_CS(18, 22); NEO_SMO_CS(19, 23); NEO_SMO_CS(24, 28); NEO_SMO_CS(25, 29); NEO_SMO_CS(26, 30); NEO_SMO_CS(27, 31); NEO_SMO_CS(32, 36); NEO_SMO_CS(33, 37); NEO_SMO_CS(34, 38); NEO_SMO_CS(35, 39); NEO_SMO_CS(40, 44); NEO_SMO_CS(41, 45); NEO_SMO_CS(42, 46); NEO_SMO_CS(43, 47);
@@ -122,8 +123,8 @@ HWY_INLINE V median49(D d, V* v) {
 
 // Full sort of 25 elements (SorterHunter N25L130D15 - used by InterQuartileMean radius 2)
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void sort25(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void sort25(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7); NEO_SMO_CS(8, 9); NEO_SMO_CS(10, 11);
   NEO_SMO_CS(12, 13); NEO_SMO_CS(14, 15); NEO_SMO_CS(16, 17); NEO_SMO_CS(18, 19); NEO_SMO_CS(20, 21); NEO_SMO_CS(22, 23);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7); NEO_SMO_CS(8, 10); NEO_SMO_CS(9, 11);
@@ -154,8 +155,8 @@ HWY_INLINE void sort25(D d, V* v) {
 
 // Full sort of 49 elements (SorterHunter N49L365D21 - used by InterQuartileMean radius 3)
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void sort49(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void sort49(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 8); NEO_SMO_CS(1, 7); NEO_SMO_CS(2, 6); NEO_SMO_CS(3, 11); NEO_SMO_CS(4, 10); NEO_SMO_CS(5, 9);
   NEO_SMO_CS(12, 20); NEO_SMO_CS(13, 19); NEO_SMO_CS(14, 18); NEO_SMO_CS(15, 23); NEO_SMO_CS(16, 22); NEO_SMO_CS(17, 21);
   NEO_SMO_CS(24, 32); NEO_SMO_CS(25, 31); NEO_SMO_CS(26, 30); NEO_SMO_CS(27, 35); NEO_SMO_CS(28, 34); NEO_SMO_CS(29, 33);
@@ -250,8 +251,8 @@ HWY_INLINE void sort49(D d, V* v) {
 
 // Even-length median networks (used by SmartMedian to find the two central elements)
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void median8_even(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void median8_even(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7);
   NEO_SMO_CS(0, 4); NEO_SMO_CS(1, 5); NEO_SMO_CS(2, 6); NEO_SMO_CS(3, 7);
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 4); NEO_SMO_CS(3, 5); NEO_SMO_CS(6, 7);
@@ -261,8 +262,8 @@ HWY_INLINE void median8_even(D d, V* v) {
 }
 
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void median24_even(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void median24_even(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7); NEO_SMO_CS(8, 9); NEO_SMO_CS(10, 11);
   NEO_SMO_CS(12, 13); NEO_SMO_CS(14, 15); NEO_SMO_CS(16, 17); NEO_SMO_CS(18, 19); NEO_SMO_CS(20, 21); NEO_SMO_CS(22, 23);
   NEO_SMO_CS(0, 2); NEO_SMO_CS(1, 3); NEO_SMO_CS(4, 6); NEO_SMO_CS(5, 7); NEO_SMO_CS(8, 10); NEO_SMO_CS(9, 11);
@@ -285,8 +286,8 @@ HWY_INLINE void median24_even(D d, V* v) {
 }
 
 template <class D, class V = hn::Vec<D>>
-HWY_INLINE void median48_even(D d, V* v) {
-  #define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
+HWY_INLINE void median48_even(D d, VectorArrayView<V> v) {
+#define NEO_SMO_CS(i, j) compare_swap(d, v[i], v[j])
   NEO_SMO_CS(0, 1); NEO_SMO_CS(2, 3); NEO_SMO_CS(4, 5); NEO_SMO_CS(6, 7); NEO_SMO_CS(8, 9); NEO_SMO_CS(10, 11);
   NEO_SMO_CS(12, 13); NEO_SMO_CS(14, 15); NEO_SMO_CS(16, 17); NEO_SMO_CS(18, 19); NEO_SMO_CS(20, 21); NEO_SMO_CS(22, 23);
   NEO_SMO_CS(24, 25); NEO_SMO_CS(26, 27); NEO_SMO_CS(28, 29); NEO_SMO_CS(30, 31); NEO_SMO_CS(32, 33); NEO_SMO_CS(34, 35);

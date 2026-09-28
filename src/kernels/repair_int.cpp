@@ -45,7 +45,7 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
     case 2:
     case 3:
     case 4: {
-      V a[9];
+      NEO_SMO_VECTOR_ARRAY(D, a, 9);
       g.sort_with_center(d, a);
       const int lo = mode - 1;
       const int hi = 9 - mode;
@@ -57,10 +57,10 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
     case 8:
     case 9: {
       const auto s = g.min_max_opposites_with_center(d);
-      const V clamp1 = hn::Clamp(src, s.min1, s.max1);
-      const V clamp2 = hn::Clamp(src, s.min2, s.max2);
-      const V clamp3 = hn::Clamp(src, s.min3, s.max3);
-      const V clamp4 = hn::Clamp(src, s.min4, s.max4);
+      const V clamp1 = hn::Clamp(src, s.min1(), s.max1());
+      const V clamp2 = hn::Clamp(src, s.min2(), s.max2());
+      const V clamp3 = hn::Clamp(src, s.min3(), s.max3());
+      const V clamp4 = hn::Clamp(src, s.min4(), s.max4());
 
       V c1, c2, c3, c4;
       if (mode == 5) {
@@ -69,10 +69,10 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
         c3 = repair_abs_diff32(src, clamp3);
         c4 = repair_abs_diff32(src, clamp4);
       } else {
-        const V d1 = hn::Sub(s.max1, s.min1);
-        const V d2 = hn::Sub(s.max2, s.min2);
-        const V d3 = hn::Sub(s.max3, s.min3);
-        const V d4 = hn::Sub(s.max4, s.min4);
+        const V d1 = hn::Sub(s.max1(), s.min1());
+        const V d2 = hn::Sub(s.max2(), s.min2());
+        const V d3 = hn::Sub(s.max3(), s.min3());
+        const V d4 = hn::Sub(s.max4(), s.min4());
         if (mode == 6) {
           c1 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(src, clamp1)), d1), vmax);
           c2 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(src, clamp2)), d2), vmax);
@@ -134,7 +134,7 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
     case 12:
     case 13:
     case 14: {
-      V a[8];
+      NEO_SMO_VECTOR_ARRAY(D, a, 8);
       g.sort_without_center(d, a);
       const int lo = mode - 11;
       const int hi = 18 - mode;
@@ -147,37 +147,37 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
       const auto s = g.min_max_opposites_without_center(d);
       V c1, c2, c3, c4;
       if (mode == 15) {
-        c1 = repair_abs_diff32(c, hn::Clamp(c, s.min1, s.max1));
-        c2 = repair_abs_diff32(c, hn::Clamp(c, s.min2, s.max2));
-        c3 = repair_abs_diff32(c, hn::Clamp(c, s.min3, s.max3));
-        c4 = repair_abs_diff32(c, hn::Clamp(c, s.min4, s.max4));
+        c1 = repair_abs_diff32(c, hn::Clamp(c, s.min1(), s.max1()));
+        c2 = repair_abs_diff32(c, hn::Clamp(c, s.min2(), s.max2()));
+        c3 = repair_abs_diff32(c, hn::Clamp(c, s.min3(), s.max3()));
+        c4 = repair_abs_diff32(c, hn::Clamp(c, s.min4(), s.max4()));
       } else {
-        const V d1 = hn::Sub(s.max1, s.min1);
-        const V d2 = hn::Sub(s.max2, s.min2);
-        const V d3 = hn::Sub(s.max3, s.min3);
-        const V d4 = hn::Sub(s.max4, s.min4);
-        c1 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min1, s.max1))), d1), vmax);
-        c2 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min2, s.max2))), d2), vmax);
-        c3 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min3, s.max3))), d3), vmax);
-        c4 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min4, s.max4))), d4), vmax);
+        const V d1 = hn::Sub(s.max1(), s.min1());
+        const V d2 = hn::Sub(s.max2(), s.min2());
+        const V d3 = hn::Sub(s.max3(), s.min3());
+        const V d4 = hn::Sub(s.max4(), s.min4());
+        c1 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min1(), s.max1()))), d1), vmax);
+        c2 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min2(), s.max2()))), d2), vmax);
+        c3 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min3(), s.max3()))), d3), vmax);
+        c4 = hn::Min(hn::Add(hn::ShiftLeft<1>(repair_abs_diff32(c, hn::Clamp(c, s.min4(), s.max4()))), d4), vmax);
       }
       const V mindiff = hn::Min(hn::Min(c1, c2), hn::Min(c3, c4));
-      V pmin = s.min1;
-      V pmax = s.max1;
-      pmin = hn::IfThenElse(hn::Eq(mindiff, c3), s.min3, pmin);
-      pmax = hn::IfThenElse(hn::Eq(mindiff, c3), s.max3, pmax);
-      pmin = hn::IfThenElse(hn::Eq(mindiff, c2), s.min2, pmin);
-      pmax = hn::IfThenElse(hn::Eq(mindiff, c2), s.max2, pmax);
-      pmin = hn::IfThenElse(hn::Eq(mindiff, c4), s.min4, pmin);
-      pmax = hn::IfThenElse(hn::Eq(mindiff, c4), s.max4, pmax);
+      V pmin = s.min1();
+      V pmax = s.max1();
+      pmin = hn::IfThenElse(hn::Eq(mindiff, c3), s.min3(), pmin);
+      pmax = hn::IfThenElse(hn::Eq(mindiff, c3), s.max3(), pmax);
+      pmin = hn::IfThenElse(hn::Eq(mindiff, c2), s.min2(), pmin);
+      pmax = hn::IfThenElse(hn::Eq(mindiff, c2), s.max2(), pmax);
+      pmin = hn::IfThenElse(hn::Eq(mindiff, c4), s.min4(), pmin);
+      pmax = hn::IfThenElse(hn::Eq(mindiff, c4), s.max4(), pmax);
       const V mn = hn::Min(pmin, c);
       const V mx = hn::Max(pmax, c);
       return hn::Clamp(src, mn, mx);
     }
     case 17: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V l = hn::Max(hn::Max(s.min1, s.min2), hn::Max(s.min3, s.min4));
-      const V u = hn::Min(hn::Min(s.max1, s.max2), hn::Min(s.max3, s.max4));
+      const V l = hn::Max(hn::Max(s.min1(), s.min2()), hn::Max(s.min3(), s.min4()));
+      const V u = hn::Min(hn::Min(s.max1(), s.max2()), hn::Min(s.max3(), s.max4()));
       const V mn = hn::Min(hn::Min(l, u), c);
       const V mx = hn::Max(hn::Max(l, u), c);
       return hn::Clamp(src, mn, mx);
@@ -246,14 +246,14 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
     }
     case 21: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V d1 = hn::Clamp(hn::Sub(s.max1, c), zero, vmax);
-      const V d2 = hn::Clamp(hn::Sub(s.max2, c), zero, vmax);
-      const V d3 = hn::Clamp(hn::Sub(s.max3, c), zero, vmax);
-      const V d4 = hn::Clamp(hn::Sub(s.max4, c), zero, vmax);
-      const V rd1 = hn::Clamp(hn::Sub(c, s.min1), zero, vmax);
-      const V rd2 = hn::Clamp(hn::Sub(c, s.min2), zero, vmax);
-      const V rd3 = hn::Clamp(hn::Sub(c, s.min3), zero, vmax);
-      const V rd4 = hn::Clamp(hn::Sub(c, s.min4), zero, vmax);
+      const V d1 = hn::Clamp(hn::Sub(s.max1(), c), zero, vmax);
+      const V d2 = hn::Clamp(hn::Sub(s.max2(), c), zero, vmax);
+      const V d3 = hn::Clamp(hn::Sub(s.max3(), c), zero, vmax);
+      const V d4 = hn::Clamp(hn::Sub(s.max4(), c), zero, vmax);
+      const V rd1 = hn::Clamp(hn::Sub(c, s.min1()), zero, vmax);
+      const V rd2 = hn::Clamp(hn::Sub(c, s.min2()), zero, vmax);
+      const V rd3 = hn::Clamp(hn::Sub(c, s.min3()), zero, vmax);
+      const V rd4 = hn::Clamp(hn::Sub(c, s.min4()), zero, vmax);
       const V u = hn::Min(hn::Min(hn::Max(d1, rd1), hn::Max(d2, rd2)),
                           hn::Min(hn::Max(d3, rd3), hn::Max(d4, rd4)));
       const V lo = hn::Clamp(hn::Sub(c, u), zero, vmax);
@@ -306,14 +306,14 @@ V eval_repair_int(D d, int mode, V src, const Grid3x3<D>& g, std::int32_t type_m
     }
     case 24: {
       const auto s = g.min_max_opposites_without_center(d);
-      const V d1 = hn::Clamp(hn::Sub(s.max1, src), zero, vmax);
-      const V d2 = hn::Clamp(hn::Sub(s.max2, src), zero, vmax);
-      const V d3 = hn::Clamp(hn::Sub(s.max3, src), zero, vmax);
-      const V d4 = hn::Clamp(hn::Sub(s.max4, src), zero, vmax);
-      const V rd1 = hn::Clamp(hn::Sub(src, s.min1), zero, vmax);
-      const V rd2 = hn::Clamp(hn::Sub(src, s.min2), zero, vmax);
-      const V rd3 = hn::Clamp(hn::Sub(src, s.min3), zero, vmax);
-      const V rd4 = hn::Clamp(hn::Sub(src, s.min4), zero, vmax);
+      const V d1 = hn::Clamp(hn::Sub(s.max1(), src), zero, vmax);
+      const V d2 = hn::Clamp(hn::Sub(s.max2(), src), zero, vmax);
+      const V d3 = hn::Clamp(hn::Sub(s.max3(), src), zero, vmax);
+      const V d4 = hn::Clamp(hn::Sub(s.max4(), src), zero, vmax);
+      const V rd1 = hn::Clamp(hn::Sub(src, s.min1()), zero, vmax);
+      const V rd2 = hn::Clamp(hn::Sub(src, s.min2()), zero, vmax);
+      const V rd3 = hn::Clamp(hn::Sub(src, s.min3()), zero, vmax);
+      const V rd4 = hn::Clamp(hn::Sub(src, s.min4()), zero, vmax);
       const V u = hn::Min(hn::Min(hn::Max(d1, rd1), hn::Max(d2, rd2)),
                           hn::Min(hn::Max(d3, rd3), hn::Max(d4, rd4)));
       const V lo = hn::Clamp(hn::Sub(src, u), zero, vmax);
@@ -393,7 +393,7 @@ void repair_int_impl(int mode, const T* srcp, const T* repairp, T* dstp, int wid
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      const auto g = Grid3x3<decltype(d)>::load(d, rows[0], rows[1], rows[2], x);
+      const Grid3x3<decltype(d)> g = NEO_SMO_LOAD_GRID(d, rows[0], rows[1], rows[2], x);
       const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
       const auto s = hn::PromoteTo(d, hn::LoadN(ds, src_row + x, count));
       const auto res = eval_repair_int(d, mode, s, g, type_max);

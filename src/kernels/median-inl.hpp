@@ -34,7 +34,7 @@ void median_plane_impl(const T* srcp, T* dstp, int width, int height, std::size_
 
     T* dst_row = dstp + static_cast<std::size_t>(y) * dst_stride;
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> vals[kCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), vals, kCount);
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
         const T* rptr = rows[static_cast<std::size_t>(ky)];
@@ -95,7 +95,7 @@ void median_plane_f16_impl(const std::uint16_t* srcp, std::uint16_t* dstp, int w
     }
 
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
-      hn::Vec<decltype(d)> vals[kCount];
+      NEO_SMO_VECTOR_ARRAY(decltype(d), vals, kCount);
       int idx = 0;
       for (int ky = 0; ky < kSide; ++ky) {
         const ComputeT* rptr = rows[static_cast<std::size_t>(ky)];
