@@ -1,6 +1,7 @@
 #pragma once
 #include "algorithms/deen.hpp"
 namespace neo_smo {
+std::uint64_t deen_integer_sad(const DeenPlane& a, const DeenPlane& b);
 // Integer planes are read directly; each frame retains its own stride.
 void deen_integer_kernel(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius,
                          double spatial, double temporal, const double* weights, std::uint8_t* dst,

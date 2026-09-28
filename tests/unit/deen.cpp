@@ -300,6 +300,36 @@ void temporal_fixtures(const std::string& mode) {
   o.scene_threshold = 3.999;
   check(deen_scene_cut(Deen(o), {z, z, z}, {z, t, z}), "equal plane weighting");
 }
+void scene_integer_vectors() {
+  for (int bits : {8, 10, 16}) {
+    const int bytes = bits == 8 ? 1 : 2;
+    for (int width : {1, 31, 32, 33, 65, 4101}) {
+      const int stride_a = width * bytes + 3, stride_b = width * bytes + 7;
+      std::vector<std::uint8_t> a(stride_a * 2 + 1), b(stride_b * 2 + 1);
+      const auto type = bits == 8 ? DataType::U8 : DataType::U16;
+      for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < width; ++x)
+          put(b.data() + 1 + y * stride_b + x * bytes, type, (1u << bits) - 1);
+      DeenPlane av{a.data() + 1, stride_a, width, 2, type, bits};
+      DeenPlane bv{b.data() + 1, stride_b, width, 2, type, bits};
+      DeenOptions o;
+      o.scene_threshold = 255;
+      check(!deen_scene_cut(Deen(o), {av}, {bv}), "maximum scene equality");
+      o.scene_threshold = 254;
+      check(deen_scene_cut(Deen(o), {av}, {bv}), "maximum scene difference");
+      if (bits == 10) {
+        put(b.data() + 1, type, 1024);
+        bool rejected = false;
+        try {
+          (void)deen_scene_cut(Deen(o), {av}, {bv});
+        } catch (const std::invalid_argument&) {
+          rejected = true;
+        }
+        check(rejected, "scene accepted sample beyond bit depth");
+      }
+    }
+  }
+}
 void invalid() {
   DeenOptions o;
   for (double v : {-1.0, 256.0, std::numeric_limits<double>::infinity(), std::numeric_limits<double>::quiet_NaN()}) {
@@ -334,6 +364,7 @@ int main(int argc, char** argv) {
       const std::string mode = argc > 1 ? argv[1] : "c2d";
       fixtures(mode);
       invalid();
+      scene_integer_vectors();
       float_constants(mode);
       scaled_boundary(mode);
       if (mode[0] == 'w')

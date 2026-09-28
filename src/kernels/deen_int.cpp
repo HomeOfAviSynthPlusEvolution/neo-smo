@@ -37,25 +37,29 @@ void integer_store(D d, hn::VFromD<D> value, std::uint8_t* ptr, std::size_t acti
 }
 // Clamp coordinates only at the actual image edges. Interior taps load original pixels.
 template <bool Interior = false, class D>
-auto integer_load(D d, const DeenPlane& p, std::int64_t y, std::int64_t x, std::size_t active) {
+auto integer_row_load(D d, const std::uint8_t* row, int width, std::int64_t x, std::size_t active) {
   using T = hn::TFromD<D>;
-  const auto* row =
-      p.data +
-      static_cast<std::ptrdiff_t>(std::clamp(y, std::int64_t{0}, static_cast<std::int64_t>(p.height - 1))) * p.stride;
   if constexpr (Interior) {
     return integer_raw_load(d, row + static_cast<std::size_t>(x) * sizeof(T), hn::Lanes(d));
   }
-  if (x >= 0 && x <= p.width - static_cast<int>(active)) {
+  if (x >= 0 && x <= width - static_cast<int>(active)) {
     return integer_raw_load(d, row + static_cast<std::size_t>(x) * sizeof(T), active);
   }
   HWY_ALIGN T values[hn::MaxLanes(d)]{};
   for (std::size_t i = 0; i < active; ++i)
     std::memcpy(values + i,
                 row + static_cast<std::size_t>(std::clamp(static_cast<std::int64_t>(x) + static_cast<std::int64_t>(i),
-                                                          std::int64_t{0}, static_cast<std::int64_t>(p.width - 1))) *
+                                                          std::int64_t{0}, static_cast<std::int64_t>(width - 1))) *
                           sizeof(T),
                 sizeof(T));
   return hn::Load(d, values);
+}
+template <bool Interior = false, class D>
+auto integer_load(D d, const DeenPlane& p, std::int64_t y, std::int64_t x, std::size_t active) {
+  const auto* row =
+      p.data +
+      static_cast<std::ptrdiff_t>(std::clamp(y, std::int64_t{0}, static_cast<std::int64_t>(p.height - 1))) * p.stride;
+  return integer_row_load<Interior>(d, row, p.width, x, active);
 }
 template <bool Constant, class D>
 auto integer_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count, float reciprocal) {
@@ -70,9 +74,97 @@ auto integer_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count, float reciprocal)
   const auto remainder = hn::Sub(sum, hn::Mul(q, count));
   return hn::Add(q, hn::IfThenElseZero(hn::Ge(hn::Add(remainder, remainder), count), hn::Set(d, 1)));
 }
+#if HWY_TARGET != HWY_SCALAR
+template <DeenFamily Family>
+void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                          double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+  // Compare a full byte vector before widening into two independent sums.
+  // At most 243 taps: counts fit u8 and sums (including rounding) fit u16.
+  const hn::ScalableTag<std::uint8_t> db;
+  const hn::Half<decltype(db)> half;
+  const hn::Repartition<std::uint16_t, decltype(db)> dw;
+  const hn::Half<decltype(dw)> wh;
+  const hn::Repartition<std::uint32_t, decltype(dw)> dd;
+  const int lanes = static_cast<int>(hn::Lanes(db));
+  const int side = 2 * radius + 1, taps = side * side, divisor = taps * count;
+  const auto& p = frames[0];
+  struct Tap {
+    const std::uint8_t* row;
+    int dx;
+    std::uint8_t limit;
+  };
+  std::array<Tap, 243> neighbors;
+  std::array<std::array<std::uint8_t, 225>, 2> limits{};
+  for (int f = 0; f < 2; ++f)
+    for (int i = 0; i < taps; ++i)
+      limits[f][i] = static_cast<std::uint8_t>(
+          std::floor((f ? temporal : spatial) * (Family == DeenFamily::Adaptive ? weights[i] : 1)));
+  for (int y = 0; y < p.height; ++y) {
+    int n = 0;
+    for (int f = 0; f < count; ++f)
+      for (int dy = 0; dy < side; ++dy) {
+        const auto* row = frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
+                                                      static_cast<std::int64_t>(p.height - 1)) *
+                                               frames[f].stride;
+        for (int dx = 0; dx < side; ++dx)
+          neighbors[n++] = {row, dx - radius, limits[f != 0][dy * side + dx]};
+      }
+    for (int x = 0; x < p.width;) {
+      const int remaining = x < radius             ? std::min(radius - x, p.width - x)
+                            : x < p.width - radius ? p.width - radius - x
+                                                   : p.width - x;
+      const int active = std::min(lanes, remaining);
+      const auto batch = [&](auto interior) HWY_ATTR {
+        const auto center = integer_load(db, p, y, x, active);
+        auto lo = hn::Zero(dw), hi = hn::Zero(dw);
+        auto accepted = hn::Zero(db);
+        for (int i = 0; i < n; ++i) {
+          const auto& tap = neighbors[i];
+          const auto sample = integer_row_load<decltype(interior)::value>(
+              db, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active);
+          const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
+          const auto pass = hn::Le(difference, hn::Set(db, tap.limit));
+          const auto value =
+              Family == DeenFamily::Adaptive ? hn::IfThenElseZero(pass, sample) : hn::IfThenElse(pass, sample, center);
+          lo = hn::Add(lo, hn::PromoteTo(dw, hn::LowerHalf(half, value)));
+          hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
+          if constexpr (Family == DeenFamily::Adaptive)
+            accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(db, 1)));
+        }
+        const auto mean = [&](auto sum, auto counts) HWY_ATTR {
+          if constexpr (Family == DeenFamily::Constant) {
+            const auto numerator = hn::Add(sum, hn::Set(dw, divisor / 2));
+            auto q = hn::MulHigh(numerator, hn::Set(dw, 65535 / divisor + 1));
+            return hn::Sub(q, hn::IfThenElseZero(hn::Gt(hn::Mul(q, hn::Set(dw, divisor)), numerator), hn::Set(dw, 1)));
+          } else {
+            const auto qlo = integer_mean<false>(dd, hn::PromoteTo(dd, hn::LowerHalf(wh, sum)),
+                                                 hn::PromoteTo(dd, hn::LowerHalf(wh, counts)), 0);
+            const auto qhi = integer_mean<false>(dd, hn::PromoteTo(dd, hn::UpperHalf(wh, sum)),
+                                                 hn::PromoteTo(dd, hn::UpperHalf(wh, counts)), 0);
+            return hn::Combine(dw, hn::DemoteTo(wh, qhi), hn::DemoteTo(wh, qlo));
+          }
+        };
+        lo = mean(lo, hn::PromoteTo(dw, hn::LowerHalf(half, accepted)));
+        hi = mean(hi, hn::PromoteTo(dw, hn::UpperHalf(half, accepted)));
+        integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
+                      active);
+      };
+      if (x >= radius && active == lanes && x <= p.width - radius - lanes)
+        batch(std::true_type{});
+      else
+        batch(std::false_type{});
+      x += active;
+    }
+  }
+}
+#endif
 template <class T, DeenFamily Family>
 void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,
                      const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+#if HWY_TARGET != HWY_SCALAR
+  if constexpr (sizeof(T) == 1 && Family != DeenFamily::Weighted)
+    return integer_byte_process<Family>(frames, count, radius, spatial, temporal, weights, dst, stride);
+#endif
   constexpr bool weighted = Family == DeenFamily::Weighted;
   using Acc = std::conditional_t<sizeof(T) == 1 && !weighted && HWY_TARGET != HWY_SCALAR, std::uint16_t, std::uint32_t>;
   const hn::ScalableTag<Acc> d;
@@ -105,8 +197,33 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
           }
     }
   }
-  for (int y = 0; y < p.height; ++y)
+  struct Tap {
+    const std::uint8_t* row;
+    int dx;
+    Acc limit;
+    float weight;
+  };
+  std::array<Tap, 243> neighbors;
+  for (int y = 0; y < p.height; ++y) {
+    int num_neighbors = 0;
+    if constexpr (weighted) {
+      for (int f = 0; f < count; ++f)
+        for (int dy = 0; dy < side; ++dy) {
+          const auto row_y = std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
+                                        static_cast<std::int64_t>(p.height - 1));
+          const auto* row = frames[f].data + row_y * frames[f].stride;
+          for (int dx = 0; dx < side; ++dx) {
+            const float weight = static_cast<float>(weights[dy * side + dx] * (count == 3 && f == 0 ? 2 : 1));
+            if constexpr (weighted) {
+              if (weight == 0)
+                continue;
+            }
+            neighbors[num_neighbors++] = {row, dx - radius, limits[f == 0 ? 0 : 1][dy * side + dx], weight};
+          }
+        }
+    }
     for (int x = 0; x < p.width;) {
+
       const int remaining = x < radius             ? std::min(radius - x, p.width - x)
                             : x < p.width - radius ? p.width - radius - x
                                                    : p.width - x;
@@ -119,22 +236,18 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
           auto residual = hn::Zero(df);
           const auto cf = hn::ConvertTo(df, center);
           auto low = center, high = center;
-          for (int f = 0; f < count; ++f)
-            for (int dy = 0; dy < side; ++dy)
-              for (int dx = 0; dx < side; ++dx) {
-                const float weight = static_cast<float>(weights[dy * side + dx] * (count == 3 && f == 0 ? 2 : 1));
-                if (weight == 0)
-                  continue;
-                const auto sample = hn::PromoteTo(d, integer_load<decltype(interior)::value>(
-                                                         dn, frames[f], static_cast<std::int64_t>(y) + dy - radius,
-                                                         static_cast<std::int64_t>(x) + dx - radius, active));
-                const auto difference = hn::Sub(hn::Max(sample, center), hn::Min(sample, center));
-                const auto pass = hn::Le(difference, hn::Set(d, limits[f == 0 ? 0 : 1][0]));
-                const auto value = hn::IfThenElse(pass, sample, center);
-                residual = hn::MulAdd(hn::Set(df, weight), hn::Sub(hn::ConvertTo(df, value), cf), residual);
-                low = hn::Min(low, value);
-                high = hn::Max(high, value);
-              }
+          for (int i = 0; i < num_neighbors; ++i) {
+            const auto& tap = neighbors[i];
+            const auto sample =
+                hn::PromoteTo(d, integer_row_load<decltype(interior)::value>(
+                                     dn, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active));
+            const auto difference = hn::Sub(hn::Max(sample, center), hn::Min(sample, center));
+            const auto pass = hn::Le(difference, hn::Set(d, tap.limit));
+            const auto value = hn::IfThenElse(pass, sample, center);
+            residual = hn::MulAdd(hn::Set(df, tap.weight), hn::Sub(hn::ConvertTo(df, value), cf), residual);
+            low = hn::Min(low, value);
+            high = hn::Max(high, value);
+          }
           auto result = hn::MulAdd(residual, hn::Set(df, static_cast<float>(1 / denominator)), cf);
           result = hn::Clamp(result, hn::ConvertTo(df, low), hn::ConvertTo(df, high));
           const auto q = hn::ConvertTo(di, hn::Add(result, hn::Set(df, 0.5f)));
@@ -157,7 +270,14 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
           if constexpr (Family == DeenFamily::Constant)
             accepted = hn::Set(d, taps * count);
           hn::VFromD<decltype(d)> q;
-          if constexpr (sizeof(Acc) == 2) {
+          if constexpr (sizeof(Acc) == 2 && Family == DeenFamily::Constant) {
+            // The largest byte sum plus half the divisor fits u16. A ceiling
+            // reciprocal overestimates division by at most one; correct exactly.
+            const auto divisor = hn::Set(d, taps * count);
+            const auto numerator = hn::Add(sum, hn::Set(d, (taps * count) / 2));
+            q = hn::MulHigh(numerator, hn::Set(d, 65535 / (taps * count) + 1));
+            q = hn::Sub(q, hn::IfThenElseZero(hn::Gt(hn::Mul(q, divisor), numerator), hn::Set(d, 1)));
+          } else if constexpr (sizeof(Acc) == 2) {
             const hn::Half<decltype(d)> half;
             const hn::Repartition<std::uint32_t, decltype(d)> wide;
             const auto lo = integer_mean<Family == DeenFamily::Constant>(
@@ -178,6 +298,7 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
         batch(std::false_type{});
       x += active;
     }
+  }
 }
 template <class T>
 void integer_dispatch(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,

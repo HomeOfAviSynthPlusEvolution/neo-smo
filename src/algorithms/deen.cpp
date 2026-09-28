@@ -162,24 +162,21 @@ bool deen_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const s
     const bool integer = a[p].type == DataType::U8 || a[p].type == DataType::U16;
     const auto samples = product(a[p].width, a[p].height);
     const double peak = integer ? (1u << a[p].bits) - 1 : 1;
-    double sum = 0, correction = 0;
-    std::uint64_t exact_sum = 0;
-    if (integer)
+    double sum = 0;
+    if (integer) {
       require(samples <= UINT64_MAX / static_cast<std::uint64_t>(peak), "Deen: scene sum overflow.");
-    for (int y = 0; y < a[p].height; ++y)
-      for (int x = 0; x < a[p].width; ++x) {
-        const double difference = std::abs(read(a[p], x, y) - read(b[p], x, y));
-        if (integer)
-          exact_sum += static_cast<std::uint64_t>(difference);
-        else {
+      sum = static_cast<double>(deen_integer_sad(a[p], b[p]));
+    } else {
+      double correction = 0;
+      for (int y = 0; y < a[p].height; ++y)
+        for (int x = 0; x < a[p].width; ++x) {
+          const double difference = std::abs(read(a[p], x, y) - read(b[p], x, y));
           const double adjusted = difference - correction;
           const double next = sum + adjusted;
           correction = (next - sum) - adjusted;
           sum = next;
         }
-      }
-    if (integer)
-      sum = static_cast<double>(exact_sum);
+    }
     metric += (sum / static_cast<double>(samples)) * (255 / peak);
   }
   metric /= static_cast<double>(a.size());
