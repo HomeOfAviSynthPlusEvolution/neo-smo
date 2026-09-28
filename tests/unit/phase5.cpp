@@ -20,7 +20,7 @@ template<class T> void check(neo_smo::DataType type, int width, int height, bool
   const bool half = type == neo_smo::DataType::F16;
   const bool integer = type == neo_smo::DataType::U8 || type == neo_smo::DataType::U16;
   const int bits = sizeof(T) == 1 ? 8 : 16;
-  const size_t size = width * height, pitch = width * sizeof(T);
+  const size_t size = static_cast<size_t>(width) * height, pitch = width * sizeof(T);
   std::vector<std::unique_ptr<Guarded>> storage;
   std::array<const uint8_t*, 9> src{};
   std::array<uint8_t*, 3> dst{};
