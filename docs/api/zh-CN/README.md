@@ -94,3 +94,5 @@ CCD 与 Cnr4 在 YUV 色度抽样输入上，使用 AVS 的 `ExtractY` / `Biline
 `NEO_SMO_BUILD_AVISYNTH` 默认开启，可与 `NEO_SMO_BUILD_VAPOURSYNTH` 独立选择。Windows AVS 构建使用 clang-cl 或 MSVC；MinGW 必须关闭 AVS 接口。`NEO_SMO_AVS_SDK` 可指定本地头文件目录。
 
 `NEO_SMO_TEST_AVISYNTH=ON` 配合 `NEO_SMO_AVISYNTH_RUNTIME` 启用独立宿主验收。`NEO_SMO_TEST_CROSS_HOST=ON` 额外需要两个宿主接口、VapourSynth Python 与 NumPy，进行同输入输出对照。测试子进程具有超时与 Windows 崩溃弹窗抑制。
+
+设置 `NEO_SMO_TEST_VAPOURSYNTH=ON` 可启用覆盖全部 19 个函数的真实宿主冒烟测试。所选 Python 环境需安装 VapourSynth 和 NumPy，无需 zsmooth 参考插件。

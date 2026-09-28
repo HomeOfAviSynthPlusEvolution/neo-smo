@@ -201,6 +201,17 @@ if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
   endif()
 endif()
 
+option(NEO_SMO_TEST_VAPOURSYNTH "Run VapourSynth host smoke tests" OFF)
+if(BUILD_TESTING AND NEO_SMO_TEST_VAPOURSYNTH)
+  if(NOT NEO_SMO_BUILD_VAPOURSYNTH)
+    message(FATAL_ERROR "VapourSynth tests require NEO_SMO_BUILD_VAPOURSYNTH")
+  endif()
+  add_test(NAME vs.smoke COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/vapoursynth/smoke.py" --plugin "$<TARGET_FILE:neo_smo>")
+  set_tests_properties(vs.smoke PROPERTIES LABELS "spec;vapoursynth" RUN_SERIAL TRUE TIMEOUT 90)
+endif()
+
 option(NEO_SMO_TEST_AVISYNTH "Run AviSynth host acceptance tests" OFF)
 option(NEO_SMO_TEST_CROSS_HOST "Compare AviSynth and VapourSynth adapters on identical input" OFF)
 if(BUILD_TESTING AND NEO_SMO_TEST_AVISYNTH)

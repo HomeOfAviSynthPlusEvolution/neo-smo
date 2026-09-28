@@ -105,6 +105,7 @@ ctest --test-dir build/clang-cl --output-on-failure
 | `NEO_SMO_BUILD_VAPOURSYNTH=OFF` | 不构建 VapourSynth 接口；两个宿主均关闭时只构建计算核心及其测试。 |
 | `BUILD_TESTING=OFF` | 不构建测试。 |
 | `NEO_SMO_AVS_SDK=/path/to/sdk` | 指定本地 AviSynth+ SDK。 |
+| `NEO_SMO_TEST_VAPOURSYNTH=ON` | 启用真实 VapourSynth 宿主冒烟测试，所选 Python 环境需安装 VapourSynth 和 NumPy。 |
 | `NEO_SMO_TEST_AVISYNTH=ON` | 启用 AVS 宿主测试，另需指定 `NEO_SMO_AVISYNTH_RUNTIME` 运行库路径。 |
 | `NEO_SMO_TEST_CROSS_HOST=ON` | 启用 AVS/VS 输出对照，需两个宿主、NumPy 和 VapourSynth Python 环境。 |
 | `NEO_SMO_VS_SDK=/path/to/sdk` | 指定本地 VapourSynth SDK。 |

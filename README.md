@@ -105,6 +105,7 @@ ctest --test-dir build/clang-cl --output-on-failure
 | `NEO_SMO_BUILD_VAPOURSYNTH=OFF` | Disable the VapourSynth interface. Disabling both hosts builds only the computation core and its tests. |
 | `BUILD_TESTING=OFF` | Disable tests. |
 | `NEO_SMO_AVS_SDK=/path/to/sdk` | Use a local AviSynth+ SDK. |
+| `NEO_SMO_TEST_VAPOURSYNTH=ON` | Enable real VapourSynth host smoke tests; requires VapourSynth and NumPy in the selected Python environment. |
 | `NEO_SMO_TEST_AVISYNTH=ON` | Enable AVS host tests; also set `NEO_SMO_AVISYNTH_RUNTIME` to the runtime path. |
 | `NEO_SMO_TEST_CROSS_HOST=ON` | Enable AVS/VS output comparisons; requires both interfaces, NumPy, and a VapourSynth Python environment. |
 | `NEO_SMO_VS_SDK=/path/to/sdk` | Use a local VapourSynth SDK. |

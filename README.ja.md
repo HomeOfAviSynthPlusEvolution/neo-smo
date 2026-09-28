@@ -105,6 +105,7 @@ ctest --test-dir build/clang-cl --output-on-failure
 | `NEO_SMO_BUILD_VAPOURSYNTH=OFF` | VapourSynth インターフェースを無効化。両ホストを無効化すると、計算コアとそのテストのみをビルド。 |
 | `BUILD_TESTING=OFF` | テストを無効化。 |
 | `NEO_SMO_AVS_SDK=/path/to/sdk` | ローカルの AviSynth+ SDK を指定。 |
+| `NEO_SMO_TEST_VAPOURSYNTH=ON` | 実際の VapourSynth ホストでのスモークテストを有効化。指定した Python 環境に VapourSynth と NumPy が必要。 |
 | `NEO_SMO_TEST_AVISYNTH=ON` | AVS ホストテストを有効化。`NEO_SMO_AVISYNTH_RUNTIME` にランタイムのパスも指定。 |
 | `NEO_SMO_TEST_CROSS_HOST=ON` | AVS/VS の出力比較を有効化。両インターフェース、NumPy、VapourSynth の Python 環境が必要。 |
 | `NEO_SMO_VS_SDK=/path/to/sdk` | ローカルの VapourSynth SDK を指定。 |

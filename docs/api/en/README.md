@@ -94,3 +94,5 @@ For chroma-subsampled YUV, CCD and Cnr4 use AVS `ExtractY` / `BilinearResize` to
 `NEO_SMO_BUILD_AVISYNTH` defaults to ON and is independent of `NEO_SMO_BUILD_VAPOURSYNTH`. Windows AVS builds require clang-cl or MSVC; MinGW builds must disable AVS. `NEO_SMO_AVS_SDK` selects local headers.
 
 Enable `NEO_SMO_TEST_AVISYNTH` and set `NEO_SMO_AVISYNTH_RUNTIME` for host acceptance tests. `NEO_SMO_TEST_CROSS_HOST` additionally requires both interfaces, VapourSynth Python, and NumPy to compare output on identical inputs. Test subprocesses have time limits and suppress Windows crash dialogs.
+
+Enable `NEO_SMO_TEST_VAPOURSYNTH` for real-host smoke tests covering all 19 functions. The selected Python environment must provide VapourSynth and NumPy; no zsmooth reference plugin is required.
