@@ -115,6 +115,13 @@ def check(args):
              ("TTempSmooth", {"maxr": 2, "pfclip": "REF", "fp": False, "scthresh": 0}),
              ("CCD", {"scale": 1, "temporal_radius": 1, "ref": "REF"}),
              ("DCTFilter", {"factors": [1, 0.9, 0.75, 0.5, 0.4, 0.25, 0.1, 0]})]
+    for mode in ("c2d", "c3d", "w2d", "w3d", "a2d", "a3d"):
+        cases.append(("Deen", {"mode": mode, "rad": 2, "thrY": 30, "thrUV": 40,
+                               "tthY": 25, "tthUV": 35, "scenechange": False, "planes": [0, 2]}))
+    cases.append(("Deen", {"mode": "a3d", "scd": 1, "planes": []}))
+    if not floating:
+        cases.append(("MiniDeen", {"radius": [1, 3, 2], "threshold": [20, 30], "planes": [0, 2]}))
+        cases.append(("MiniDeen", {"radius": [], "threshold": [], "planes": []}))
     if not rgb and not floating:
         for tmode in (0, 1, 4):
             cases.append(("Cnr4", {"scenechange": False, "tmode": tmode, "wmode": tmode % 4, "ref": "REF"}))
@@ -124,6 +131,8 @@ def check(args):
     def avs_value(v):
         if v == "REF":
             return "c.FlipHorizontal().FlipVertical()"
+        if isinstance(v, str):
+            return '"' + v + '"'
         if isinstance(v, bool):
             return str(v).lower()
         return str(v)

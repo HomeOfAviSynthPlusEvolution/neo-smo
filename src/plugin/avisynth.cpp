@@ -1,4 +1,5 @@
 #include "plugin/avs_filter.hpp"
+#include "plugin/avs_deen.hpp"
 
 const AVS_Linkage* AVS_linkage = nullptr;
 namespace neo_smo::avs {
@@ -62,6 +63,7 @@ NEO_SMO_AVS_EXPORT const char* __stdcall AvisynthPluginInit3(IScriptEnvironment*
     ADD(Cnr4);
     ADD(DCTFilter);
 #undef ADD
+    avs::add_deen(env);
     return "neo-smo AviSynth+ filters";
   } catch (const AvisynthError&) {
     throw;

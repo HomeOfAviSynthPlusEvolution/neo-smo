@@ -45,11 +45,14 @@ def main():
         "TemporalSoften": "", "TemporalRepair": ",repairclip=c",
         "DegrainMedian": "", "FluxSmoothT": "", "FluxSmoothST": "",
         "TTempSmooth": ",scthresh=0", "CCD": ",scale=1",
+        "Deen": "", "MiniDeen": "",
         "Cnr4": ",scenechange=false", "DCTFilter": ",factors=[1,1,1,1,1,1,1,1]",
     }
     run("registration", "\n".join(f'Assert(FunctionExists("neo_smo_{f}"))' for f in filters) + "\nreturn c")
     for pixel in ("Y8", "YUV420P8", "YUV422P10", "YUV444P16", "Y32", "YUV420PS", "RGBP", "RGBPS"):
         for f, params in filters.items():
+            if f == "MiniDeen" and (pixel == "Y32" or pixel.endswith("PS")):
+                continue
             if f == "CCD" and pixel in ("Y8", "Y32"):
                 continue
             if f == "Cnr4" and (not pixel.startswith("YUV") or pixel.endswith("PS")):
@@ -66,7 +69,7 @@ def main():
     for f, params in (("TemporalMedian", ",scenechange=true"), ("Cnr4", "")):
         run(f"scene-missing-{f}", f"return neo_smo_{f}(c{params})", error="scene change handling requires")
         run(f"scene-present-{f}", f'c=c.propSet("_SceneChangePrev",0).propSet("_SceneChangeNext",0)\nreturn neo_smo_{f}(c{params})')
-    for f in ("Median", "TTempSmooth", "CCD", "Cnr4", "DCTFilter"):
+    for f in ("Median", "TTempSmooth", "CCD", "Cnr4", "DCTFilter", "Deen", "MiniDeen"):
         params = filters[f]
         audio = ('c=BlankClip(width=64,height=48,length=9,pixel_type="YV12")\n'
                  'c=AudioDub(c,Tone(length=1.0,samplerate=48000,channels=2)).AssumeTFF()\n')
@@ -112,6 +115,29 @@ last""").Prefetch(2)
     ):
         run("value-" + name, "return neo_smo_" + expr, setup=temporal, frame=frame,
             extra=("--expect-y8-sum", str(16 * 16 * expected)))
+    for mode in ("c2d", "c3d", "w2d", "w3d", "a2d", "a3d"):
+        expected = 90 if mode.endswith("2d") else 55 if mode.startswith("w") else 43
+        run("deen-value-" + mode,
+            f'return neo_smo_Deen(c,mode="{mode}",thrY=255,tthY=255,scenechange=false,min=1)',
+            setup=temporal, frame=1, extra=("--expect-y8-sum", str(256 * expected)))
+        run("deen-scene-" + mode,
+            f'return neo_smo_Deen(c,mode="{mode}",thrY=255,tthY=255,scd=1)',
+            setup=temporal, frame=1, extra=("--expect-y8-sum", str(256 * 90)))
+    for name, expr, error in (
+        ("deen-mode", 'Deen(c,mode="bad")', "mode"),
+        ("deen-radius", 'Deen(c,rad=5)', "radius"),
+        ("deen-threshold", 'Deen(c,thrUV=-1)', "threshold"),
+        ("deen-planes", 'Deen(c,planes=[0,0])', "planes"),
+        ("mini-radius", 'MiniDeen(c,radius=[1,8])', "radius"),
+        ("mini-threshold", 'MiniDeen(c,threshold=-1)', "threshold"),
+        ("mini-planes", 'MiniDeen(c,planes=3)', "planes"),
+        ("mini-float", 'MiniDeen(c.ConvertBits(32))', "sample format"),
+    ):
+        run(name, "return neo_smo_" + expr, error=error)
+    for name in ("Deen", "MiniDeen"):
+        for pixel in ("RGB32", "YUY2", "RGBAP", "YUVA444"):
+            run(name + "-reject-" + pixel, "return neo_smo_" + name + "(c)", pixel=pixel, error="only planar")
+        run(name + "-empty-planes", "return neo_smo_" + name + "(c,planes=[])")
     print(f"AviSynth acceptance: {count} cases passed")
 
 
