@@ -1,4 +1,5 @@
 #include "plugin/descriptors.hpp"
+#include "plugin/dct_filter.hpp"
 #include "common/temporal_window.hpp"
 #include "neo_smo_version.hpp"
 #include <vapoursynth/VapourSynth4.h>
@@ -2222,4 +2223,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
                            ccd_create, nullptr, plugin);
   vspapi->registerFunction("Cnr4", vs_signature(Algorithm::Cnr4), "clip:vnode;",
                            cnr4_create, nullptr, plugin);
+  vspapi->registerFunction("DCTFilter", "clip:vnode;factors:float[];planes:int[]:opt;", "clip:vnode;",
+                           dct_filter_create, nullptr, plugin);
 }

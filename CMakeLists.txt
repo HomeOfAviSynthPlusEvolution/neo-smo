@@ -10,6 +10,8 @@ include(cmake/Dependencies.cmake)
 
 add_library(neo_smo_core STATIC
   src/algorithms/plan.cpp
+  src/algorithms/dct_filter.cpp
+  src/kernels/dct_pixels.cpp
   src/kernels/median.cpp
   src/kernels/median_3x3.cpp
   src/kernels/median_5x5.cpp
@@ -35,7 +37,7 @@ add_library(neo_smo_core STATIC
 target_compile_features(neo_smo_core PUBLIC cxx_std_17)
 target_include_directories(neo_smo_core PUBLIC src)
 target_include_directories(neo_smo_core SYSTEM PUBLIC "${dualsynth2_SOURCE_DIR}/include")
-target_link_libraries(neo_smo_core PUBLIC hwy)
+target_link_libraries(neo_smo_core PUBLIC hwy neo::dct)
 set_target_properties(neo_smo_core PROPERTIES
   POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden
@@ -88,7 +90,7 @@ endif()
 include(CTest)
 if(BUILD_TESTING)
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5)
+  foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5 dct)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)
     target_include_directories(neo_smo_${test}_tests PRIVATE tests)
     target_link_libraries(neo_smo_${test}_tests PRIVATE neo_smo_core)
@@ -122,14 +124,14 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
     "${CMAKE_CURRENT_BINARY_DIR}/generated/neo_smo_version.hpp" @ONLY)
   target_include_directories(neo_smo PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   include(cmake/VapourSynth.cmake)
-  target_sources(neo_smo PRIVATE src/plugin/vapoursynth.cpp)
+  target_sources(neo_smo PRIVATE src/plugin/vapoursynth.cpp src/plugin/dct_filter.cpp)
   target_include_directories(neo_smo SYSTEM PRIVATE "${NEO_SMO_VS_INCLUDE}")
   target_link_libraries(neo_smo PRIVATE neo_smo_core DualSynth::dualsynth)
   if(MSVC)
     target_compile_options(neo_smo PRIVATE /EHsc)
   endif()
   if(BUILD_TESTING)
-    add_executable(neo_smo_frame_errors_tests tests/unit/frame_errors.cpp)
+    add_executable(neo_smo_frame_errors_tests tests/unit/frame_errors.cpp src/plugin/dct_filter.cpp)
     target_include_directories(neo_smo_frame_errors_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated" "${NEO_SMO_VS_INCLUDE}")
     target_link_libraries(neo_smo_frame_errors_tests PRIVATE neo_smo_core)
     if(MSVC)
@@ -154,6 +156,11 @@ if(NEO_SMO_BUILD_VAPOURSYNTH)
 
   if(BUILD_TESTING AND NEO_SMO_TEST_BLACKBOX)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME vs.differential.dct COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/dct.py"
+      --plugin "$<TARGET_FILE:neo_smo>"
+      --reference "${NEO_SMO_REFERENCE_PLUGIN}")
+    set_tests_properties(vs.differential.dct PROPERTIES LABELS "blackbox" RUN_SERIAL TRUE TIMEOUT 60)
     add_test(NAME vs.differential.phase1 COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/differential/run.py"
       --plugin "$<TARGET_FILE:neo_smo>"

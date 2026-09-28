@@ -32,3 +32,10 @@ FetchContent_Declare(highway
 FetchContent_MakeAvailable(highway)
 set_target_properties(hwy PROPERTIES POSITION_INDEPENDENT_CODE ON
   CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+
+set(NEO_DCT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(NEO_DCT_ALLOW_FMA ON CACHE BOOL "" FORCE)
+FetchContent_Declare(neo_libdct
+  GIT_REPOSITORY https://github.com/HomeOfAviSynthPlusEvolution/neo-libdct.git
+  GIT_TAG 52d3712374309c08cc4f724b88f17a0124f17325)
+FetchContent_MakeAvailable(neo_libdct)
