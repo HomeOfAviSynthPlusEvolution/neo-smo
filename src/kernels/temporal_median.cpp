@@ -471,10 +471,40 @@ HWY_NOINLINE V eval_temporal_median_float(D d, VectorArrayView<V> v, int diamete
   #undef CS
 }
 
+// Three frames need only a register median, with no vector array or outlined
+// evaluator call in the pixel loop.
+template <bool IsF16, class D, typename StorageT>
+void temporal_median3(D d, const StorageT* const* planes, StorageT* dstp, int width, int height, std::size_t src_stride,
+                      std::size_t dst_stride) {
+  const auto lanes = hn::Lanes(d);
+  for (int y = 0; y < height; ++y) {
+    const auto offset = static_cast<std::size_t>(y) * src_stride;
+    auto* dst = dstp + static_cast<std::size_t>(y) * dst_stride;
+    for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
+      const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);
+      const auto load = [&](const StorageT* src) HWY_ATTR {
+        if constexpr (IsF16)
+          return load_f16(d, src + offset + x, count);
+        else
+          return hn::LoadN(d, src + offset + x, count);
+      };
+      const auto result = median3(d, load(planes[0]), load(planes[1]), load(planes[2]));
+      if constexpr (IsF16)
+        store_f16(d, result, dst + x, count);
+      else
+        hn::StoreN(result, d, dst + x, count);
+    }
+  }
+}
+
 template <typename T>
-void temporal_median_int_impl(int diameter, const T* const* srcp_planes, T* dstp,
-                              int width, int height, std::size_t src_stride, std::size_t dst_stride) {
+void temporal_median_int_impl(int diameter, const T* const* srcp_planes, T* dstp, int width, int height,
+                              std::size_t src_stride, std::size_t dst_stride) {
   const hn::ScalableTag<T> d;
+  if (diameter == 3) {
+    temporal_median3<false>(d, srcp_planes, dstp, width, height, src_stride, dst_stride);
+    return;
+  }
   const std::size_t lanes = hn::Lanes(d);
 
   for (int y = 0; y < height; ++y) {
@@ -497,7 +527,7 @@ void temporal_median_int_impl(int diameter, const T* const* srcp_planes, T* dstp
 }
 
 // The largest fixed window can keep its selection network in registers.
-// Other diameters retain the shared evaluator and their existing code size.
+// Other windows above three frames retain the shared evaluator.
 template <bool IsF16, typename StorageT>
 void temporal_median21_float(const StorageT* const* planes, StorageT* dstp,
     int width, int height, std::size_t src_stride, std::size_t dst_stride) {
@@ -529,6 +559,10 @@ void temporal_median_float_impl(int diameter, const StorageT* const* srcp_planes
   }
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<ComputeT> d;
+  if (diameter == 3) {
+    temporal_median3<IsF16>(d, srcp_planes, dstp, width, height, src_stride, dst_stride);
+    return;
+  }
   const std::size_t lanes = hn::Lanes(d);
 
   if constexpr (IsF16) {
