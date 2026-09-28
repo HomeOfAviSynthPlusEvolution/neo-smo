@@ -9,10 +9,9 @@ namespace neo_smo::deen_detail {
 struct Threshold {
   double hi; // Fast estimate; the original numerator is retained for exact comparisons.
   double raw, peak;
+  double integer_limit = -1; // Exact inclusive cutoff; negative for floating samples.
 };
-inline Threshold scaled_threshold(double threshold, double peak) {
-  return {threshold * peak / 255, threshold, peak};
-}
+inline Threshold scaled_threshold(double threshold, double peak);
 inline ThresholdInteger double_magnitude(double value, bool& negative) {
   std::uint64_t bits;
   std::memcpy(&bits, &value, sizeof(bits));
@@ -94,5 +93,27 @@ inline bool adaptive_boundary(double sample, double center, Threshold threshold,
   const auto left = remaining.times(remaining).times(static_cast<std::uint64_t>(2 * radius * radius)).shifted(2148);
   const auto right = slope.times(slope).times(static_cast<std::uint64_t>(dx * dx + dy * dy));
   return ThresholdInteger::compare(left, 0, right, 0) >= 0;
+}
+inline Threshold scaled_threshold(double threshold, double peak) {
+  Threshold out{threshold * peak / 255, threshold, peak};
+  // Integer formats have peak >= 255; float formats use peak=1.
+  // Resolve rounding at the cutoff once, instead of at every sample comparison.
+  if (peak > 1) {
+    double limit = std::floor(out.hi);
+    while (!within_threshold(limit, 0, out))
+      --limit;
+    while (within_threshold(limit + 1, 0, out))
+      ++limit;
+    out.integer_limit = limit;
+  }
+  return out;
+}
+inline double adaptive_integer_limit(Threshold threshold, double weight, double minimum, int dx, int dy, int radius) {
+  double limit = std::floor(threshold.hi * weight);
+  while (!adaptive_boundary(limit, 0, threshold, minimum, dx, dy, radius))
+    --limit;
+  while (adaptive_boundary(limit + 1, 0, threshold, minimum, dx, dy, radius))
+    ++limit;
+  return limit;
 }
 } // namespace neo_smo::deen_detail

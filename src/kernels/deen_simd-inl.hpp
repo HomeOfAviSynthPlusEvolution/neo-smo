@@ -5,6 +5,8 @@ template <bool Adaptive, class D>
 auto deen_selection(D d, hn::VFromD<D> sample, hn::VFromD<D> center, DeenThreshold threshold, double weight,
                     double minimum, int dx, int dy, int radius) {
   const auto difference = hn::Abs(hn::Sub(sample, center));
+  if (threshold.integer_limit >= 0)
+    return hn::Le(difference, hn::Set(d, Adaptive ? weight : threshold.integer_limit));
   const double limit = threshold.hi * (Adaptive ? weight : 1);
   auto pass = hn::Le(difference, hn::Set(d, limit));
   const auto equal = hn::Eq(sample, center);

@@ -14,6 +14,18 @@ void deen_a_target(const std::array<const double*, 3>& src, int count, std::size
   const hn::ScalableTag<double> d;
   const auto lanes = hn::Lanes(d);
   const int side = 2 * radius + 1;
+  std::array<std::array<double, 225>, 2> limits{};
+  for (int f = 0; f < (count == 3 ? 2 : 1); ++f) {
+    const auto threshold = f == 0 ? spatial : temporal;
+    for (int dy = 0; dy < side; ++dy)
+      for (int dx = 0; dx < side; ++dx) {
+        const double weight = weights[dy * side + dx];
+        limits[f][dy * side + dx] =
+            threshold.integer_limit >= 0
+                ? deen_detail::adaptive_integer_limit(threshold, weight, weights[0], dx - radius, dy - radius, radius)
+                : weight;
+      }
+  }
   for (int y = 0; y < height; ++y)
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto active = std::min(lanes, static_cast<std::size_t>(width) - x);
@@ -27,8 +39,8 @@ void deen_a_target(const std::array<const double*, 3>& src, int count, std::size
         for (int dy = 0; dy < side; ++dy)
           for (int dx = 0; dx < side; ++dx) {
             const auto s = hn::LoadN(d, src[f] + (static_cast<std::size_t>(y) + dy) * pitch + x + dx, active);
-            const auto pass = deen_selection<true>(d, s, c, threshold, weights[dy * side + dx], weights[0], dx - radius,
-                                                   dy - radius, radius);
+            const auto pass = deen_selection<true>(d, s, c, threshold, limits[f == 0 ? 0 : 1][dy * side + dx],
+                                                   weights[0], dx - radius, dy - radius, radius);
             sum = hn::Add(sum, hn::IfThenElseZero(pass, s));
             accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(d, 1)));
             const auto value = hn::IfThenElse(pass, s, c);
