@@ -129,6 +129,12 @@ if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
   configure_file(src/plugin/version.hpp.in
     "${CMAKE_CURRENT_BINARY_DIR}/generated/neo_smo_version.hpp" @ONLY)
   target_include_directories(neo_smo PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  if(WIN32)
+    enable_language(RC)
+    configure_file(src/plugin/version.rc.in
+      "${CMAKE_CURRENT_BINARY_DIR}/generated/neo_smo_version.rc" @ONLY)
+    target_sources(neo_smo PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/neo_smo_version.rc")
+  endif()
   if(NEO_SMO_BUILD_AVISYNTH)
     include(cmake/AviSynth.cmake)
     target_sources(neo_smo PRIVATE src/plugin/avisynth.cpp src/plugin/avs_filter.cpp src/plugin/avs_weighted.cpp src/plugin/avs_scene.cpp)
