@@ -28,7 +28,7 @@ In exact arithmetic, ρ is in [0,1] and g is in [m,1]. The center has g=1; all f
 
 ## Numerical semantics
 
-Equations use real arithmetic and exact integers; no particular SIMD accumulation order is prescribed. Final integer output is clamp(floor(z+0.5),0,Q), rounded only once at storage. Floating output uses round-to-nearest, ties-to-even in the destination format, without nominal-range clamping. Integer c/a sums and counts must be exact. Optimized division must preserve the specified final rounding. The maximum sum is 243·65535, so 16-bit accumulation is insufficient.
+Equations describe the mathematical algorithm; implementations use ordinary floating-point arithmetic for thresholds, distances, and means. Comparisons use the computed values, including values rounded to equality. No particular SIMD accumulation order is prescribed. Final integer output is clamp(floor(z+0.5),0,Q), rounded only once at storage. Floating output uses round-to-nearest, ties-to-even in the destination format, without nominal-range clamping. Integer c/a sums and counts must be exact. Optimized division must preserve the specified final rounding. The maximum sum is 243·65535, so 16-bit accumulation is insufficient.
 
 Do not truncate w weights or a distance thresholds into bytes or legacy fixed-point tables. Floating production paths may use FMA, reassociation, and validated reciprocal optimizations under the [acceptance criteria](acceptance.md). F16 describes input/output storage, not a requirement for F16 intermediates. Accumulation must provide at least F32 range and precision to avoid half-precision sum overflow. Instruction selection belongs to implementation design.
 

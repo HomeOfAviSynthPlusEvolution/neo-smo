@@ -1,5 +1,4 @@
 #include "algorithms/deen.hpp"
-#include "common/deen_exact.hpp"
 #include "base/checked.hpp"
 #include "base/fp16.hpp"
 #include "kernels/deen.hpp"
@@ -56,38 +55,6 @@ double read(const DeenPlane& p, int x, int y) {
   if (u > ((1u << p.bits) - 1))
     throw std::invalid_argument("Deen: sample exceeds bit depth.");
   return u;
-}
-// Near a scene threshold, compare exact rational sums to the binary64 parameter.
-// No approximate division is used, including when the mathematical difference is zero.
-bool precise_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const std::vector<DeenPlane>& b) {
-  using namespace deen_detail;
-  const bool integer = a[0].type == DataType::U8 || a[0].type == DataType::U16;
-  SceneInteger numerator, denominator(1);
-  std::array<std::size_t, 3> counts{};
-  for (std::size_t p = 0; p < a.size(); ++p) {
-    counts[p] = product(a[p].width, a[p].height);
-    denominator = denominator.times(counts[p]);
-  }
-  for (std::size_t p = 0; p < a.size(); ++p) {
-    SceneInteger sum;
-    for (int y = 0; y < a[p].height; ++y)
-      for (int x = 0; x < a[p].width; ++x) {
-        const double av = read(a[p], x, y), bv = read(b[p], x, y);
-        sum += integer ? SceneInteger(static_cast<std::uint64_t>(std::abs(av - bv)))
-                       : float_difference(static_cast<float>(av), static_cast<float>(bv));
-      }
-    for (std::size_t q = 0; q < a.size(); ++q)
-      if (q != p)
-        sum = sum.times(counts[q]);
-    numerator += sum;
-  }
-  numerator = numerator.times(255);
-  denominator = denominator.times(a.size());
-  if (integer)
-    denominator = denominator.times((1u << a[0].bits) - 1);
-  else
-    denominator = denominator.shifted(149);
-  return ratio_above(numerator, denominator, filter.options().scene_threshold);
 }
 void write(std::uint8_t* dst, DataType type, double value) {
   if (type == DataType::U8) {
@@ -167,9 +134,8 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
   const auto& o = filter.options();
   const double peak = p.type == DataType::U8 || p.type == DataType::U16 ? (1u << p.bits) - 1 : 1;
   deen_kernel(filter.family(), sources, count, pitch, p.width, p.height, r,
-              deen_detail::scaled_threshold(chroma ? o.spatial_uv : o.spatial_y, peak),
-              deen_detail::scaled_threshold(chroma ? o.temporal_uv : o.temporal_y, peak), filter.weights().data(),
-              output.data());
+              (chroma ? o.spatial_uv : o.spatial_y) * peak / 255, (chroma ? o.temporal_uv : o.temporal_y) * peak / 255,
+              filter.weights().data(), output.data());
   for (int y = 0; y < p.height; ++y)
     for (int x = 0; x < p.width; ++x)
       write(dst + y * stride + x * sample_bytes(p.type), p.type, output[static_cast<std::size_t>(y) * p.width + x]);
@@ -208,12 +174,6 @@ bool deen_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const s
     metric += (sum / static_cast<double>(samples)) * (255 / peak);
   }
   metric /= static_cast<double>(a.size());
-  const double threshold = filter.options().scene_threshold;
-  if (metric == 0)
-    return false;
-  const double uncertainty = 64 * std::numeric_limits<double>::epsilon() * std::max({1.0, metric, threshold});
-  if (std::abs(metric - threshold) <= uncertainty)
-    return precise_scene_cut(filter, a, b);
-  return metric > threshold;
+  return metric > filter.options().scene_threshold;
 }
 } // namespace neo_smo

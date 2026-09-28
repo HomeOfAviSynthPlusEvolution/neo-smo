@@ -67,13 +67,12 @@ target_compile_options(neo_smo_core PRIVATE ${NEO_SMO_FP_OPTIONS})
 
 target_compile_definitions(neo_smo_core PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 
-# Deen validates finite values and bounds rounding errors before exact boundary
-# comparisons. Reassociation would invalidate those bounds and compensated sums.
-# The SIMD selectors use the same error bounds for exact boundary fallback.
+# Preserve parameter validation and compensated scene sums in the input adapter.
+# Deen SIMD kernels use the normal production floating-point options.
 if(MSVC)
-  set_property(SOURCE src/algorithms/deen.cpp src/kernels/deen_c.cpp src/kernels/deen_w.cpp src/kernels/deen_a.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
+  set_property(SOURCE src/algorithms/deen.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
 else()
-  set_property(SOURCE src/algorithms/deen.cpp src/kernels/deen_c.cpp src/kernels/deen_w.cpp src/kernels/deen_a.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=off)
+  set_property(SOURCE src/algorithms/deen.cpp APPEND PROPERTY COMPILE_OPTIONS -fno-fast-math -ffp-contract=off)
 endif()
 
 

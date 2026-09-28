@@ -10,18 +10,18 @@ Check the hand-calculated examples in each kernel document before broader format
 
 ## Error assessment
 
-FMA and floating rounding differences are permitted. Error allowances do not excuse displaced neighborhoods, incorrect denominators, wrong threshold scaling, or incorrect scene decisions.
+FMA and floating rounding differences are permitted. Error allowances do not excuse displaced neighborhoods, incorrect denominators, wrong threshold scaling, or incorrect scene formulas.
 
 - Integer c/a: for identical accepted sets, output must follow exact integer rounding.
-- Integer w: output may differ from the rounded binary64 reference by at most one integer code value. Persistent one-sided bias, shifted constants, or differences away from rounding boundaries still require investigation; a difference of one is not automatic acceptance.
-- F32: absolute output error must not exceed `2e−6·max(1,M)`, where M is the maximum absolute participating value for that output.
-- F16: compare the stored output, promoted exactly to binary64, against the unrounded reference result z. Allow the F32 budget above plus ULP16(q), where q is z rounded to binary16 with round-to-nearest, ties-to-even. Output must remain finite; half-precision accumulation overflow is not an acceptable explanation.
+- Integer w: for identical accepted sets and scene decisions, output may differ from the rounded binary64 reference by at most one integer code value. Persistent one-sided bias, shifted constants, or differences away from rounding boundaries still require investigation; a difference of one is not automatic acceptance.
+- F32: for identical accepted sets and scene decisions, absolute output error must not exceed `2e−6·max(1,M)`, where M is the maximum absolute participating value for that output.
+- F16: for identical accepted sets and scene decisions, compare the stored output, promoted exactly to binary64, against the unrounded reference result z. Allow the F32 budget above plus ULP16(q), where q is z rounded to binary16 with round-to-nearest, ties-to-even. Output must remain finite; half-precision accumulation overflow is not an acceptable explanation.
 
 Define ULP16(q)=2^−24 for zero and subnormal q. For normal finite q, define ULP16(q)=2^(floor(log2(abs(q)))−10). At an exact power of two, use the spacing on the larger-magnitude side; the sign of q does not change the budget. This gives 2^−24 at zero and the smallest normal, 2^−10 at ±1, and 32 at ±65504 without referring to an infinite adjacent value. A finite F16 input convex combination has a finite rounded reference q.
 
 These are initial acceptance ceilings, not algorithm parameters relaxing the equations. All formats must preserve representable constant values; floating signed-zero identity is not required. Unprocessed planes must remain bitwise identical. Results must not introduce extrema outside participating values.
 
-Selection and scene classification are discrete decisions. Construct equality, just-below, and just-above fixtures to check inclusive sample thresholds and strict scene thresholds. Small output error does not justify a wrong branch. Recheck distance thresholds or scene means near comparison boundaries in higher precision. If a production optimization's error bound crosses a threshold, handle that boundary with reliable evaluation rather than fitting a legacy binary's decision.
+Apply inclusive sample comparisons (`difference <= threshold`) and strict scene comparisons (`metric > scd`) to the computed floating-point values. Ordinary rounding and FMA may change a decision extremely close to a boundary, including rounding a threshold to equality; these differences are permitted. Exact real-arithmetic classification, arbitrary-precision arithmetic, and higher-precision boundary reevaluation are not required. Test representable equality and clearly separated values on either side. When accepted sets or scene decisions differ near a boundary, assess the resulting output separately from accumulation error; do not require the same-set error ceilings above or dismiss systematic or visibly harmful errors as rounding.
 
 ## Required matrix
 

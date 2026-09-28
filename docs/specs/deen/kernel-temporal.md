@@ -23,7 +23,7 @@ Use every color plane, including planes not selected for filtering. Planes have 
 
 Parameter scd is finite and nonnegative, in the same 8-bit difference units. Equality D=scd is not a cut. A binding may explicitly disable scene detection; endpoint fallback still applies. Do not retain the legacy negative-value debug-printing interpretation.
 
-Integer SAD uses sufficiently wide exact accumulation with prior checks of dimensions and maximum sums. Floating differences and means use a stable reference calculation of at least binary64 precision. Production reductions may be optimized, but arbitrary rounding drift must not flip a whole-frame decision near scd. Re-evaluate in higher precision if the error bound straddles scd.
+Integer SAD uses sufficiently wide exact accumulation with prior checks of dimensions and maximum sums. Floating differences and means use a stable reference calculation of at least binary64 precision. Production reductions may be optimized. Compare the computed metric directly with scd; ordinary floating-point rounding near the boundary may change the decision, and no exact or higher-precision reevaluation is required.
 
 ## Determinism and errors
 

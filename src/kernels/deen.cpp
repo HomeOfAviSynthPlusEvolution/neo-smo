@@ -4,8 +4,7 @@
 
 namespace neo_smo {
 void deen_kernel(DeenFamily family, const std::array<const double*, 3>& src, int count, std::size_t pitch, int width,
-                 int height, int radius, DeenThreshold spatial, DeenThreshold temporal, const double* weights,
-                 double* dst) {
+                 int height, int radius, double spatial, double temporal, const double* weights, double* dst) {
   switch (family) {
     case DeenFamily::Constant:
       deen_c_kernel(src, count, pitch, width, height, radius, spatial, temporal, dst);
