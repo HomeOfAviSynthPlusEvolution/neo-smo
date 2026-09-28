@@ -1,3 +1,4 @@
+#include "hwy/targets.h"
 #include "algorithms/deen.hpp"
 #include "base/fp16.hpp"
 #include "guarded.hpp"
@@ -323,32 +324,38 @@ void invalid() {
 } // namespace
 int main(int argc, char** argv) {
   try {
-    const std::string mode = argc > 1 ? argv[1] : "c2d";
-    fixtures(mode);
-    invalid();
-    float_constants(mode);
-    scaled_boundary(mode);
-    if (mode[0] == 'w')
-      weighted_fixture(mode);
-    if (mode[0] == 'a') {
-      adaptive_fixture(mode);
-      rational_adaptive_boundary(mode);
-    }
-    if (mode[1] == '3')
-      temporal_fixtures(mode);
-    for (auto type : {DataType::U8, DataType::U16, DataType::F16, DataType::F32})
-      for (int bits : {8, 10, 12, 16, 32}) {
-        if ((type == DataType::U8 && bits != 8) || (type == DataType::U16 && (bits == 8 || bits == 32)) ||
-            (type == DataType::F16 && bits != 16) || (type == DataType::F32 && bits != 32))
-          continue;
-        for (int r = 1; r <= (mode[1] == '3' ? 4 : 7); ++r)
-          for (int w : {1, 7, 8, 9, 17})
-            for (double m : {0.0, 0.5, 1.0}) {
-              run_case(mode, type, bits, w, 3, r, m, false, true, mode[1] == '3', true);
-              run_case(mode, type, bits, w, 1, r, m, true, false, false, false);
-            }
+    for (const auto target : hwy::SupportedAndGeneratedTargets()) {
+      hwy::SetSupportedTargetsForTest(target);
+      std::printf("target %s\n", hwy::TargetName(target));
+
+      const std::string mode = argc > 1 ? argv[1] : "c2d";
+      fixtures(mode);
+      invalid();
+      float_constants(mode);
+      scaled_boundary(mode);
+      if (mode[0] == 'w')
+        weighted_fixture(mode);
+      if (mode[0] == 'a') {
+        adaptive_fixture(mode);
+        rational_adaptive_boundary(mode);
       }
-    std::cout << mode << " passed\n";
+      if (mode[1] == '3')
+        temporal_fixtures(mode);
+      for (auto type : {DataType::U8, DataType::U16, DataType::F16, DataType::F32})
+        for (int bits : {8, 10, 12, 16, 32}) {
+          if ((type == DataType::U8 && bits != 8) || (type == DataType::U16 && (bits == 8 || bits == 32)) ||
+              (type == DataType::F16 && bits != 16) || (type == DataType::F32 && bits != 32))
+            continue;
+          for (int r = 1; r <= (mode[1] == '3' ? 4 : 7); ++r)
+            for (int w : {1, 7, 8, 9, 17})
+              for (double m : {0.0, 0.5, 1.0}) {
+                run_case(mode, type, bits, w, 3, r, m, false, true, mode[1] == '3', true);
+                run_case(mode, type, bits, w, 1, r, m, true, false, false, false);
+              }
+        }
+      std::cout << mode << " passed\n";
+    }
+    hwy::SetSupportedTargetsForTest(0);
   } catch (const std::exception& e) {
     std::cerr << e.what() << "\n";
     return 1;

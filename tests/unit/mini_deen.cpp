@@ -1,3 +1,5 @@
+#include "guarded.hpp"
+#include "hwy/targets.h"
 #include "algorithms/mini_deen.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -62,38 +64,65 @@ void run(int bits, int w, int h, int r, int t) {
     for (int x = w * bytes; x < ds; ++x)
       check(dst[y * ds + x] == 0xcc);
 }
+void guard_edges() {
+  for (int bits : {8, 16})
+    for (int width : {1, 15, 16, 17, 31, 32, 33, 65})
+      for (int radius : {1, 7})
+        for (bool end : {false, true}) {
+          const int bytes = bits / 8, stride = width * bytes;
+          Guarded src(stride, end), dst(stride, end);
+          for (int x = 0; x < width; ++x)
+            store(src.data + x * bytes, 100 + (x % 5), bytes);
+          mini_deen_process(src.data, stride, dst.data, stride, width, 1, bits, radius, 255);
+          for (int x = 0; x < width; ++x) {
+            unsigned sum = 2 * (100 + x % 5), count = 2;
+            for (int j = std::max(0, x - radius); j <= std::min(width - 1, x + radius); ++j) {
+              sum += 100 + j % 5;
+              ++count;
+            }
+            check(load(dst.data + x * bytes, bytes) == (2 * sum + count) / (2 * count));
+          }
+        }
+}
 } // namespace
 int main() {
   try {
-    for (int bits = 8; bits <= 16; ++bits)
-      for (int r = 1; r <= 7; ++r)
-        for (int t : {0, 1, 2, 10, 255})
-          for (int w : {1, 2, 7, 17})
-            run(bits, w, w == 1 ? 9 : 3, r, t);
-    // Explicit center weighting and strict equality: [100,110], threshold=10 rejects,
-    // threshold=11 yields (3*100+110)/4=102.5 -> 103 at the first pixel.
-    std::uint8_t src[]{100, 110}, dst[2]{};
-    mini_deen_process(src, 2, dst, 2, 2, 1, 8, 1, 10);
-    check(dst[0] == 100 && dst[1] == 110);
-    mini_deen_process(src, 2, dst, 2, 2, 1, 8, 1, 11);
-    check(dst[0] == 103 && dst[1] == 108);
-    for (int bad : {0, 8}) {
+    for (const auto target : hwy::SupportedAndGeneratedTargets()) {
+      hwy::SetSupportedTargetsForTest(target);
+      std::printf("target %s\n", hwy::TargetName(target));
+      guard_edges();
+
+      for (int bits = 8; bits <= 16; ++bits)
+        for (int r = 1; r <= 7; ++r)
+          for (int t : {0, 1, 2, 10, 255})
+            for (int w : {1, 2, 7, 17, 31, 65})
+              run(bits, w, w == 1 ? 9 : 3, r, t);
+      // Explicit center weighting and strict equality: [100,110], threshold=10 rejects,
+      // threshold=11 yields (3*100+110)/4=102.5 -> 103 at the first pixel.
+      std::uint8_t src[]{100, 110}, dst[2]{};
+      mini_deen_process(src, 2, dst, 2, 2, 1, 8, 1, 10);
+      check(dst[0] == 100 && dst[1] == 110);
+      mini_deen_process(src, 2, dst, 2, 2, 1, 8, 1, 11);
+      check(dst[0] == 103 && dst[1] == 108);
+      for (int bad : {0, 8}) {
+        bool threw = false;
+        try {
+          mini_deen_process(src, 2, dst, 2, 2, 1, 8, bad, 10);
+        } catch (const std::invalid_argument&) {
+          threw = true;
+        }
+        check(threw);
+      }
       bool threw = false;
       try {
-        mini_deen_process(src, 2, dst, 2, 2, 1, 8, bad, 10);
+        mini_deen_process(src, 1, dst, 2, 2, 1, 8, 1, 10);
       } catch (const std::invalid_argument&) {
         threw = true;
       }
       check(threw);
+      std::puts("MiniDeen checks passed");
     }
-    bool threw = false;
-    try {
-      mini_deen_process(src, 1, dst, 2, 2, 1, 8, 1, 10);
-    } catch (const std::invalid_argument&) {
-      threw = true;
-    }
-    check(threw);
-    std::puts("MiniDeen scalar checks passed");
+    hwy::SetSupportedTargetsForTest(0);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "%s\n", e.what());
     return 1;

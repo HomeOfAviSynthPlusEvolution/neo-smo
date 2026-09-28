@@ -69,7 +69,7 @@ target_compile_definitions(neo_smo_core PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 
 # Deen validates finite values and bounds rounding errors before exact boundary
 # comparisons. Reassociation would invalidate those bounds and compensated sums.
-# SIMD specialization is a separate, deferred change.
+# The SIMD selectors use the same error bounds for exact boundary fallback.
 if(MSVC)
   set_property(SOURCE src/algorithms/deen.cpp src/kernels/deen_c.cpp src/kernels/deen_w.cpp src/kernels/deen_a.cpp APPEND PROPERTY COMPILE_OPTIONS /fp:precise)
 else()
