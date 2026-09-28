@@ -42,16 +42,19 @@ double read(const DeenPlane& p, int x, int y) {
     // Bit checks remain valid under the production compiler's fast FP assumptions.
     std::uint32_t u;
     std::memcpy(&u, v, sizeof(u));
-    require((u & 0x7f800000u) != 0x7f800000u, "Deen: non-finite sample.");
+    if ((u & 0x7f800000u) == 0x7f800000u)
+      throw std::invalid_argument("Deen: non-finite sample.");
     return f;
   }
   std::uint16_t u;
   std::memcpy(&u, v, sizeof(u));
   if (p.type == DataType::F16) {
-    require((u & 0x7c00u) != 0x7c00u, "Deen: non-finite sample.");
+    if ((u & 0x7c00u) == 0x7c00u)
+      throw std::invalid_argument("Deen: non-finite sample.");
     return fp16_to_fp32(u);
   }
-  require(u <= ((1u << p.bits) - 1), "Deen: sample exceeds bit depth.");
+  if (u > ((1u << p.bits) - 1))
+    throw std::invalid_argument("Deen: sample exceeds bit depth.");
   return u;
 }
 // Near a scene threshold, compare exact rational sums to the binary64 parameter.
