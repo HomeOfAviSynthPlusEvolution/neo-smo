@@ -1,6 +1,7 @@
 #include "base/fp16.hpp"
 #include "kernels/dispatch.hpp"
 #include "hwy/targets.h"
+#include "hwy/per_target.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -55,11 +56,66 @@ std::vector<float> apply(const std::vector<float>& input, bool half, bool chroma
   }
   return out;
 }
+
+// Mode 8 can select a different direction when half-rounded costs tie.
+// Check each arithmetic policy against its own scalar calculation.
+bool check_rg8_precision(const std::vector<int64_t>& targets) {
+  std::vector<float> input(count);
+  unsigned state = 41;
+  for (auto& value : input) {
+    state ^= state << 13;
+    state ^= state >> 17;
+    state ^= state << 5;
+    value = (1000 + state % 48) * 0x1p-24f;
+    if (state & 1024)
+      value = -value;
+    value = neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(value));
+  }
+  const int offsets[] = {-int(width) - 1, -int(width), -int(width) + 1, -1};
+  for (auto target : targets) {
+    hwy::SetSupportedTargetsForTest(target);
+    const bool native = hwy::HaveFloat16();
+    const auto round = [=](float x) {
+      return native ? neo_smo::fp16_to_fp32(neo_smo::fp32_to_fp16(x)) : x;
+    };
+    const auto output = apply<uint16_t>(input, true, true, 1, 8);
+    for (size_t y = 1; y + 1 < height; ++y)
+      for (size_t x = 1; x + 1 < width; ++x) {
+        const int i = static_cast<int>(y * width + x);
+        float clamped[4], costs[4];
+        for (int k = 0; k < 4; ++k) {
+          const auto lo = std::min(input[i + offsets[k]], input[i - offsets[k]]);
+          const auto hi = std::max(input[i + offsets[k]], input[i - offsets[k]]);
+          clamped[k] = std::clamp(input[i], lo, hi);
+          costs[k] = std::clamp(round(std::abs(round(input[i] - clamped[k])) + round(round(hi - lo) * 2)), -0.5f, 0.5f);
+        }
+        const auto best = *std::min_element(costs, costs + 4);
+        float expected = clamped[0];
+        for (int k : {2, 1, 3})
+          if (costs[k] == best)
+            expected = clamped[k];
+        if (output[i] != expected) {
+          std::fprintf(stderr, "%s RG8 native_half=%d pixel=%d ref=%g out=%g\n", hwy::TargetName(target), native, i,
+                       expected, output[i]);
+          return false;
+        }
+      }
+  }
+  return true;
+}
+
 } // namespace
 
 int main() {
   const auto targets = hwy::SupportedAndGeneratedTargets();
-  const auto reference = targets.front();
+  if (!check_rg8_precision(targets))
+    return 1;
+  int64_t references[2]{};
+  for (auto target : targets) {
+    hwy::SetSupportedTargetsForTest(target);
+    const int group = hwy::HaveFloat16() ? 1 : 0;
+    if (!references[group]) references[group] = target;
+  }
   float maxima[2]{};
   // Four deterministic patterns, including signed subnormals and dense ties.
   // Compare three successive applications, not just isolated helper rounding.
@@ -87,22 +143,29 @@ int main() {
           }
           for (int filter = 0; filter < 8; ++filter)
             for (int mode = 1; mode <= (filter == 0 || filter >= 6 ? 3 : (filter == 1 || filter == 3) ? 24 : filter == 2 ? 2 : 1); ++mode) {
-              std::vector<std::vector<float>> expected;
-              auto current = input;
-              hwy::SetSupportedTargetsForTest(reference);
-              for (int step = 0; step < 3; ++step) {
-                current = half ? apply<uint16_t>(current, half, chroma, filter, mode)
-                               : apply<float>(current, half, chroma, filter, mode);
-                expected.push_back(current);
+              std::vector<std::vector<float>> expected[2];
+              for (int group = 0; group < (half ? 2 : 1); ++group) {
+                const auto reference = half ? references[group] : targets.front();
+                if (!reference) continue;
+                auto current = input;
+                hwy::SetSupportedTargetsForTest(reference);
+                for (int step = 0; step < 3; ++step) {
+                  current = half ? apply<uint16_t>(current, half, chroma, filter, mode)
+                                 : apply<float>(current, half, chroma, filter, mode);
+                  expected[group].push_back(current);
+                }
               }
               for (auto target : targets) {
                 hwy::SetSupportedTargetsForTest(target);
-                current = input;
+                // F16 arithmetic and F32 arithmetic with F16 storage are separate
+                // production policies, not numerically identical implementations.
+                const int group = half && hwy::HaveFloat16() ? 1 : 0;
+                auto current = input;
                 for (int step = 0; step < 3; ++step) {
                   current = half ? apply<uint16_t>(current, half, chroma, filter, mode)
                                  : apply<float>(current, half, chroma, filter, mode);
                   for (size_t i = 0; i < count; ++i) {
-                    const float ref = expected[step][i], value = current[i];
+                    const float ref = expected[group][step][i], value = current[i];
                     const float error = std::abs(value - ref);
                     // Normalized-video budget: about one half ULP for F16;
                     // for F32, low single-digit millionths of full scale.
@@ -122,6 +185,6 @@ int main() {
             }
         }
   hwy::SetSupportedTargetsForTest(0);
-  std::printf("%zu targets; 3 successive passes; max_abs F32=%g F16=%g (reference %s)\n", targets.size(), maxima[0],
-              maxima[1], hwy::TargetName(reference));
+  std::printf("%zu targets; 3 successive passes within each arithmetic policy; max_abs F32=%g F16=%g\n",
+              targets.size(), maxima[0], maxima[1]);
 }

@@ -95,9 +95,10 @@ HWY_INLINE hn::Vec<D> eval_smart_median_u8(D d, hn::Vec<D> center, hn::Vec<D>* v
   };
   const auto lo = finish(hn::LowerHalf(dh, center), hn::LowerHalf(dh, values[count/2-1]),
       hn::LowerHalf(dh, values[count/2]), hn::LowerHalf(dh, sum), hn::LowerHalf(dh, threshold));
-  const auto hi = finish(hn::UpperHalf(dh, center), hn::UpperHalf(dh, values[count/2-1]),
-      hn::UpperHalf(dh, values[count/2]), hn::UpperHalf(dh, sum), hn::UpperHalf(dh, threshold));
-  return hn::Combine(d, hi, lo);
+  // Defer lookup via ADL: this multi-lane helper is not used by the scalar target.
+  const auto hi = finish(UpperHalf(dh, center), UpperHalf(dh, values[count/2-1]),
+      UpperHalf(dh, values[count/2]), UpperHalf(dh, sum), UpperHalf(dh, threshold));
+  return Combine(d, hi, lo);
 }
 
 template <bool IsF16, int Radius, class D, class V = hn::Vec<D>>
@@ -123,7 +124,7 @@ HWY_INLINE V eval_smart_median_float(D d, V center, V* values, V threshold) {
     sum = float_add<IsF16>(d, sum, values[i]);
   }
 
-  const V count_vec = hn::Set(d, static_cast<float>(kEvenCount));
+  const V count_vec = float_set(d, static_cast<float>(kEvenCount));
   const V average = float_div<IsF16>(d, sum, count_vec);
 
   const V diff_l = float_sub<IsF16>(d, median_left, average);
@@ -132,7 +133,7 @@ HWY_INLINE V eval_smart_median_float(D d, V center, V* values, V threshold) {
   const V sq_r = float_mul<IsF16>(d, diff_r, diff_r);
   const V sq_sum = float_add<IsF16>(d, sq_l, sq_r);
 
-  const V curved_variance = float_mul<IsF16>(d, float_sqrt<IsF16>(d, sq_sum), hn::Set(d, 13.0f));
+  const V curved_variance = float_mul<IsF16>(d, float_sqrt<IsF16>(d, sq_sum), float_set(d, 13.0f));
 
   const auto lte = hn::Le(curved_variance, threshold);
   const auto med_lo = hn::Min(median_left, median_right);
@@ -150,7 +151,8 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
   constexpr int kEvenCount = kCount - 1;
   constexpr int kCenterOffset = kCount / 2;
 
-  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  // A scalar vector cannot split int16 lanes for the int32 variance calculation.
+  using ComputeT = std::conditional_t<sizeof(T) == 1 && HWY_TARGET != HWY_SCALAR, std::int16_t, std::int32_t>;
   hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t kSimdPad = lanes;
@@ -205,7 +207,7 @@ void smart_median_int_impl(T threshold, const T* srcp, T* dstp, int width, int h
       }
 
       auto res = hn::Zero(d);
-      if constexpr (sizeof(T) == 1) res = eval_smart_median_u8<Radius>(d, center, values, thresh_vec);
+      if constexpr (sizeof(T) == 1 && hn::MaxLanes(d) >= 2) res = eval_smart_median_u8<Radius>(d, center, values, thresh_vec);
       else res = eval_smart_median_int32<Radius>(d, center, values, thresh_vec);
       hn::StoreN(hn::DemoteTo(ds, res), ds, dst_row + x,
                  std::min(lanes, static_cast<std::size_t>(width) - x));
@@ -236,7 +238,7 @@ void smart_median_float_impl(float threshold, const StorageT* srcp, StorageT* ds
   for (int i = 0; i < kSide; ++i) {
     rows[static_cast<std::size_t>(i)] = row_buffers.data() + static_cast<std::size_t>(i) * padded_len + Radius;
   }
-  const auto thresh_vec = hn::Set(d, threshold);
+  const auto thresh_vec = float_set(d, threshold);
 
   for (int y = 0; y < height; ++y) {
     for (int dy = -Radius; dy <= Radius; ++dy) {

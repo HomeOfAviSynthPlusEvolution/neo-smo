@@ -68,14 +68,14 @@ HWY_INLINE V eval_iqm_int(D d, V* vals) {
 
 template <bool IsF16, int Radius, class D, class V = hn::Vec<D>>
 HWY_INLINE V eval_iqm_float(D d, V* vals) {
-  const V three_quarters = hn::Set(d, 0.75f);
+  const V three_quarters = float_set(d, 0.75f);
   if constexpr (Radius == 1) {
     sort9(d, vals);
     const V inner_sum = float_add<IsF16>(d, float_add<IsF16>(d, vals[3], vals[4]), vals[5]);
     const V ends = float_add<IsF16>(d, vals[2], vals[6]);
     const V weighted = float_mul<IsF16>(d, ends, three_quarters);
     const V sum = float_add<IsF16>(d, inner_sum, weighted);
-    const V len_half = hn::Set(d, 4.5f);
+    const V len_half = float_set(d, 4.5f);
     return float_div<IsF16>(d, sum, len_half);
   } else if constexpr (Radius == 2) {
     sort25(d, vals);
@@ -86,7 +86,7 @@ HWY_INLINE V eval_iqm_float(D d, V* vals) {
     const V ends = float_add<IsF16>(d, vals[6], vals[18]);
     const V weighted = float_mul<IsF16>(d, ends, three_quarters);
     const V sum = float_add<IsF16>(d, inner_sum, weighted);
-    const V len_half = hn::Set(d, 12.5f);
+    const V len_half = float_set(d, 12.5f);
     return float_div<IsF16>(d, sum, len_half);
   } else {
     sort49(d, vals);
@@ -97,7 +97,7 @@ HWY_INLINE V eval_iqm_float(D d, V* vals) {
     const V ends = float_add<IsF16>(d, vals[12], vals[36]);
     const V weighted = float_mul<IsF16>(d, ends, three_quarters);
     const V sum = float_add<IsF16>(d, inner_sum, weighted);
-    const V len_half = hn::Set(d, 24.5f);
+    const V len_half = float_set(d, 24.5f);
     return float_div<IsF16>(d, sum, len_half);
   }
 }
@@ -135,7 +135,8 @@ void iqm_native_int(D d, const T* srcp, T* dstp,
       else sort25(d, values);
       auto average = [&](auto upper) HWY_ATTR {
         auto widen = [&](int i) HWY_ATTR {
-          if constexpr (decltype(upper)::value) return hn::PromoteTo(dw, hn::UpperHalf(dh, values[i]));
+          // Defer lookup via ADL: the scalar target has no UpperHalf/Combine.
+          if constexpr (decltype(upper)::value) return hn::PromoteTo(dw, UpperHalf(dh, values[i]));
           else return hn::PromoteTo(dw, hn::LowerHalf(dh, values[i]));
         };
         auto sum = widen(quartile + 1);
@@ -149,7 +150,7 @@ void iqm_native_int(D d, const T* srcp, T* dstp,
         return hn::DemoteTo(dh, q);
       };
       const auto lo = average(std::false_type{}), hi = average(std::true_type{});
-      hn::StoreN(hn::Combine(d, hi, lo), d, dstp + static_cast<std::size_t>(y) * dst_stride + x,
+      hn::StoreN(Combine(d, hi, lo), d, dstp + static_cast<std::size_t>(y) * dst_stride + x,
                  std::min(lanes, static_cast<std::size_t>(width) - x));
     }
   }

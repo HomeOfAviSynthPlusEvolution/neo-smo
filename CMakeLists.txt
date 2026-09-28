@@ -30,6 +30,10 @@ add_library(neo_smo_core STATIC
   src/kernels/temporal_soften.cpp
   src/kernels/temporal_repair.cpp
   src/kernels/degrain_median.cpp
+  src/kernels/degrain_median_u8.cpp
+  src/kernels/degrain_median_u16.cpp
+  src/kernels/degrain_median_f16.cpp
+  src/kernels/degrain_median_f32.cpp
   src/kernels/fluxsmooth.cpp
   src/kernels/ttempsmooth.cpp
   src/kernels/ccd.cpp
@@ -65,7 +69,8 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     src/kernels/temporal_median.cpp
     APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_COMPARE_SWAP>")
-  set_property(SOURCE src/kernels/degrain_median.cpp APPEND PROPERTY COMPILE_DEFINITIONS
+  set_property(SOURCE src/kernels/degrain_median_u8.cpp src/kernels/degrain_median_u16.cpp
+    src/kernels/degrain_median_f16.cpp src/kernels/degrain_median_f32.cpp APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_MSVC_OUTLINE_DGM_EMU>")
   # Reduce integer Repair optimization cost only for the native MSVC compiler.
   set_property(SOURCE src/kernels/repair_int.cpp APPEND PROPERTY COMPILE_DEFINITIONS
@@ -82,7 +87,7 @@ if(MSVC)
   set_property(SOURCE src/kernels/remove_grain.cpp src/kernels/repair_f16.cpp
     src/kernels/inter_quartile_mean.cpp src/kernels/smart_median.cpp
     src/kernels/temporal_median.cpp src/kernels/temporal_soften.cpp
-    src/kernels/temporal_repair.cpp src/kernels/degrain_median.cpp src/kernels/fluxsmooth.cpp
+    src/kernels/temporal_repair.cpp src/kernels/degrain_median_f16.cpp src/kernels/fluxsmooth.cpp
     src/kernels/ttempsmooth.cpp src/kernels/ccd.cpp src/kernels/cnr4.cpp
     APPEND PROPERTY COMPILE_DEFINITIONS
     "$<$<CONFIG:Release,RelWithDebInfo>:NEO_SMO_OUTLINE_EMU_ROUND_F16>")

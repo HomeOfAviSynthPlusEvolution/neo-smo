@@ -29,7 +29,8 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
   constexpr unsigned scale_bits = sizeof(T) == 1 ? 16 : 32;
   const hn::RebindToUnsigned<decltype(d)> du;
   const auto multiplier = hn::Set(du, (std::uint64_t{1} << scale_bits) / diameter);
-  if constexpr (sizeof(T) == 2) {
+  // Packed averaging requires two halves; scalar targets use the widened loop below.
+  if constexpr (sizeof(T) == 2 && hn::MaxLanes(hn::ScalableTag<T>()) >= 2) {
     const hn::ScalableTag<std::uint16_t> dn;
     const auto native_lanes = hn::Lanes(dn);
     const auto native_threshold = hn::Set(dn, threshold);
@@ -40,18 +41,18 @@ void temporal_soften_int_impl(int diameter, T threshold, const T* const* srcp_pl
         const auto count = std::min(native_lanes, static_cast<std::size_t>(width) - x);
         const auto curr = hn::LoadN(dn, srcp_planes[0] + offset + x, count);
         auto lo = hn::PromoteTo(d, hn::LowerHalf(ds, curr));
-        auto hi = hn::PromoteTo(d, hn::UpperHalf(ds, curr));
+        auto hi = hn::PromoteTo(d, UpperHalf(ds, curr));
         for (int i = 1; i < diameter; ++i) {
           const auto value = hn::LoadN(dn, srcp_planes[i] + offset + x, count);
           const auto chosen = hn::IfThenElse(hn::Le(hn::AbsDiff(curr, value), native_threshold), value, curr);
           lo = hn::Add(lo, hn::PromoteTo(d, hn::LowerHalf(ds, chosen)));
-          hi = hn::Add(hi, hn::PromoteTo(d, hn::UpperHalf(ds, chosen)));
+          hi = hn::Add(hi, hn::PromoteTo(d, UpperHalf(ds, chosen)));
         }
         auto finish = [&](auto sum) HWY_ATTR {
           const auto value = hn::Add(sum, rounding);
           return hn::DemoteTo(ds, hn::BitCast(d, hn::MulHigh(hn::BitCast(du, value), multiplier)));
         };
-        hn::StoreN(hn::Combine(dn, finish(hi), finish(lo)), dn, dst_row + x, count);
+        hn::StoreN(Combine(dn, finish(hi), finish(lo)), dn, dst_row + x, count);
       }
     }
     return;
@@ -84,7 +85,7 @@ void temporal_soften_float_impl(int runtime_diameter, float threshold, const Sto
   const hn::ScalableTag<float> df;
   const hn::Rebind<ComputeT, decltype(df)> d;
   const std::size_t lanes = hn::Lanes(d);
-  const auto thresh_vec = hn::Set(d, threshold);
+  const auto thresh_vec = float_set(d, threshold);
   const auto reciprocal = hn::Set(df, 1.0f / static_cast<float>(diameter));
 
   if constexpr (IsF16) {

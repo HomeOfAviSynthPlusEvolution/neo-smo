@@ -92,8 +92,8 @@ void vertical_cleaner_float_impl(int mode, bool chroma, const StorageT* srcp, St
   const int radius = mode == 1 ? 1 : 2;
   if (mode != 1 && mode != 2) return;
   copy_first_n_lines(dstp, srcp, static_cast<std::size_t>(width), dst_stride, src_stride, radius);
-  const auto vmin = hn::Set(d, chroma ? -0.5f : 0.0f);
-  const auto vmax = hn::Set(d, chroma ? 0.5f : 1.0f);
+  const auto vmin = float_set(d, chroma ? -0.5f : 0.0f);
+  const auto vmax = float_set(d, chroma ? 0.5f : 1.0f);
   for (int y = radius; y < height - radius; ++y) {
     for (std::size_t x = 0; x < static_cast<std::size_t>(width); x += lanes) {
       const auto count = std::min(lanes, static_cast<std::size_t>(width) - x);

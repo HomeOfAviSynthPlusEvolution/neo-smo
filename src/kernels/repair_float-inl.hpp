@@ -13,7 +13,7 @@ HWY_INLINE
 #endif
 V eval_repair_float(D d, int mode, V src, const Grid3x3<D>& g, V vmin, V vmax) {
   const V c = g.center_center;
-  const V two = hn::Set(d, 2.0f);
+  const V two = float_set(d, 2.0f);
 
   switch (mode) {
     case 1: {
@@ -332,8 +332,8 @@ void repair_float_impl(int mode, bool chroma, const StorageT* srcp, const Storag
 
   const float max_val = chroma ? 0.5f : 1.0f;
   const float min_val = chroma ? -0.5f : 0.0f;
-  const auto vmax = hn::Set(d, max_val);
-  const auto vmin = hn::Set(d, min_val);
+  const auto vmax = float_set(d, max_val);
+  const auto vmin = float_set(d, min_val);
 
   for (int y = 0; y < height; ++y) {
     const StorageT* src_row = srcp + static_cast<std::size_t>(y) * src_stride;

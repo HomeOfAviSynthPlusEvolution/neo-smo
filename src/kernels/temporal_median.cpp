@@ -22,7 +22,7 @@ HWY_INLINE V avg2_int(D d, V a, V b) {
 
 template <bool IsF16, class D, class V = hn::Vec<D>>
 HWY_INLINE V avg2_float(D d, V a, V b) {
-  const auto half = hn::Set(d, 0.5f);
+  const auto half = float_set(d, 0.5f);
   return float_mul<IsF16>(d, float_add<IsF16>(d, a, b), half);
 }
 

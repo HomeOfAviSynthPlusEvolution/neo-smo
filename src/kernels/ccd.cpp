@@ -35,7 +35,7 @@ HWY_INLINE hn::Vec<D> ccd_distance(D d, hn::Vec<D> a, hn::Vec<D> b, hn::Vec<D> c
   const auto db = float_sub<Half>(d, b, cb);
   const auto dc = float_sub<Half>(d, c, cc);
   auto aa = float_mul<Half>(d, da, da);
-  if constexpr (!RGB) aa = float_mul<Half>(d, aa, hn::Set(d, 4));
+  if constexpr (!RGB) aa = float_mul<Half>(d, aa, float_set(d, 4));
   return float_add<Half>(d, float_add<Half>(d, aa, float_mul<Half>(d, db, db)), float_mul<Half>(d, dc, dc));
 }
 
@@ -54,8 +54,8 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
   // floor((ssd + radius) / diameter) < floor(threshold) is exactly
   // ssd < floor(threshold) * diameter - radius for integer SSD values.
   const double cutoff = integer ? std::floor(static_cast<double>(threshold)) * (radius * 2 + 1) - radius : threshold;
-  const auto threshold_v = hn::Set(d, cutoff);
-  const auto div = hn::Set(d, radius * 2 + 1);
+  const auto threshold_v = float_set(d, cutoff);
+  const auto div = float_set(d, radius * 2 + 1);
   const auto count = Interior ? lanes : std::min(lanes, static_cast<std::size_t>(width - x));
   auto load_ref = [&](int frame, int plane, int px, int py) HWY_ATTR {
     return ccd_load<Half, Interior>(d, reinterpret_cast<const T*>(ref[frame * 3 + plane]), stride, width, height, px, py, count);
@@ -68,7 +68,7 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
   const auto ca = load_ref(radius, 0, x, y), cb = load_ref(radius, 1, x, y), cc = load_ref(radius, 2, x, y);
   auto ta = hn::Zero(d), tb = load_src(1, x, y), tc = load_src(2, x, y);
   if constexpr (RGB) ta = load_src(0, x, y);
-  auto accepted = hn::Set(d, 1);
+  auto accepted = float_set(d, 1);
   for (int p = 0; p < num_points; ++p) {
     const int px = x + points[p].x, py = y + points[p].y;
     auto distance = [&](int frame) HWY_ATTR {
@@ -85,12 +85,12 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
                                     hn::Mul(hn::DemoteTo(df, b), hn::Set(df, weights[next])));
           ssd = hn::Add(ssd, hn::PromoteTo(d, weighted_round(df, term)));
         } else {
-          const auto term = hn::Add(hn::Mul(a, hn::Set(d, weights[prev])),
-                                    hn::Mul(b, hn::Set(d, weights[next])));
+          const auto term = hn::Add(hn::Mul(a, float_set(d, weights[prev])),
+                                    hn::Mul(b, float_set(d, weights[next])));
           ssd = hn::Add(ssd, weighted_round(d, term));
         }
       } else {
-        auto wp = hn::Set(d, weights[prev]), wn = hn::Set(d, weights[next]);
+        auto wp = float_set(d, weights[prev]), wn = float_set(d, weights[next]);
         if constexpr (std::is_same_v<T, float>) {
           ssd = hn::MulAdd(a, wp, ssd);
           ssd = hn::MulAdd(b, wn, ssd);
@@ -102,7 +102,7 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     if constexpr (!integer) {
       if constexpr (std::is_same_v<T, float>) {
         // FP32 averaging permits reciprocal rounding, as with FMA.
-        if (radius == 1 || radius == 2) ssd = hn::Mul(ssd, hn::Set(d, 1.0f / (radius * 2 + 1)));
+        if (radius == 1 || radius == 2) ssd = hn::Mul(ssd, float_set(d, 1.0f / (radius * 2 + 1)));
         else if (radius) ssd = float_div<Half>(d, ssd, div);
       } else if (radius) ssd = float_div<Half>(d, ssd, div);
     }
@@ -110,19 +110,22 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
     if constexpr (RGB) ta = hn::IfThenElse(mask, float_add<Half>(d, ta, shared_reference ? ra : load_src(0, px, py)), ta);
     tb = hn::IfThenElse(mask, float_add<Half>(d, tb, shared_reference ? rb : load_src(1, px, py)), tb);
     tc = hn::IfThenElse(mask, float_add<Half>(d, tc, shared_reference ? rc : load_src(2, px, py)), tc);
-    accepted = hn::Add(accepted, hn::IfThenElse(mask, hn::Set(d, 1), hn::Zero(d)));
+    accepted = hn::Add(accepted, hn::IfThenElse(mask, float_set(d, 1), hn::Zero(d)));
   }
   auto inverse_count = hn::Zero(d);
   if constexpr (ReciprocalFloat) {
-    // Counts are finite and >= 1. One Newton step refines the hardware
-    // reciprocal to FP32 rounding precision, shared across output channels.
+    // Counts are finite and >= 1. Refine the reciprocal once on x86 and
+    // twice on ARM, whose estimate has fewer accurate bits. Share it across channels.
     const auto estimate = hn::ApproximateReciprocal(accepted);
-    inverse_count = hn::Mul(estimate, hn::NegMulAdd(accepted, estimate, hn::Set(d, 2)));
+    inverse_count = hn::Mul(estimate, hn::NegMulAdd(accepted, estimate, float_set(d, 2)));
+#if HWY_ARCH_ARM
+    inverse_count = hn::Mul(inverse_count, hn::NegMulAdd(accepted, inverse_count, float_set(d, 2)));
+#endif
   }
   if constexpr (integer && !wide_integer) {
     const auto denominator = hn::Add(accepted, accepted);
     const auto estimate = hn::ApproximateReciprocal(denominator);
-    inverse_count = hn::Mul(estimate, hn::NegMulAdd(denominator, estimate, hn::Set(d, 2)));
+    inverse_count = hn::Mul(estimate, hn::NegMulAdd(denominator, estimate, float_set(d, 2)));
   }
   auto store = [&](hn::Vec<decltype(d)> total, int plane) HWY_ATTR {
     if constexpr (!Half && !std::is_same_v<T, float>) {
@@ -140,10 +143,10 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
         // These integer-valued products are exact in FP32; use the
         // remainder to correct either side of the quotient boundary.
         const auto remainder = hn::Sub(numerator, hn::Mul(result, denominator));
-        result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), hn::Set(d, -1),
-            hn::IfThenElse(hn::Ge(remainder, denominator), hn::Set(d, 1), hn::Zero(d))));
+        result = hn::Add(result, hn::IfThenElse(hn::Lt(remainder, hn::Zero(d)), float_set(d, -1),
+            hn::IfThenElse(hn::Ge(remainder, denominator), float_set(d, 1), hn::Zero(d))));
       }
-      weighted_store<false>(d, hn::Min(result, hn::Set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
+      weighted_store<false>(d, hn::Min(result, float_set(d, (1u << bits) - 1)), destinations[plane] + y * stride + x, count);
     } else if constexpr (ReciprocalFloat) {
       hn::StoreN(hn::Mul(total, inverse_count), d, destinations[plane] + y * stride + x, count);
     } else {
@@ -156,6 +159,7 @@ HWY_INLINE void ccd_block(int width, int height, std::size_t stride_bytes,
 
 // Full interior blocks only. Widening products preserve all 16-bit squared
 // distances while the accumulators process twice as many pixels as binary64.
+#if HWY_TARGET != HWY_SCALAR  // Requires shifting and interleaving vector lanes.
 template <bool RGB, class D>
 HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
     const std::uint8_t* const* src, const std::uint8_t* const* ref,
@@ -211,6 +215,7 @@ HWY_INLINE void ccd_spatial_u16_block(D d, std::size_t stride,
   if constexpr (RGB) store(ta, 0);
   store(tb, 1); store(tc, 2);
 }
+#endif
 
 
 // Fixed FP32 radii expose frame indices and loop counts to the compiler,
@@ -283,6 +288,7 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
   }
   for (int y = 0; y < height; ++y) {
     for (int x = 0; x < width; x += static_cast<int>(lanes)) {
+#if HWY_TARGET != HWY_SCALAR
       if constexpr (wide_integer) {
         const hn::ScalableTag<std::int32_t> di;
         if constexpr (hn::MaxLanes(di) >= 2) {
@@ -298,6 +304,7 @@ HWY_NOINLINE void ccd_impl(int width, int height, std::size_t stride_bytes,
           }
         }
       }
+#endif
       const bool interior = static_cast<int64_t>(x) + min_x >= 0 &&
           static_cast<int64_t>(x) + lanes + max_x <= static_cast<std::size_t>(width) &&
           static_cast<int64_t>(y) + min_y >= 0 && static_cast<int64_t>(y) + max_y < height;

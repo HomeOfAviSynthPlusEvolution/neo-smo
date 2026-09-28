@@ -25,14 +25,14 @@ HWY_INLINE auto ttempsmooth_mask_group(D /*d*/, hn::Mask<D> value) {
   const hn::Half<D> dh;
   const auto half = [&]() HWY_ATTR {
     if constexpr (Part < groups / 2) return hn::LowerHalfOfMask(dh, value);
-    else return hn::UpperHalfOfMask(dh, value);
+    else return UpperHalfOfMask(dh, value);
   }();
   if constexpr (groups == 2) {
     return half;
   } else {
     const hn::Half<decltype(dh)> dq;
     if constexpr (Part % 2 == 0) return hn::LowerHalfOfMask(dq, half);
-    else return hn::UpperHalfOfMask(dq, half);
+    else return UpperHalfOfMask(dq, half);
   }
 }
 
@@ -101,7 +101,7 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
         const T* source = sources[i] + static_cast<std::size_t>(y) * src_stride + x;
         const auto weight = hn::Set(df, temporal_weights[1 + i]);
         const auto update = [&](auto& sum, auto& weights, auto pixels, auto group_mask) HWY_ATTR {
-          const auto mask = hn::PromoteMaskTo(df, dg, group_mask);
+          const auto mask = PromoteMaskTo(df, dg, group_mask);
           weights = hn::IfThenElse(mask, hn::Add(weights, weight), weights);
           sum = hn::IfThenElse(mask, hn::Add(sum, hn::Mul(pixels, weight)), sum);
         };
@@ -127,10 +127,10 @@ HWY_NOINLINE void ttempsmooth_temporal_integer_row(
     const auto o0 = finish(c0, s0, w0), o1 = finish(c1, s1, w1);
     if constexpr (groups == 4) {
       const auto o2 = finish(c2, s2, w2), o3 = finish(c3, s3, w3);
-      hn::StoreU(hn::Combine(dt, hn::Combine(dh, o3, o2), hn::Combine(dh, o1, o0)),
+      hn::StoreU(Combine(dt, Combine(dh, o3, o2), Combine(dh, o1, o0)),
                  dt, dst + x);
     } else {
-      hn::StoreU(hn::Combine(dt, o1, o0), dt, dst + x);
+      hn::StoreU(Combine(dt, o1, o0), dt, dst + x);
     }
   }
 }

@@ -17,7 +17,7 @@ jobs:
   spec:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout_minutes || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,13 +46,19 @@ jobs:
             cxx_flags: ''
           - name: Linux x64 / Clang 22 / ASan + UBSan
             os: ubuntu-26.04
+            timeout_minutes: 15
             arch: x64
             cc: clang-22
             cxx: clang++-22
             packages: ninja-build clang-22 libclang-rt-22-dev
             build_type: RelWithDebInfo
+            relwithdebinfo_flags: -O1 -gline-tables-only -DNDEBUG
             plugin: 'OFF'
-            cxx_flags: -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+            # Bound sanitizer expansion of EMU128 sorting networks. Release
+            # builds retain full inlining; all SIMD targets remain tested here.
+            cxx_flags: >-
+              -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+              -DNEO_SMO_OUTLINE_EMU_COMPARE_SWAP
           - name: macOS ARM64 / Apple Clang
             os: macos-15
             arch: arm64
@@ -124,10 +130,12 @@ jobs:
           CXX: ${{ matrix.cxx }}
           NEO_CXX_FLAGS: ${{ matrix.cxx_flags }}
           NEO_PYTHON: ${{ steps.python.outputs.python-path }}
+          NEO_RELWITHDEBINFO_FLAGS: ${{ matrix.relwithdebinfo_flags }}
         run: >-
           cmake -S . -B build/ci -G Ninja
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           "-DCMAKE_CXX_FLAGS=$NEO_CXX_FLAGS"
+          "-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=$NEO_RELWITHDEBINFO_FLAGS"
           -DBUILD_TESTING=ON
           -DNEO_SMO_BUILD_VAPOURSYNTH=${{ matrix.plugin }} -DNEO_SMO_BUILD_AVISYNTH=${{ matrix.plugin }}
           -DNEO_SMO_TEST_VAPOURSYNTH=OFF

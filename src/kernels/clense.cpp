@@ -136,7 +136,7 @@ void clense_forward_backward_float_impl(const StorageT* srcp, const StorageT* re
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
-  const auto two = hn::Set(d, 2.0f);
+  const auto two = float_set(d, 2.0f);
 
   if constexpr (IsF16) {
     for (std::size_t y = 0; y < height; ++y) {

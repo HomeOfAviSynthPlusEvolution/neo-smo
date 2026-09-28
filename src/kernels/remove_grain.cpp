@@ -277,13 +277,13 @@ template <bool IsF16, class D, class V = hn::Vec<D>>
 HWY_INLINE V eval_rg_float(D d, int mode, const Grid3x3<D>& g, bool chroma) {
   const V c = g.center_center;
   const V zero = hn::Zero(d);
-  const V two = hn::Set(d, 2.0f);
-  const V four = hn::Set(d, 4.0f);
-  const V inv2 = hn::Set(d, 0.5f);
-  const V inv8 = hn::Set(d, 0.125f);
-  const V inv16 = hn::Set(d, 0.0625f);
-  const V vmin = hn::Set(d, chroma ? -0.5f : 0.0f);
-  const V vmax = hn::Set(d, chroma ? 0.5f : 1.0f);
+  const V two = float_set(d, 2.0f);
+  const V four = float_set(d, 4.0f);
+  const V inv2 = float_set(d, 0.5f);
+  const V inv8 = float_set(d, 0.125f);
+  const V inv16 = float_set(d, 0.0625f);
+  const V vmin = float_set(d, chroma ? -0.5f : 0.0f);
+  const V vmax = float_set(d, chroma ? 0.5f : 1.0f);
 
   switch (mode) {
     case 1: {

@@ -86,8 +86,8 @@ void fluxsmooth_t_float_impl(float temporal_threshold, const StorageT* prevp, co
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
-  const auto thresh = hn::Set(d, temporal_threshold);
-  const auto one = hn::Set(d, 1.0f);
+  const auto thresh = float_set(d, temporal_threshold);
+  const auto one = float_set(d, 1.0f);
   const auto zero = hn::Zero(d);
 
   if constexpr (IsF16) {
@@ -203,7 +203,8 @@ void fluxsmooth_st_int_impl(std::int32_t temporal_threshold, std::int32_t spatia
                             const T* nextp, T* dstp, int width, int height, std::size_t prev_stride,
                             std::size_t curr_stride, std::size_t next_stride, std::size_t dst_stride) {
   constexpr int kRadius = 1;
-  using ComputeT = std::conditional_t<sizeof(T) == 1, std::int16_t, std::int32_t>;
+  // Byte-table reciprocals require a full vector; scalar targets use divide32.
+  using ComputeT = std::conditional_t<sizeof(T) == 1 && HWY_TARGET != HWY_SCALAR, std::int16_t, std::int32_t>;
   hn::ScalableTag<ComputeT> d;
   const hn::Rebind<T, decltype(d)> ds;
   const std::size_t lanes = hn::Lanes(d);
@@ -306,9 +307,9 @@ void fluxsmooth_st_float_impl(float temporal_threshold, float spatial_threshold,
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
-  const auto t_thresh = hn::Set(d, temporal_threshold);
-  const auto s_thresh = hn::Set(d, spatial_threshold);
-  const auto one = hn::Set(d, 1.0f);
+  const auto t_thresh = float_set(d, temporal_threshold);
+  const auto s_thresh = float_set(d, spatial_threshold);
+  const auto one = float_set(d, 1.0f);
   const auto zero = hn::Zero(d);
 
   copy_first_n_lines(dstp, currp, static_cast<std::size_t>(width), dst_stride, curr_stride, 1);

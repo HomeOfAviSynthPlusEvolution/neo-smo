@@ -98,8 +98,8 @@ void temporal_repair_pt_float_impl(int mode, bool chroma, const StorageT* srcp, 
   using ComputeT = FloatLane<IsF16>;
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
-  const auto format_min = hn::Set(d, chroma ? -0.5f : 0.0f);
-  const auto format_max = hn::Set(d, chroma ? 0.5f : 1.0f);
+  const auto format_min = float_set(d, chroma ? -0.5f : 0.0f);
+  const auto format_max = float_set(d, chroma ? 0.5f : 1.0f);
 
   if constexpr (IsF16) {
     for (int y = 0; y < height; ++y) {
@@ -298,8 +298,8 @@ void temporal_repair_st_float_impl(int mode, bool chroma, const StorageT* srcp, 
   const hn::ScalableTag<ComputeT> d;
   const std::size_t lanes = hn::Lanes(d);
   const std::size_t padded_len = static_cast<std::size_t>(width) + 2 * kRadius + lanes;
-  const auto format_min = hn::Set(d, chroma ? -0.5f : 0.0f);
-  const auto format_max = hn::Set(d, chroma ? 0.5f : 1.0f);
+  const auto format_min = float_set(d, chroma ? -0.5f : 0.0f);
+  const auto format_max = float_set(d, chroma ? 0.5f : 1.0f);
 
   std::vector<ComputeT> b_prev(3 * padded_len), b_curr(3 * padded_len), b_next(3 * padded_len);
   std::vector<ComputeT> b_src(IsF16 ? static_cast<std::size_t>(width) + lanes : 0),
