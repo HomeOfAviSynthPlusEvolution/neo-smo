@@ -134,7 +134,9 @@ void run_case(const std::string& mode, DataType type, int bits, int width, int h
       check(got >= low && got <= high, "new extrema introduced");
       if (integer && mode[0] == 'w' && got != ref) {
         const double boundary = std::floor(unrounded) + 0.5;
-        check(std::abs(unrounded - boundary) <= 1e-10 * std::max(1.0, std::abs(unrounded)),
+        // Weighted integer kernels accumulate in F32; a final integer rounding
+        // may differ when the reference is within the F32 arithmetic budget.
+        check(std::abs(unrounded - boundary) <= 2e-6 * std::max(1.0, magnitude),
               "integer w difference away from rounding boundary");
       }
       double tolerance = integer ? (mode[0] == 'w' ? 1 : 0) : 2e-6 * std::max(1.0, magnitude);
@@ -348,7 +350,7 @@ int main(int argc, char** argv) {
               (type == DataType::F16 && bits != 16) || (type == DataType::F32 && bits != 32))
             continue;
           for (int r = 1; r <= (mode[1] == '3' ? 4 : 7); ++r)
-            for (int w : {1, 7, 8, 9, 17})
+            for (int w : {1, 7, 8, 9, 17, 31, 32, 33, 65})
               for (double m : {0.0, 0.5, 1.0}) {
                 run_case(mode, type, bits, w, 3, r, m, false, true, mode[1] == '3', true);
                 run_case(mode, type, bits, w, 1, r, m, true, false, false, false);

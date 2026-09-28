@@ -14,6 +14,7 @@ add_library(neo_smo_core STATIC
   src/kernels/mini_deen.cpp
   src/algorithms/deen.cpp
   src/kernels/deen.cpp
+  src/kernels/deen_int.cpp
   src/kernels/deen_c.cpp
   src/kernels/deen_w.cpp
   src/kernels/deen_a.cpp

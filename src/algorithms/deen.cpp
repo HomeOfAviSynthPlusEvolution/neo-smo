@@ -105,6 +105,15 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
           "Deen: invalid output stride.");
   product(static_cast<std::size_t>(stride), p.height);
   const int count = temporal ? 3 : 1, r = filter.options().radius;
+  if (p.type == DataType::U8 || p.type == DataType::U16) {
+    for (int f = 0; f < count; ++f)
+      matching(p, frames[f]);
+    const auto& o = filter.options();
+    const double peak = (1u << p.bits) - 1;
+    deen_integer_kernel(filter.family(), frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) * peak / 255,
+                        (chroma ? o.temporal_uv : o.temporal_y) * peak / 255, filter.weights().data(), dst, stride);
+    return;
+  }
   const std::size_t pitch = static_cast<std::size_t>(p.width) + 2 * r;
   const auto length = product(pitch, static_cast<std::size_t>(p.height) + 2 * r);
   product(length, sizeof(double));
