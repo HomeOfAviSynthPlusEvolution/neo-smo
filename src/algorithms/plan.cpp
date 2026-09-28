@@ -40,6 +40,8 @@ const char* algorithm_name(Algorithm alg) noexcept {
       return "CCD";
     case Algorithm::Cnr4:
       return "Cnr4";
+    case Algorithm::DCTFilter:
+      return "DCTFilter";
   }
   return "neo_smo";
 }

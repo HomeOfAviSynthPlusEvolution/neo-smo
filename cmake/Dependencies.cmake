@@ -3,10 +3,10 @@ include(FetchContent)
 # Local source overrides are explicit FETCHCONTENT_SOURCE_DIR_<NAME> options,
 # as in neo-mv and neo-fft; do not silently select another project's build tree.
 
-if(NEO_SMO_BUILD_VAPOURSYNTH)
+if(NEO_SMO_BUILD_AVISYNTH OR NEO_SMO_BUILD_VAPOURSYNTH)
   set(DS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(DS_BUILD_ACCEPTANCE_PLUGIN OFF CACHE BOOL "" FORCE)
-  set(DS_ENABLE_AVISYNTH OFF CACHE BOOL "" FORCE)
+  set(DS_ENABLE_AVISYNTH ${NEO_SMO_BUILD_AVISYNTH} CACHE BOOL "" FORCE)
   set(DS_ENABLE_VAPOURSYNTH ${NEO_SMO_BUILD_VAPOURSYNTH} CACHE BOOL "" FORCE)
   set(_neo_smo_ds_subdir .)
 else()

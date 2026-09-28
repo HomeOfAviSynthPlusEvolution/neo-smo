@@ -28,6 +28,7 @@ enum class Algorithm {
   TTempSmooth,
   CCD,
   Cnr4,
+  DCTFilter,
 };
 
 struct FormatInfo {
