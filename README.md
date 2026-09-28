@@ -2,7 +2,9 @@
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
 
-neo-smo is an AviSynth+ / VapourSynth video filter plugin ported directly from [zsmooth](https://github.com/adworacz/zsmooth). Based on its Zig source, it is implemented and optimized in C++17 with Google Highway. It provides spatial and temporal denoising, neighborhood repair, color denoising, and block DCT filtering. VapourSynth uses the `core.neo_smo` namespace; AviSynth+ uses the `neo_smo_` function prefix.
+neo-smo is a video filter plugin for VapourSynth and AviSynth, ported directly from [zsmooth](https://github.com/adworacz/zsmooth). It provides spatial and temporal denoising, neighborhood repair, color denoising, and block DCT filtering.
+
+Based on zsmooth's Zig source, the implementation uses C++17 and Google Highway, with block DCT through neo-libdct. DualSynth2 connects the computation core to both hosts. VapourSynth uses `core.neo_smo`; AviSynth uses functions prefixed with `neo_smo_`.
 
 ## Origins
 
@@ -17,13 +19,13 @@ zsmooth was developed by Austin Dworaczyk Wiltshire (adworacz). neo-smo directly
 
 Thanks to the authors and contributors of zsmooth and these upstream projects.
 
-## Implementation
+## Design
 
-The computation core handles sampling, sorting, weighting, and transforms on image planes. The host layer manages parameters, frame requests, properties, and output allocation. Google Highway provides cross-platform SIMD and runtime instruction-set selection; DualSynth2 provides host integration infrastructure. DCTFilter uses neo-libdct's fixed 8×8 transforms and requires no FFTW runtime.
+neo-smo separates filter calculations from host frame management. The core handles sampling, sorting, weighting, and transforms on image planes; the host layer manages parameters, frame requests, properties, and output allocation. The core can be built and tested independently. DCTFilter uses neo-libdct's fixed 8×8 transforms and requires no FFTW runtime.
 
-The port preserves zsmooth's public function names and parameter structure while fixing identified issues and optimizing computation paths. Production builds allow FMA and floating-point rounding differences; bitwise agreement across CPUs or historical zsmooth versions is not guaranteed. See the API documentation for formats, threshold units, and boundary behavior.
+The port preserves zsmooth's public function names and parameter structure while fixing identified issues and optimizing computation paths. Upstream bug fixes, FMA, and floating-point rounding can affect results; pixel-identical output to every historical zsmooth version is not guaranteed. See the [migration guide](docs/api/en/migration.md) for calls and numerical conventions.
 
-One plugin provides both VapourSynth and AviSynth+ interfaces; hosts can also be selected individually at build time. AviSynth+ requires interface version 11 or later.
+Filters and DCT execute on the calling host thread, without creating worker threads or thread pools. The host can still request multiple frames concurrently; SIMD and batched DCT do not imply internal multithreading.
 
 ## Supported operations
 
@@ -36,17 +38,19 @@ One plugin provides both VapourSynth and AviSynth+ interfaces; hosts can also be
 | Color denoising | `CCD`, `Cnr4`: spatial sampling guided by color differences and temporal chroma denoising. |
 | Block frequency filtering | `DCTFilter`: DCT coefficient weighting in non-overlapping 8×8 blocks. |
 
-There are 19 functions. Common support covers constant-format, constant-size planar Gray, YUV, and RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept Gray, and Cnr4 accepts integer YUV only.
+There are 19 functions. Common support covers constant-format, constant-size planar GRAY/YUV/RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept GRAY, and Cnr4 accepts integer YUV only.
 
-Output preserves the input format and dimensions. Functions exposing `planes` process all planes when it is omitted; `planes=[0]` processes only the first plane. Explicit empty arrays are rejected. Some functions use `mode` or thresholds to control plane processing, so `planes` cannot be passed to every function. These filters do not estimate motion vectors or perform motion compensation.
+Output preserves the input format, dimensions, frame count, and frame rate. Functions exposing `planes` process all planes when it is omitted; `planes=[0]` processes only the first plane. Explicit empty arrays are rejected. Some functions use `mode` or thresholds to control plane processing, so `planes` cannot be passed to every function. These filters do not estimate motion vectors or perform motion compensation.
 
 ## Documentation and use
 
-- [API reference](docs/api/en/README.md): function signatures, parameters, defaults, and examples.
-- [Algorithm knowledge base](docs/knowledge/en/README.md): computation, numerical rules, and boundary behavior.
+The API reference explains how to call the functions. The knowledge base explains how sampling, sorting, weighting, and transforms turn inputs into outputs.
+
+- [API reference](docs/api/en/README.md): signatures, parameters, defaults, and usage examples.
+- [Knowledge base](docs/knowledge/en/README.md): representations, formulas, operation order, boundaries, and precision.
 - [Migrating from zsmooth](docs/api/en/migration.md): namespaces, threshold units, scene changes, and precision conventions.
 
-Place the plugin in VapourSynth's autoload directory or load it explicitly with `LoadPlugin`. The example uses a Windows filename; on other platforms, substitute the actual plugin path. The plugin ID is `org.neofilters.neo_smo`.
+Load the built plugin explicitly, or place it in VapourSynth's plugin autoload directory. The example below uses the Windows filename; Linux uses `neo-smo.so`. Substitute the actual plugin path for your platform. The VapourSynth plugin identifier is `org.neofilters.neo_smo`.
 
 ```python
 import vapoursynth as vs
@@ -54,24 +58,26 @@ import vapoursynth as vs
 core = vs.core
 core.std.LoadPlugin(path="/path/to/neo-smo.dll")
 
-clip = core.std.BlankClip(width=640, height=480, format=vs.YUV420P10, length=24)
+clip = core.std.BlankClip(width=640, height=360, format=vs.YUV420P8, length=24)
 output = core.neo_smo.Median(clip, radius=[1], planes=[0])
 output.set_output()
 ```
 
 This minimal example uses a synthetic clip to demonstrate luma median filtering. Replace `clip` with your source for actual use. Functions with `scalep` interpret explicit thresholds in native units by default; omitted arguments may select internal defaults already scaled for bit depth. Check the specific function's parameter documentation when migrating scripts.
 
-AviSynth+ example:
+The same plugin also provides an AviSynth C++ interface. Use `LoadPlugin` with a host that supports interface version 11:
 
 ```avs
 LoadPlugin("/path/to/neo-smo.dll")
-clip = BlankClip(width=640, height=480, pixel_type="YUV420P10", length=24)
+clip = BlankClip(width=640, height=360, length=24, pixel_type="YV12")
 return neo_smo_Median(clip, radius=[1], planes=[0])
 ```
 
-All 19 functions use the `neo_smo_` prefix, with argument names and order matching their API pages. Booleans use `true` / `false`; numeric arrays accept `[1, 2, 3]` or a single number. See the [AviSynth+ interface](docs/api/en/README.md#avisynth-calls-and-builds).
+Function names and parameter order follow the API reference, with `neo_smo_` prefixed to each name. Array parameters accept native arrays such as `[0, 1]`; a scalar is shorthand for one element. DCTFilter's `factors` still requires exactly eight elements; Cnr4's `sense`, `str`, and `pow` each require exactly three elements and cannot be replaced with a scalar. Boolean parameters use `true`/`false`. Audio and parity are forwarded from the main input clip, and output frame properties come from the corresponding source frame. See the [AviSynth interface](docs/api/en/README.md#avisynth-calls-and-builds).
 
-## SIMD and precision
+To explicitly express an omitted parameter, use `None` in VapourSynth or `Undefined()` in AviSynth, or simply leave the argument out. Omitting an argument selects its default behavior, which is different from passing zero or an empty array. For example, `planes=None` or `planes=Undefined()` selects the default planes; neo-smo rejects `planes=[]`.
+
+## SIMD and CPU selection
 
 Highway automatically selects a SIMD target included in the build and supported by the current CPU. There is no public `opt`, SIMD OFF, or `KernelInfo` interface.
 
@@ -81,9 +87,9 @@ FMA, operation order, and intermediate precision can affect rounding and thresho
 
 ## Building and testing
 
-Requires CMake 3.24 or later, Git, and a C++17 compiler. Tests also require Python 3. Prefer clang-cl on Windows; Clang or GCC can be used on Linux. For native half-precision paths, Clang 22 or later with a supported CPU is recommended.
+Requires CMake 3.24 or later, Git, and a C++17 compiler. Tests also require Python 3. CMake retrieves pinned DualSynth2, Highway, and neo-libdct sources. Both host SDKs are discovered locally or downloaded automatically.
 
-CMake fetches pinned versions of DualSynth2, Highway, and neo-libdct, and downloads the corresponding host headers when no local SDK is supplied. The default build includes both host interfaces and core tests. Core tests do not require an installed video host.
+The following builds both host interfaces and core tests without requiring an installed video host. Prefer clang-cl on Windows; MinGW builds must disable the AVS interface. Linux can use Clang or GCC. Native half-precision paths require both compiler and CPU support; Clang 22 or later is recommended.
 
 ```sh
 cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
@@ -101,25 +107,28 @@ ctest --test-dir build/clang-cl --output-on-failure
 
 | Option | Purpose |
 |---|---|
-| `NEO_SMO_BUILD_AVISYNTH=OFF` | Disable the AviSynth+ interface. Required for Windows MinGW builds. |
-| `NEO_SMO_BUILD_VAPOURSYNTH=OFF` | Disable the VapourSynth interface. Disabling both hosts builds only the computation core and its tests. |
+| `NEO_SMO_BUILD_VAPOURSYNTH=OFF` | Disable the VapourSynth entry point. |
+| `NEO_SMO_BUILD_AVISYNTH=OFF` | Disable the AviSynth entry point; disabling both hosts builds only the core and its tests. |
 | `BUILD_TESTING=OFF` | Disable tests. |
-| `NEO_SMO_AVS_SDK=/path/to/sdk` | Use a local AviSynth+ SDK. |
-| `NEO_SMO_TEST_VAPOURSYNTH=ON` | Enable real VapourSynth host smoke tests; requires VapourSynth and NumPy in the selected Python environment. |
-| `NEO_SMO_TEST_AVISYNTH=ON` | Enable AVS host tests; also set `NEO_SMO_AVISYNTH_RUNTIME` to the runtime path. |
-| `NEO_SMO_TEST_CROSS_HOST=ON` | Enable AVS/VS output comparisons; requires both interfaces, NumPy, and a VapourSynth Python environment. |
+| `NEO_SMO_TEST_VAPOURSYNTH=ON` | Enable VapourSynth host tests, disabled by default; the selected Python environment needs VapourSynth, NumPy, and a runtime of matching architecture. |
+| `Python3_EXECUTABLE=/path/to/python` | Select the Python interpreter for host tests. |
 | `NEO_SMO_VS_SDK=/path/to/sdk` | Use a local VapourSynth SDK. |
-| `Python3_EXECUTABLE=/path/to/python` | Select the Python interpreter for tests. |
+| `NEO_SMO_AVS_SDK=/path/to/sdk` | Use a local AviSynth SDK. |
+| `NEO_SMO_TEST_AVISYNTH=ON` | Enable AviSynth host tests, disabled by default; requires Python and a runtime of matching architecture. |
+| `NEO_SMO_AVISYNTH_RUNTIME=/path/to/avisynth.dll` | Select the runtime library for AviSynth host tests. |
+| `NEO_SMO_TEST_CROSS_HOST=ON` | Enable AVS/VS output comparisons, disabled by default; requires both hosts, NumPy, and a VapourSynth Python environment. |
 | `NEO_SMO_TEST_BLACKBOX=ON` | Enable black-box comparisons against zsmooth, disabled by default; requires a VapourSynth Python environment, NumPy, and the reference plugin. |
 | `NEO_SMO_REFERENCE_PLUGIN=/path/to/zsmooth` | Select the reference plugin file for black-box tests. |
-| `FETCHCONTENT_SOURCE_DIR_DUALSYNTH2=/path/to/dualsynth2` | Use local DualSynth2 source. |
-| `FETCHCONTENT_SOURCE_DIR_NEO_LIBDCT=/path/to/neo-libdct` | Use local neo-libdct source. |
+| `FETCHCONTENT_SOURCE_DIR_DUALSYNTH2=/path/to/dualsynth2` | Use local DualSynth2 source instead of the pinned download. |
+| `FETCHCONTENT_SOURCE_DIR_NEO_LIBDCT=/path/to/neo-libdct` | Use local neo-libdct source instead of the pinned download. |
 
-The plugin build target is `neo_smo`, and its output basename is `neo-smo`. Tests cover sampling boundaries, integer and floating-point arithmetic, half-precision paths, DCT, and frame error handling. Comparisons against upstream are enabled separately.
+The plugin build target is `neo_smo`, and its output basename is `neo-smo`, with both host interfaces enabled by default. Tests cover sampling boundaries, integer and floating-point arithmetic, half-precision paths, DCT, and host behavior. They include checks against scalar reference calculations and numerical comparisons between compiled Highway targets supported by the current machine. Comparisons follow each path's precision rules and do not require bitwise agreement across all floating-point paths. Black-box comparisons against zsmooth additionally require the reference plugin.
+
+CI includes Windows x64, Linux x64/ARM64, macOS ARM64, and Linux ASan/UBSan checks. Linux runners use Ubuntu 26.04, the system default GCC, and Clang 22. The release workflow builds x64/ARM64 packages for Windows, Linux, and macOS. VapourSynth host tests currently run on Windows x64; AviSynth host tests are enabled separately with the options above. Packages record their actual build environment and test coverage; they are not a claim of compatibility with every Linux distribution.
 
 ## Performance
 
-The table summarizes **neo-smo frame generation time / zsmooth frame generation time** by filter for tested VapourSynth configurations. **Values below 1 mean neo-smo is faster.**
+The table summarizes **neo-smo frame generation time / zsmooth frame generation time** by filter for tested VapourSynth configurations. **Values below 1 mean neo-smo is faster.** The ranges span tested 8-/16-bit integer, F16/F32, color-format, and parameter configurations; they are not averages or confidence intervals. Each filter includes only tested configurations it supports.
 
 | Filter | Time ratio range |
 |---|---:|
@@ -143,7 +152,7 @@ The table summarizes **neo-smo frame generation time / zsmooth frame generation 
 | Cnr4 | 0.68–1.08× |
 | DCTFilter | 0.23–0.28× |
 
-F16 results use the corresponding upstream F32 path as the comparison baseline. Actual speed varies with input, parameters, hardware, and thread count.
+These figures measure frame generation by individual filters, not whole-pipeline throughput. F16 results use the corresponding upstream F32 path as the comparison baseline. Actual speed varies with input, parameters, hardware, and thread count.
 
 ## Development and contributions
 
@@ -153,16 +162,16 @@ This project uses AI assistance for implementation, testing, and review. Contrib
 
 ## Acknowledgments and license
 
-The original zsmooth code's MIT copyright notice and full license text are preserved in the [zsmooth license file](LICENSES/zsmooth-MIT.txt).
-
 neo-smo also uses the following libraries:
 
 - [Google Highway](https://github.com/google/highway): cross-platform SIMD support.
 - [DualSynth2](https://github.com/HomeOfAviSynthPlusEvolution/dualsynth2): connects VapourSynth and AviSynth to the shared computation core.
-- [neo-libdct](https://github.com/HomeOfAviSynthPlusEvolution/neo-libdct): block DCT, licensed under GNU GPL version 2 or later.
+- [neo-libdct](https://github.com/HomeOfAviSynthPlusEvolution/neo-libdct): fixed 8×8 block transforms for DCTFilter.
 
 Thanks to the developers and users who contribute tests, reports, and improvements.
 
 Thanks to [SB.SB](https://sb.sb) for sponsoring the LLM subscription used in this project's development.
+
+The original zsmooth code's MIT copyright notice and full license text are preserved in the [zsmooth license file](LICENSES/zsmooth-MIT.txt).
 
 neo-smo is licensed under the GNU General Public License, version 2 or later (`GPL-2.0-or-later`). See [LICENSE](LICENSE). Third-party components retain their own copyright notices and license terms.
