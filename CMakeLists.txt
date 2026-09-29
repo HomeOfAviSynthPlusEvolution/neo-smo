@@ -14,6 +14,7 @@ add_library(neo_smo_core STATIC
   src/kernels/mini_deen.cpp
   src/algorithms/deen.cpp
   src/kernels/deen.cpp
+  src/kernels/deen_scalar.cpp
   src/kernels/deen_scene.cpp
   src/kernels/deen_int.cpp
   src/kernels/deen_c.cpp
@@ -67,7 +68,6 @@ else()
 endif()
 target_compile_options(neo_smo_core PRIVATE ${NEO_SMO_FP_OPTIONS})
 
-target_compile_definitions(neo_smo_core PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
 
 # Preserve parameter validation and compensated scene sums in the input adapter.
 # Deen SIMD kernels use the normal production floating-point options.
@@ -118,7 +118,6 @@ if(BUILD_TESTING)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)
     target_include_directories(neo_smo_${test}_tests PRIVATE tests)
     target_link_libraries(neo_smo_${test}_tests PRIVATE neo_smo_core)
-    target_compile_definitions(neo_smo_${test}_tests PRIVATE HWY_COMPILE_ALL_ATTAINABLE)
     if(MINGW)
       target_link_options(neo_smo_${test}_tests PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
@@ -133,6 +132,36 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_${test}_tests>")
       set_tests_properties(core.${test} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
     endif()
+  endforeach()
+  # Exercise both software fallback entries, including targets omitted by the
+  # normal SIMD baseline. GCC may map EMU128 to SCALAR when EMU128 is unavailable.
+  foreach(fallback scalar emu128)
+    string(TOUPPER "${fallback}" fallback_upper)
+    add_library(neo_smo_deen_${fallback}_test_core STATIC
+      src/algorithms/deen.cpp src/algorithms/mini_deen.cpp
+      src/kernels/deen_scalar.cpp src/kernels/deen.cpp src/kernels/deen_int.cpp
+      src/kernels/deen_w.cpp src/kernels/deen_c.cpp src/kernels/deen_a.cpp
+      src/kernels/deen_scene.cpp src/kernels/mini_deen.cpp)
+    target_include_directories(neo_smo_deen_${fallback}_test_core PUBLIC src)
+    target_link_libraries(neo_smo_deen_${fallback}_test_core PUBLIC hwy)
+    target_compile_definitions(neo_smo_deen_${fallback}_test_core PUBLIC HWY_COMPILE_ONLY_${fallback_upper})
+    target_compile_options(neo_smo_deen_${fallback}_test_core PRIVATE ${NEO_SMO_FP_OPTIONS})
+    foreach(filter deen mini_deen)
+      add_executable(neo_smo_${filter}_${fallback}_tests tests/unit/${filter}.cpp)
+      target_include_directories(neo_smo_${filter}_${fallback}_tests PRIVATE tests)
+      target_link_libraries(neo_smo_${filter}_${fallback}_tests PRIVATE neo_smo_deen_${fallback}_test_core)
+      if(MINGW)
+        target_link_options(neo_smo_${filter}_${fallback}_tests PRIVATE -static -static-libgcc -static-libstdc++)
+      endif()
+    endforeach()
+    foreach(mode c2d c3d w2d w3d a2d a3d)
+      add_test(NAME core.deen.${fallback}.${mode} COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_deen_${fallback}_tests>" ${mode})
+      set_tests_properties(core.deen.${fallback}.${mode} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
+    endforeach()
+    add_test(NAME core.mini_deen.${fallback} COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_mini_deen_${fallback}_tests>")
+    set_tests_properties(core.mini_deen.${fallback} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 90)
   endforeach()
   # Exercise production arithmetic, but generate expectations and check results
   # in a separate translation unit without fast-math assumptions.

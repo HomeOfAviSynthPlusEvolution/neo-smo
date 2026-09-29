@@ -1,3 +1,4 @@
+#include "kernels/mini_deen_scalar.hpp"
 // Algorithm: dubhater/vapoursynth-minideen (ISC), src/minideen.cpp,
 // revision 8b915c5134352adc19539560ab5debbbcdbe0ea1.
 // Retains the scalar formula, strict threshold, clipped window and extra center weight.
@@ -12,13 +13,13 @@
 HWY_BEFORE_NAMESPACE();
 namespace neo_smo {
 namespace HWY_NAMESPACE {
-namespace hn = hwy::HWY_NAMESPACE;
-template <class T>
-T load(const std::uint8_t* row, int x) {
-  T value;
-  std::memcpy(&value, row + static_cast<std::size_t>(x) * sizeof(T), sizeof(T));
-  return value;
+#if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+void mini_deen_target(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* dst, std::ptrdiff_t dst_stride,
+                      int width, int height, bool byte_samples, int radius, unsigned threshold) {
+  mini_deen_scalar(src, src_stride, dst, dst_stride, width, height, byte_samples, radius, threshold);
 }
+#else
+namespace hn = hwy::HWY_NAMESPACE;
 template <class D>
 auto rounded_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count) {
   const hn::Rebind<float, D> df;
@@ -33,7 +34,6 @@ auto rounded_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count) {
 template <class T>
 void process(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* dst, std::ptrdiff_t dst_stride,
              int width, int height, int radius, unsigned threshold) {
-#if HWY_TARGET != HWY_SCALAR
   // Select full input vectors, then widen into two independent sums.
   // At most 227 contributions: U8 sums fit U16; U16 sums fit U32.
   using Acc = std::conditional_t<sizeof(T) == 1, std::uint16_t, std::uint32_t>;
@@ -43,7 +43,6 @@ void process(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* d
   const hn::Half<decltype(narrow)> half;
 #endif
   const int lanes = static_cast<int>(hn::Lanes(narrow));
-#endif
   for (int y = 0; y < height; ++y) {
     const auto* row = src + y * src_stride;
     auto* out = dst + y * dst_stride;
@@ -53,7 +52,6 @@ void process(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* d
       continue;
     }
     for (int x = 0; x < width;) {
-#if HWY_TARGET != HWY_SCALAR
       if (x >= radius && width - x - radius > 0) {
         const int active = std::min(lanes, width - x - radius);
         const auto center = deen_raw_load(narrow, row + static_cast<std::size_t>(x) * sizeof(T), active);
@@ -113,23 +111,7 @@ void process(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* d
         x += active;
         continue;
       }
-#endif
-      const unsigned center = load<T>(row, x);
-      unsigned sum = 2 * center, count = 2;
-      // Clip offsets, not coordinates: avoid overflow even for large dimensions.
-      for (int dy = -std::min(y, radius); dy <= std::min(radius, height - 1 - y); ++dy) {
-        const auto* neighbor_row = src + (y + dy) * src_stride;
-        for (int dx = -std::min(x, radius); dx <= std::min(radius, width - 1 - x); ++dx) {
-          const unsigned sample = load<T>(neighbor_row, x + dx);
-          const unsigned difference = center > sample ? center - sample : sample - center;
-          if (difference < threshold) {
-            sum += sample;
-            ++count;
-          }
-        }
-      }
-      // At most 227 * 65535; both the sum and rounding numerator fit uint32.
-      const T result = static_cast<T>((2 * sum + count) / (2 * count));
+      const T result = mini_deen_detail::pixel<T>(src, src_stride, width, height, radius, threshold, x, y);
       std::memcpy(out + static_cast<std::size_t>(x) * sizeof(T), &result, sizeof(T));
       ++x;
     }
@@ -142,6 +124,7 @@ void mini_deen_target(const std::uint8_t* src, std::ptrdiff_t src_stride, std::u
   else
     process<std::uint16_t>(src, src_stride, dst, dst_stride, width, height, radius, threshold);
 }
+#endif
 } // namespace HWY_NAMESPACE
 } // namespace neo_smo
 HWY_AFTER_NAMESPACE();

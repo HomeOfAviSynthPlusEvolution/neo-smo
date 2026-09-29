@@ -1,5 +1,6 @@
 #include "hwy/targets.h"
 #include "algorithms/deen.hpp"
+#include "kernels/deen.hpp"
 #include "base/fp16.hpp"
 #include "guarded.hpp"
 #include <algorithm>
@@ -534,6 +535,35 @@ void invalid() {
   check(caught, "non-finite sample accepted");
 }
 } // namespace
+void padded_fallback_fixture(const std::string& mode) {
+  const DeenFamily family = mode[0] == 'c' ? DeenFamily::Constant
+                            : mode[0] == 'a' ? DeenFamily::Adaptive : DeenFamily::Weighted;
+  constexpr int width = 17, height = 2, radius = 1, pitch = width + 2;
+  std::array<std::vector<double>, 3> storage;
+  std::array<const double*, 3> input{};
+  const std::array<double, 3> values{100, 108, 103};
+  for (int f = 0; f < 3; ++f) {
+    storage[f].assign(pitch * (height + 2), values[f]);
+    input[f] = storage[f].data();
+  }
+  std::array<double, 9> weights;
+  weights.fill(1);
+  std::array<double, width * height> output{};
+  for (int count : {1, 3})
+    for (double threshold : {0.0, 5.0, 10.0}) {
+      deen_kernel(family, input, count, pitch, width, height, radius, 0, threshold, weights.data(), output.data());
+      double sum = 0, divisor = 0;
+      for (int f = 0; f < count; ++f) {
+        const bool pass = values[f] - 100 <= threshold;
+        if (family == DeenFamily::Adaptive && !pass) continue;
+        const double weight = family == DeenFamily::Weighted && count == 3 && f == 0 ? 2 : 1;
+        sum += (pass ? values[f] : 100) * weight;
+        divisor += weight;
+      }
+      for (double value : output)
+        check(std::abs(value - sum / divisor) < 1e-12, "padded Deen fallback");
+    }
+}
 int main(int argc, char** argv) {
   try {
     for (const auto target : hwy::SupportedAndGeneratedTargets()) {
@@ -541,6 +571,7 @@ int main(int argc, char** argv) {
       std::printf("target %s\n", hwy::TargetName(target));
 
       const std::string mode = argc > 1 ? argv[1] : "c2d";
+      padded_fallback_fixture(mode);
       fixtures(mode);
       if (mode[0] == 'c') {
         constant_integer_rounding(mode);

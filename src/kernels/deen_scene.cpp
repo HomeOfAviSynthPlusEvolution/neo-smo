@@ -1,3 +1,4 @@
+#include "kernels/deen_scalar.hpp"
 #include "kernels/deen.hpp"
 #include <algorithm>
 #include <cstring>
@@ -9,6 +10,12 @@
 HWY_BEFORE_NAMESPACE();
 namespace neo_smo {
 namespace HWY_NAMESPACE {
+#if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+std::uint64_t deen_sad_target(const DeenPlane& a, const DeenPlane& b) {
+  return deen_sad_scalar(a, b);
+}
+#else
+
 namespace hn = hwy::HWY_NAMESPACE;
 std::uint64_t deen_sad_target(const DeenPlane& a, const DeenPlane& b) {
   if (a.type == DataType::U8) {
@@ -40,13 +47,7 @@ std::uint64_t deen_sad_target(const DeenPlane& a, const DeenPlane& b) {
         const auto active = std::min(hn::Lanes(d), static_cast<std::size_t>(end - x));
         const auto load = [&](const DeenPlane& p) HWY_ATTR {
           const auto* ptr = p.data + y * p.stride + static_cast<std::size_t>(x) * 2;
-#if HWY_TARGET == HWY_SCALAR
-          std::uint16_t value;
-          std::memcpy(&value, ptr, sizeof(value));
-          return hn::Set(d, value);
-#else
           return hn::PromoteTo(d, hn::BitCast(dn, hn::LoadN(db, ptr, active * 2)));
-#endif
         };
         const auto av = load(a), bv = load(b);
         maximum = hn::Max(maximum, hn::Max(av, bv));
@@ -59,6 +60,7 @@ std::uint64_t deen_sad_target(const DeenPlane& a, const DeenPlane& b) {
     throw std::invalid_argument("Deen: sample exceeds bit depth.");
   return total;
 }
+#endif
 } // namespace HWY_NAMESPACE
 } // namespace neo_smo
 HWY_AFTER_NAMESPACE();

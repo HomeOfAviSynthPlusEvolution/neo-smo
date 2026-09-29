@@ -1,26 +1,15 @@
-// Included inside each Highway target namespace.
+// Included only inside hardware SIMD target namespaces; software targets use plain C++.
 // Access byte-backed host planes without assuming natural sample alignment.
 template <class D>
 auto deen_raw_load(D d, const std::uint8_t* ptr, std::size_t active) {
-#if HWY_TARGET == HWY_SCALAR
-  hn::TFromD<D> value;
-  std::memcpy(&value, ptr, sizeof(value));
-  return hn::Set(d, value);
-#else
   const hn::Repartition<std::uint8_t, D> db;
   return hn::BitCast(d,
                      active == hn::Lanes(d) ? hn::LoadU(db, ptr) : hn::LoadN(db, ptr, active * sizeof(hn::TFromD<D>)));
-#endif
 }
 template <class D>
 void deen_store([[maybe_unused]] D d, hn::VFromD<D> value, std::uint8_t* ptr, std::size_t active) {
-#if HWY_TARGET == HWY_SCALAR
-  const auto lane = hn::GetLane(value);
-  std::memcpy(ptr, &lane, sizeof(lane));
-#else
   const hn::Repartition<std::uint8_t, D> db;
   hn::StoreN(hn::BitCast(db, value), db, ptr, active * sizeof(hn::TFromD<D>));
-#endif
 }
 // Clamp coordinates only at the actual image edges. Interior taps load original pixels.
 template <bool Interior = false, class D>

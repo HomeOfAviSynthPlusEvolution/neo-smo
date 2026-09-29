@@ -1,3 +1,4 @@
+#include "kernels/deen_scalar.hpp"
 #include "kernels/deen_dispatch.hpp"
 #include <algorithm>
 #include <cstring>
@@ -10,6 +11,17 @@
 HWY_BEFORE_NAMESPACE();
 namespace neo_smo {
 namespace HWY_NAMESPACE {
+#if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+void deen_w_target(const std::array<const double*, 3>& src, int count, std::size_t pitch, int width, int height,
+                   int radius, double spatial, double temporal, const double* weights, double* dst) {
+  deen_padded_scalar(DeenFamily::Weighted, src, count, pitch, width, height, radius, spatial, temporal, weights, dst);
+}
+void deen_float_target(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                       double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+  deen_float_scalar(family, frames, count, radius, spatial, temporal, weights, dst, stride);
+}
+#else
+
 #include "kernels/deen_simd-inl.hpp"
 #include "kernels/deen_io-inl.hpp"
 #include "common/fp16_simd.hpp"
@@ -211,6 +223,7 @@ void deen_w_target(const std::array<const double*, 3>& src, int count, std::size
       hn::StoreN(result, d, dst + static_cast<std::size_t>(y) * width + x, active);
     }
 }
+#endif
 } // namespace HWY_NAMESPACE
 } // namespace neo_smo
 HWY_AFTER_NAMESPACE();
