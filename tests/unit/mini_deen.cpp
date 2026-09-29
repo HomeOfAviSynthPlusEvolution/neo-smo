@@ -66,7 +66,7 @@ void run(int bits, int w, int h, int r, int t) {
 }
 void guard_edges() {
   for (int bits : {8, 16})
-    for (int width : {1, 15, 16, 17, 31, 32, 33, 65})
+    for (int width : {1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129})
       for (int radius : {1, 7})
         for (bool end : {false, true}) {
           const int bytes = bits / 8, stride = width * bytes;
@@ -93,10 +93,19 @@ int main() {
       guard_edges();
       run(8, 65, 17, 7, 255);
       run(16, 65, 17, 7, 255);
-      // Exercise all 227 contributions at the maximum byte value.
-      std::vector<std::uint8_t> full(65 * 17, 255), full_out(full.size());
-      mini_deen_process(full.data(), 65, full_out.data(), 65, 65, 17, 8, 7, 255);
-      check(full == full_out);
+      // Exercise both full input vectors and tails, with exact reference means.
+      for (int bits : {8, 16})
+        for (int width : {15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129})
+          for (int radius : {1, 7})
+            for (int threshold : {2, 10, 255})
+              run(bits, width, 3, radius, threshold);
+      // All 227 contributions at the maximum input value stress sums/counts.
+      for (int bits : {8, 16}) {
+        const int bytes = bits / 8;
+        std::vector<std::uint8_t> full(129 * 17 * bytes, 255), full_out(full.size());
+        mini_deen_process(full.data(), 129 * bytes, full_out.data(), 129 * bytes, 129, 17, bits, 7, 255);
+        check(full == full_out);
+      }
 
       for (int bits = 8; bits <= 16; ++bits)
         for (int r = 1; r <= 7; ++r)
