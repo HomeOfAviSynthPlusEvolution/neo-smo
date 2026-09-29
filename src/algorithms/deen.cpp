@@ -161,6 +161,14 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
                         filter.byte_weights(temporal), dst, stride);
     return;
   }
+  if (filter.family() == DeenFamily::Weighted) {
+    for (int f = 0; f < count; ++f)
+      matching(p, frames[f]);
+    const auto& o = filter.options();
+    deen_weighted_float_kernel(frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) / 255,
+                               (chroma ? o.temporal_uv : o.temporal_y) / 255, filter.weights().data(), dst, stride);
+    return;
+  }
   const std::size_t pitch = static_cast<std::size_t>(p.width) + 2 * r;
   const auto length = product(pitch, static_cast<std::size_t>(p.height) + 2 * r);
   product(length, sizeof(double));

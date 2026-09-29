@@ -64,7 +64,13 @@ double reference(const DeenOptions& o, const std::array<DeenPlane, 3>& f, int x,
           g = o.minimum;
         const double t =
             (k == 0 ? (chroma ? o.spatial_uv : o.spatial_y) : (chroma ? o.temporal_uv : o.temporal_y)) * peak / 255;
-        const bool accepted = std::abs(v - center) <= t * (o.mode[0] == 'a' ? g : 1);
+        // Floating w compares in F32, including differences rounded to the
+        // threshold. Keep the independent weight/mean equation in binary64
+        // and assess its error for the same selected sample set.
+        const bool accepted =
+            !integer && o.mode[0] == 'w'
+                ? std::abs(static_cast<float>(v) - static_cast<float>(center)) <= static_cast<float>(t)
+                : std::abs(v - center) <= t * (o.mode[0] == 'a' ? g : 1);
         if (o.mode[0] == 'a' && !accepted)
           continue;
         const double weight = o.mode[0] == 'w' ? g * (temporal && k == 0 ? 2 : 1) : 1;
@@ -257,6 +263,77 @@ void weighted_byte_constants(const std::string& mode) {
         check(input == output, "weighted byte constant changed");
       }
 }
+void weighted_float_extremes(const std::string& mode) {
+  const bool temporal = mode[1] == '3';
+  constexpr int width = 65, height = 2;
+  for (auto type : {DataType::F16, DataType::F32}) {
+    const auto b = bytes(type);
+    const int stride = width * b + 3;
+    std::array<std::vector<std::uint8_t>, 3> input;
+    std::array<DeenPlane, 3> frames{};
+    for (int f = 0; f < 3; ++f) {
+      input[f].resize((stride + f) * height);
+      frames[f] = {input[f].data(), stride + f, width, height, type, type == DataType::F16 ? 16 : 32};
+    }
+    std::vector<std::uint8_t> output(stride * height);
+    DeenOptions o;
+    o.mode = mode;
+    o.radius = temporal ? 4 : 7;
+    o.spatial_y = o.temporal_y = 255;
+    o.minimum = 0;
+    const double maximum = type == DataType::F16 ? 65504.0 : std::numeric_limits<float>::max();
+    const double tiny = type == DataType::F16 ? std::ldexp(1.0, -24) : std::numeric_limits<float>::denorm_min();
+    const std::array<double, 7> values{maximum, -maximum, 0, 1, -1, tiny, -tiny};
+    for (int f = 0; f < 3; ++f)
+      for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+          put(input[f].data() + y * frames[f].stride + x * b, type, values[(x + y + f) % values.size()]);
+    deen_process(Deen(o), false, temporal, frames, output.data(), stride);
+    for (int y = 0; y < height; ++y)
+      for (int x = 0; x < width; ++x) {
+        double magnitude = 0, low = 0, high = 0;
+        const double ref = reference(o, frames, x, y, temporal, false, magnitude, low, high);
+        const double got = get(output.data() + y * stride + x * b, type);
+        const double budget = 2e-6 * std::max(1.0, magnitude) + (type == DataType::F16 ? 0x1p-10 : 0);
+        check(std::isfinite(got) && got >= low && got <= high, "weighted float extreme range");
+        if (std::abs(got - ref) > budget) {
+          std::cerr << "weighted float extreme " << static_cast<int>(type) << " at " << x << "," << y << " got " << got
+                    << " expected " << ref << " budget " << budget << "\n";
+          throw std::runtime_error("weighted float extreme accuracy");
+        }
+      }
+    for (double value : values) {
+      for (int f = 0; f < 3; ++f)
+        for (int y = 0; y < height; ++y)
+          for (int x = 0; x < width; ++x)
+            put(input[f].data() + y * frames[f].stride + x * b, type, value);
+      deen_process(Deen(o), false, temporal, frames, output.data(), stride);
+      for (int y = 0; y < height; ++y)
+        for (int x = 0; x < width; ++x)
+          check(get(output.data() + y * stride + x * b, type) == value, "weighted float extreme constant");
+    }
+    // Test invalid values in every participating frame and in the vector tail.
+    for (int f = 0; f < (temporal ? 3 : 1); ++f)
+      for (std::uint32_t bad : {0x7f800000u, 0xff800000u, 0x7fc00001u, 0x7f800001u}) {
+        auto* ptr = input[f].data() + frames[f].stride + (width - 1) * b;
+        const auto saved = get(ptr, type);
+        if (type == DataType::F32)
+          std::memcpy(ptr, &bad, 4);
+        else {
+          const std::uint16_t half = bad == 0x7f800000u ? 0x7c00 : bad == 0xff800000u ? 0xfc00 : 0x7c01;
+          std::memcpy(ptr, &half, 2);
+        }
+        bool rejected = false;
+        try {
+          deen_process(Deen(o), false, temporal, frames, output.data(), stride);
+        } catch (const std::invalid_argument&) {
+          rejected = true;
+        }
+        check(rejected, "weighted non-finite input accepted");
+        put(ptr, type, saved);
+      }
+  }
+}
 void adaptive_fixture(const std::string& mode) {
   std::uint8_t data[9] = {112, 112, 112, 112, 100, 112, 112, 112, 112}, out[9]{};
   DeenOptions o;
@@ -440,6 +517,7 @@ int main(int argc, char** argv) {
       if (mode[0] == 'w') {
         weighted_fixture(mode);
         weighted_byte_constants(mode);
+        weighted_float_extremes(mode);
       }
       if (mode[0] == 'a') {
         adaptive_fixture(mode);

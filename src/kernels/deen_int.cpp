@@ -12,54 +12,13 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
-// Access byte-backed host planes without assuming natural sample alignment.
-template <class D>
-auto integer_raw_load(D d, const std::uint8_t* ptr, std::size_t active) {
-#if HWY_TARGET == HWY_SCALAR
-  hn::TFromD<D> value;
-  std::memcpy(&value, ptr, sizeof(value));
-  return hn::Set(d, value);
-#else
-  const hn::Repartition<std::uint8_t, D> db;
-  return hn::BitCast(d,
-                     active == hn::Lanes(d) ? hn::LoadU(db, ptr) : hn::LoadN(db, ptr, active * sizeof(hn::TFromD<D>)));
-#endif
-}
-template <class D>
-void integer_store(D d, hn::VFromD<D> value, std::uint8_t* ptr, std::size_t active) {
-#if HWY_TARGET == HWY_SCALAR
-  const auto lane = hn::GetLane(value);
-  std::memcpy(ptr, &lane, sizeof(lane));
-#else
-  const hn::Repartition<std::uint8_t, D> db;
-  hn::StoreN(hn::BitCast(db, value), db, ptr, active * sizeof(hn::TFromD<D>));
-#endif
-}
-// Clamp coordinates only at the actual image edges. Interior taps load original pixels.
-template <bool Interior = false, class D>
-auto integer_row_load(D d, const std::uint8_t* row, int width, std::int64_t x, std::size_t active) {
-  using T = hn::TFromD<D>;
-  if constexpr (Interior) {
-    return integer_raw_load(d, row + static_cast<std::size_t>(x) * sizeof(T), hn::Lanes(d));
-  }
-  if (x >= 0 && x <= width - static_cast<int>(active)) {
-    return integer_raw_load(d, row + static_cast<std::size_t>(x) * sizeof(T), active);
-  }
-  HWY_ALIGN T values[hn::MaxLanes(d)]{};
-  for (std::size_t i = 0; i < active; ++i)
-    std::memcpy(values + i,
-                row + static_cast<std::size_t>(std::clamp(static_cast<std::int64_t>(x) + static_cast<std::int64_t>(i),
-                                                          std::int64_t{0}, static_cast<std::int64_t>(width - 1))) *
-                          sizeof(T),
-                sizeof(T));
-  return hn::Load(d, values);
-}
+#include "kernels/deen_io-inl.hpp"
 template <bool Interior = false, class D>
 auto integer_load(D d, const DeenPlane& p, std::int64_t y, std::int64_t x, std::size_t active) {
   const auto* row =
       p.data +
       static_cast<std::ptrdiff_t>(std::clamp(y, std::int64_t{0}, static_cast<std::int64_t>(p.height - 1))) * p.stride;
-  return integer_row_load<Interior>(d, row, p.width, x, active);
+  return deen_row_load<Interior>(d, row, p.width, x, active);
 }
 template <bool Constant, class D>
 auto integer_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count, float reciprocal) {
@@ -138,7 +97,7 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
           const auto row_limit = hn::Set(db, row.limits[0]);
           const auto lower = hn::SaturatedSub(center, row_limit), upper = hn::SaturatedAdd(center, row_limit);
           for (int dx = 0; dx < side; ++dx) {
-            const auto sample = integer_row_load<decltype(interior)::value>(
+            const auto sample = deen_row_load<decltype(interior)::value>(
                 db, row.data, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
             const auto pass = [&]() HWY_ATTR {
               if constexpr (Family == DeenFamily::Constant)
@@ -176,12 +135,11 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
 #if HWY_ARCH_X86
         lo = mean(lo, hn::BitCast(dw, hn::InterleaveLower(db, accepted, hn::Zero(db))));
         hi = mean(hi, hn::BitCast(dw, hn::InterleaveUpper(db, accepted, hn::Zero(db))));
-        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+        deen_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
 #else
         lo = mean(lo, hn::PromoteTo(dw, hn::LowerHalf(half, accepted)));
         hi = mean(hi, hn::PromoteTo(dw, hn::UpperHalf(half, accepted)));
-        integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
-                      active);
+        deen_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x, active);
 #endif
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
@@ -263,10 +221,10 @@ void integer_weighted_byte_grouped(const std::array<DeenPlane, 3>& frames, int c
             const auto select = [&](int i) HWY_ATTR {
               const auto sample = [&]() HWY_ATTR {
                 if constexpr (decltype(interior)::value)
-                  return integer_raw_load(db, frames[f].data + (offsets[f][i] + x), lanes);
+                  return deen_raw_load(db, frames[f].data + (offsets[f][i] + x), lanes);
                 else
-                  return integer_row_load(db, frames[f].data + (offsets[f][i] - dxs[i]), p.width,
-                                          static_cast<std::int64_t>(x) + dxs[i], active);
+                  return deen_row_load(db, frames[f].data + (offsets[f][i] - dxs[i]), p.width,
+                                       static_cast<std::int64_t>(x) + dxs[i], active);
               }();
               const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
               const auto pass = hn::Eq(outside, hn::Zero(db));
@@ -298,7 +256,7 @@ void integer_weighted_byte_grouped(const std::array<DeenPlane, 3>& frames, int c
         };
         const auto lo = hn::ReorderDemote2To(dw, finish(s0), finish(s1));
         const auto hi = hn::ReorderDemote2To(dw, finish(s2), finish(s3));
-        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+        deen_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
         batch(std::true_type{});
@@ -344,7 +302,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
     const auto process_range = [&](auto interior, int begin, int end) HWY_ATTR {
       for (int x = begin; x < end;) {
         const int active = decltype(interior)::value ? lanes : std::min(lanes, end - x);
-        const auto center = integer_raw_load(db, p.data + y * p.stride + x, active);
+        const auto center = deen_raw_load(db, p.data + y * p.stride + x, active);
         auto lo = hn::Set(dw, byte_weights.rounding), hi = hn::Set(dw, byte_weights.rounding);
         for (int f = 0; f < count; ++f) {
           const auto limit = hn::Set(db, limits[f != 0]);
@@ -353,7 +311,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
             const auto* row = rows[f][dy];
             const auto* coeff = byte_weights.coefficients.data() + (f != 0 ? 225 : 0) + dy * side;
             for (int dx = 0; dx < side; ++dx) {
-              const auto sample = integer_row_load<decltype(interior)::value>(
+              const auto sample = deen_row_load<decltype(interior)::value>(
                   db, row, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
               const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
               const auto value = hn::IfThenElse(hn::Eq(outside, hn::Zero(db)), sample, center);
@@ -376,10 +334,9 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
         lo = hn::ShiftRight<8>(lo);
         hi = hn::ShiftRight<8>(hi);
 #if HWY_ARCH_X86
-        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+        deen_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
 #else
-        integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
-                      active);
+        deen_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x, active);
 #endif
         x += active;
       }
@@ -479,7 +436,7 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
           for (int i = 0; i < num_neighbors; ++i) {
             const auto& tap = neighbors[i];
             const auto sample =
-                hn::PromoteTo(d, integer_row_load<decltype(interior)::value>(
+                hn::PromoteTo(d, deen_row_load<decltype(interior)::value>(
                                      dn, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active));
             const auto difference = hn::Sub(hn::Max(sample, center), hn::Min(sample, center));
             const auto pass = hn::Le(difference, hn::Set(d, tap.limit));
@@ -491,7 +448,7 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
           auto result = hn::MulAdd(residual, hn::Set(df, static_cast<float>(1 / denominator)), cf);
           result = hn::Clamp(result, hn::ConvertTo(df, low), hn::ConvertTo(df, high));
           const auto q = hn::ConvertTo(di, hn::Add(result, hn::Set(df, 0.5f)));
-          integer_store(dn, hn::DemoteTo(dn, q), dst + y * stride + static_cast<std::size_t>(x) * sizeof(T), active);
+          deen_store(dn, hn::DemoteTo(dn, q), dst + y * stride + static_cast<std::size_t>(x) * sizeof(T), active);
         } else {
           for (int f = 0; f < count; ++f)
             for (int dy = 0; dy < side; ++dy)
@@ -529,7 +486,7 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
             q = hn::Combine(d, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
           } else
             q = integer_mean<Family == DeenFamily::Constant>(d, sum, accepted, reciprocal);
-          integer_store(dn, hn::DemoteTo(dn, q), dst + y * stride + static_cast<std::size_t>(x) * sizeof(T), active);
+          deen_store(dn, hn::DemoteTo(dn, q), dst + y * stride + static_cast<std::size_t>(x) * sizeof(T), active);
         }
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
