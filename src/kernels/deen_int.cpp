@@ -349,6 +349,92 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
   }
 }
 
+// Select a full U16 vector before widening its halves for weighted arithmetic.
+// Keep extrema in U16 too; only the two residual sums need F32 lanes.
+void integer_weighted_word_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                                   double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+  const hn::ScalableTag<std::uint16_t> d;
+  const hn::Half<decltype(d)> half;
+  const hn::Repartition<std::uint32_t, decltype(d)> wide;
+  const hn::Rebind<float, decltype(wide)> df;
+  const hn::Rebind<std::int32_t, decltype(wide)> di;
+  const int lanes = static_cast<int>(hn::Lanes(d)), side = 2 * radius + 1;
+  const auto& p = frames[0];
+  if (p.bits < 16) {
+    const auto peak = hn::Set(d, (1u << p.bits) - 1);
+    for (int f = 0; f < count; ++f)
+      for (int y = 0; y < p.height; ++y)
+        for (int x = 0; x < p.width;) {
+          const int active = std::min(lanes, p.width - x);
+          if (!hn::AllFalse(
+                  d,
+                  hn::Gt(deen_raw_load(d, frames[f].data + y * frames[f].stride + 2 * std::size_t(x), active), peak)))
+            throw std::invalid_argument("Deen: sample exceeds bit depth.");
+          x += active;
+        }
+  }
+  const std::array<std::uint16_t, 2> limits{static_cast<std::uint16_t>(std::floor(spatial)),
+                                            static_cast<std::uint16_t>(std::floor(temporal))};
+  double denominator = 0;
+  std::array<std::array<float, 225>, 2> coefficients{};
+  for (int i = 0; i < side * side; ++i) {
+    denominator += weights[i];
+    coefficients[0][i] = static_cast<float>(weights[i] * (count == 3 ? 2 : 1));
+    coefficients[1][i] = static_cast<float>(weights[i]);
+  }
+  const auto reciprocal = hn::Set(df, static_cast<float>(1 / (denominator * (count == 3 ? 4 : 1))));
+  std::array<std::array<const std::uint8_t*, 15>, 3> rows{};
+  for (int y = 0; y < p.height; ++y) {
+    for (int f = 0; f < count; ++f)
+      for (int dy = 0; dy < side; ++dy)
+        rows[f][dy] = frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
+                                                  static_cast<std::int64_t>(p.height - 1)) *
+                                           frames[f].stride;
+    const auto process_range = [&](auto interior, int begin, int end) HWY_ATTR {
+      for (int x = begin; x < end;) {
+        const int active = decltype(interior)::value ? lanes : std::min(lanes, end - x);
+        const auto center = deen_raw_load(d, p.data + y * p.stride + 2 * std::size_t(x), active);
+        const auto cl = hn::ConvertTo(df, hn::PromoteTo(wide, hn::LowerHalf(half, center)));
+        const auto ch = hn::ConvertTo(df, hn::PromoteTo(wide, hn::UpperHalf(half, center)));
+        auto sl = hn::Zero(df), sh = hn::Zero(df);
+        auto low = center, high = center;
+        for (int f = 0; f < count; ++f) {
+          const auto limit = hn::Set(d, limits[f != 0]);
+          const auto lower = hn::SaturatedSub(center, limit), upper = hn::SaturatedAdd(center, limit);
+          for (int dy = 0; dy < side; ++dy) {
+            const auto* coeff = coefficients[f != 0].data() + dy * side;
+            for (int dx = 0; dx < side; ++dx) {
+              if (coeff[dx] == 0)
+                continue;
+              const auto sample = deen_row_load<decltype(interior)::value>(
+                  d, rows[f][dy], p.width, static_cast<std::int64_t>(x) + dx - radius, active);
+              const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
+              const auto value = hn::IfThenElse(hn::Eq(outside, hn::Zero(d)), sample, center);
+              const auto vl = hn::ConvertTo(df, hn::PromoteTo(wide, hn::LowerHalf(half, value)));
+              const auto vh = hn::ConvertTo(df, hn::PromoteTo(wide, hn::UpperHalf(half, value)));
+              const auto weight = hn::Set(df, coeff[dx]);
+              sl = hn::MulAdd(weight, hn::Sub(vl, cl), sl);
+              sh = hn::MulAdd(weight, hn::Sub(vh, ch), sh);
+              low = hn::Min(low, value);
+              high = hn::Max(high, value);
+            }
+          }
+        }
+        const auto finish = [&](auto sum, auto c) HWY_ATTR {
+          return hn::DemoteTo(half, hn::ConvertTo(di, hn::Add(hn::MulAdd(sum, reciprocal, c), hn::Set(df, 0.5f))));
+        };
+        const auto result = hn::Clamp(hn::Combine(d, finish(sh, ch), finish(sl, cl)), low, high);
+        deen_store(d, result, dst + y * stride + 2 * std::size_t(x), active);
+        x += active;
+      }
+    };
+    const int left = std::min(radius, p.width);
+    const int vector_end = left + std::max(0, (p.width - radius - left) / lanes) * lanes;
+    process_range(std::false_type{}, 0, left);
+    process_range(std::true_type{}, left, vector_end);
+    process_range(std::false_type{}, vector_end, p.width);
+  }
+}
 #endif
 template <class T, DeenFamily Family>
 void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,
@@ -361,6 +447,12 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
 #if HWY_TARGET != HWY_SCALAR
   if constexpr (sizeof(T) == 1 && Family == DeenFamily::Weighted)
     return integer_weighted_byte_process(frames, count, radius, spatial, temporal, weights, byte_weights, dst, stride);
+  if constexpr (sizeof(T) == 2 && Family == DeenFamily::Weighted) {
+    if (count == 1 && weights[0] == 1)
+      return integer_process<T, DeenFamily::Constant>(frames, count, radius, spatial, temporal, weights, byte_weights,
+                                                      dst, stride);
+    return integer_weighted_word_process(frames, count, radius, spatial, temporal, weights, dst, stride);
+  }
 #endif
   constexpr bool weighted = Family == DeenFamily::Weighted;
   using Acc = std::conditional_t<sizeof(T) == 1 && !weighted && HWY_TARGET != HWY_SCALAR, std::uint16_t, std::uint32_t>;
