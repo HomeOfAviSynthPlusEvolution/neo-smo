@@ -171,6 +171,8 @@ neo-smo also uses the following libraries:
 
 Thanks to the developers and users who contribute tests, reports, and improvements.
 
+Thanks to ChaosKing for providing the Deen specifications.
+
 Thanks to [SB.SB](https://sb.sb) for sponsoring the LLM subscription used in this project's development.
 
 The original zsmooth code's MIT copyright notice and full license text are preserved in the [zsmooth license file](LICENSES/zsmooth-MIT.txt).

@@ -171,6 +171,8 @@ neo-smo 还使用了以下基础库：
 
 感谢参与测试、报告问题和改进的开发者与用户。
 
+感谢 ChaosKing 提供 Deen 的规格说明（specs）。
+
 感谢 [烧饼论坛](https://sb.sb) 赞助本项目开发使用的 LLM 订阅。
 
 zsmooth 原始代码的 MIT 版权声明与完整许可文本保留在 [zsmooth 许可文件](LICENSES/zsmooth-MIT.txt) 中。
