@@ -261,7 +261,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
           for (int g = 0; g < num_groups; ++g) {
             const auto& group = groups[g];
             auto lo = hn::Zero(dw), hi = hn::Zero(dw);
-            for (int i = group.begin; i < group.end; ++i) {
+            const auto select = [&](int i) HWY_ATTR {
               const auto sample = [&]() HWY_ATTR {
                 if constexpr (decltype(interior)::value)
                   return integer_raw_load(db, frames[f].data + (offsets[f][i] + x), lanes);
@@ -271,7 +271,21 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
               }();
               const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
               const auto pass = hn::Eq(outside, hn::Zero(db));
-              const auto value = hn::IfThenElse(pass, sample, center);
+              return hn::IfThenElse(pass, sample, center);
+            };
+            int i = group.begin;
+#if HWY_ARCH_X86
+            const hn::Rebind<std::int16_t, decltype(dw)> ds;
+            const hn::Rebind<std::int8_t, decltype(db)> dsb;
+            const auto ones = hn::Set(dsb, 1);
+            for (; i + 1 < group.end; i += 2) {
+              const auto a = select(i), b = select(i + 1);
+              lo = hn::Add(lo, hn::BitCast(dw, hn::SatWidenMulPairwiseAdd(ds, hn::InterleaveLower(db, a, b), ones)));
+              hi = hn::Add(hi, hn::BitCast(dw, hn::SatWidenMulPairwiseAdd(ds, hn::InterleaveUpper(db, a, b), ones)));
+            }
+#endif
+            for (; i < group.end; ++i) {
+              const auto value = select(i);
 #if HWY_ARCH_X86
               lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
               hi = hn::Add(hi, hn::BitCast(dw, hn::InterleaveUpper(db, value, hn::Zero(db))));
