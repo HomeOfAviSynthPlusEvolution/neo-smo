@@ -91,12 +91,11 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
   const int side = 2 * radius + 1, taps = side * side, divisor = taps * count;
   const auto reciprocal = hn::Set(dw, 65535 / divisor + 1);
   const auto& p = frames[0];
-  struct Tap {
-    const std::uint8_t* row;
-    int dx;
-    std::uint8_t limit;
+  struct Row {
+    const std::uint8_t* data;
+    const std::uint8_t* limits;
   };
-  std::array<Tap, 243> neighbors;
+  std::array<Row, 27> rows;
   std::array<std::array<std::uint8_t, 225>, 2> limits{};
   for (int f = 0; f < 2; ++f)
     for (int i = 0; i < taps; ++i)
@@ -109,8 +108,7 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
         const auto* row = frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
                                                       static_cast<std::int64_t>(p.height - 1)) *
                                                frames[f].stride;
-        for (int dx = 0; dx < side; ++dx)
-          neighbors[n++] = {row, dx - radius, limits[f != 0][dy * side + dx]};
+        rows[n++] = {row, limits[f != 0].data() + dy * side};
       }
     for (int x = 0; x < p.width;) {
       const int remaining = x < radius             ? std::min(radius - x, p.width - x)
@@ -122,23 +120,29 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
         auto lo = hn::Zero(dw), hi = hn::Zero(dw);
         auto accepted = hn::Zero(db);
         for (int i = 0; i < n; ++i) {
-          const auto& tap = neighbors[i];
-          const auto sample = integer_row_load<decltype(interior)::value>(
-              db, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active);
-          const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
-          const auto pass = hn::Eq(hn::SaturatedSub(difference, hn::Set(db, tap.limit)), hn::Zero(db));
-          const auto value =
-              Family == DeenFamily::Adaptive ? hn::IfThenElseZero(pass, sample) : hn::IfThenElse(pass, sample, center);
+          const auto& row = rows[i];
+          const auto row_limit = hn::Set(db, row.limits[0]);
+          for (int dx = 0; dx < side; ++dx) {
+            const auto sample = integer_row_load<decltype(interior)::value>(
+                db, row.data, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
+            const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
+            const auto pass =
+                hn::Eq(hn::SaturatedSub(difference,
+                                        (Family == DeenFamily::Constant ? row_limit : hn::Set(db, row.limits[dx]))),
+                       hn::Zero(db));
+            const auto value = Family == DeenFamily::Adaptive ? hn::IfThenElseZero(pass, sample)
+                                                              : hn::IfThenElse(pass, sample, center);
 #if HWY_ARCH_X86
-          // Keep each 128-bit block in unpack order until the final pack.
-          lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
-          hi = hn::Add(hi, hn::BitCast(dw, hn::InterleaveUpper(db, value, hn::Zero(db))));
+            // Keep each 128-bit block in unpack order until the final pack.
+            lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
+            hi = hn::Add(hi, hn::BitCast(dw, hn::InterleaveUpper(db, value, hn::Zero(db))));
 #else
-          lo = hn::Add(lo, hn::PromoteTo(dw, hn::LowerHalf(half, value)));
-          hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
+            lo = hn::Add(lo, hn::PromoteTo(dw, hn::LowerHalf(half, value)));
+            hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
 #endif
-          if constexpr (Family == DeenFamily::Adaptive)
-            accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(db, 1)));
+            if constexpr (Family == DeenFamily::Adaptive)
+              accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(db, 1)));
+          }
         }
         const auto mean = [&](auto sum, auto counts) HWY_ATTR {
           if constexpr (Family == DeenFamily::Constant) {
