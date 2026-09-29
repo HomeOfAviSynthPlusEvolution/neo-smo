@@ -103,6 +103,7 @@ void VS_CC mini_deen_create(const VSMap* in, VSMap* out, void*, VSCore* core, co
     read_array("radius", d->radius, 1, 7);
     read_array("threshold", d->threshold, 0, 255);
     const int count = api->mapNumElements(in, "planes");
+    require(count != 0, "MiniDeen: planes cannot be empty.");
     if (count > 0) {
       d->process.fill(false);
       for (int i = 0; i < count; ++i) {

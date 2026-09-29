@@ -137,7 +137,7 @@ last""").Prefetch(2)
     for name in ("Deen", "MiniDeen"):
         for pixel in ("RGB32", "YUY2", "RGBAP", "YUVA444"):
             run(name + "-reject-" + pixel, "return neo_smo_" + name + "(c)", pixel=pixel, error="only planar")
-        run(name + "-empty-planes", "return neo_smo_" + name + "(c,planes=[])")
+        run(name + "-empty-planes", "return neo_smo_" + name + "(c,planes=[])", error="planes cannot be empty")
     print(f"AviSynth acceptance: {count} cases passed")
 
 

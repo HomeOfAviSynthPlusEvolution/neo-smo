@@ -35,7 +35,9 @@ public:
     const auto format = ds::avisynth::make_video_format(vi);
     require(format.has_value(), "unsupported pixel format");
     format_ = format.value();
-    const auto selected = integers(args[mini ? 3 : 10]);
+    const auto& planes = args[mini ? 3 : 10];
+    require(!planes.IsArray() || planes.ArraySize() > 0, "planes cannot be empty");
+    const auto selected = integers(planes);
     process_.fill(selected.empty());
     for (int p : selected) {
       require(p >= 0 && p < vi.NumComponents() && !process_[p], "planes must contain distinct valid indices");

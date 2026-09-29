@@ -2228,8 +2228,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
   vspapi->registerFunction("DCTFilter", "clip:vnode;factors:float[];planes:int[]:opt;", "clip:vnode;",
                            dct_filter_create, nullptr, plugin);
   vspapi->registerFunction("Deen", "clip:vnode;mode:data:opt;rad:int:opt;thrY:float:opt;thrUV:float:opt;"
-                           "tthY:float:opt;tthUV:float:opt;min:float:opt;scd:float:opt;scenechange:int:opt;planes:int[]:opt:empty;",
+                           "tthY:float:opt;tthUV:float:opt;min:float:opt;scd:float:opt;scenechange:int:opt;planes:int[]:opt;",
                            "clip:vnode;", deen_create, nullptr, plugin);
-  vspapi->registerFunction("MiniDeen", "clip:vnode;radius:int[]:opt:empty;threshold:int[]:opt:empty;planes:int[]:opt:empty;",
+  vspapi->registerFunction("MiniDeen", "clip:vnode;radius:int[]:opt:empty;threshold:int[]:opt:empty;planes:int[]:opt;",
                            "clip:vnode;", mini_deen_create, nullptr, plugin);
 }

@@ -81,10 +81,6 @@ def main():
             source = clip.get_frame(1)
             for p in (1, 2):
                 assert np.array_equal(pixels(f, p), pixels(source, p))
-        empty = core.neo_smo.Deen(clip, planes=[], **kwargs).get_frame(1)
-        normal = out.get_frame(1)
-        for p in range(clip.format.num_planes):
-            assert np.array_equal(pixels(empty, p), pixels(normal, p))
         if mode[1] == '3':
             cut = core.neo_smo.Deen(clip, **dict(kwargs, scenechange=True, scd=0)).get_frame(1)
             spatial = core.neo_smo.Deen(clip, **dict(kwargs, mode=mode[0]+'2d')).get_frame(1)
@@ -94,7 +90,7 @@ def main():
     invalid = [dict(mode='bad'), dict(rad=0), dict(rad=8), dict(thrY=-1),
                dict(thrUV=float('nan')), dict(tthY=float('inf')), dict(min=-0.01),
                dict(min=1.01), dict(scd=-1), dict(scenechange=2), dict(planes=[1]),
-               dict(planes=[0, 0])]
+               dict(planes=[0, 0]), dict(planes=[])]
     if mode[1] == '3':
         invalid.append(dict(rad=5))
     for override in invalid:

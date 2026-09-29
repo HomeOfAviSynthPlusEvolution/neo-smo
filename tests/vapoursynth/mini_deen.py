@@ -36,17 +36,17 @@ def main():
             out.props['MiniDeenFrame'] = n
             return out
         clip = core.std.ModifyFrame(base, clips=base, selector=fill)
-        for radius, threshold, planes in (([1], [10], []), ([7,2], [1,11], [0]), ([2,3,1], [0,255,10], [])):
+        for radius, threshold, planes in (([1], [10], None), ([7,2], [1,11], [0]), ([2,3,1], [0,255,10], None)):
             out = core.neo_smo.MiniDeen(clip, radius=radius, threshold=threshold, planes=planes)
             for n in (2,0,1,1):
                 with out.get_frame(n) as actual, clip.get_frame(n) as source:
                     assert actual.props['MiniDeenFrame'] == n
                     for p in range(source.format.num_planes):
                         a = np.asarray(source[p])
-                        want = reference(a, radius[min(p,len(radius)-1)], threshold[min(p,len(threshold)-1)], source.format.bits_per_sample) if not planes or p in planes else a
+                        want = reference(a, radius[min(p,len(radius)-1)], threshold[min(p,len(threshold)-1)], source.format.bits_per_sample) if planes is None or p in planes else a
                         np.testing.assert_array_equal(np.asarray(actual[p]), want)
         default = core.neo_smo.MiniDeen(clip)
-        empty = core.neo_smo.MiniDeen(clip, radius=[], threshold=[], planes=[])
+        empty = core.neo_smo.MiniDeen(clip, radius=[], threshold=[])
         with default.get_frame(0) as a, empty.get_frame(0) as b, clip.get_frame(0) as source:
             for p in range(source.format.num_planes):
                 np.testing.assert_array_equal(np.asarray(a[p]), reference(np.asarray(source[p]),1,10,source.format.bits_per_sample))
@@ -62,7 +62,7 @@ def main():
     with core.neo_smo.MiniDeen(tiny,radius=7,threshold=255).get_frame(0) as f:
         assert np.asarray(f[0])[0,0] == 65535
     for kwargs in ({'radius':[0]}, {'radius':[8]}, {'threshold':[-1]}, {'threshold':[256]},
-                   {'radius':[1,2,3,4]}, {'threshold':[1,2,3,4]}, {'planes':[0,0]}, {'planes':[1]}):
+                   {'radius':[1,2,3,4]}, {'threshold':[1,2,3,4]}, {'planes':[0,0]}, {'planes':[1]}, {'planes':[]}):
         try: core.neo_smo.MiniDeen(tiny,**kwargs)
         except vs.Error: pass
         else: raise AssertionError(f'accepted {kwargs}')

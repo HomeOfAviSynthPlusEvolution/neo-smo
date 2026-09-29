@@ -118,10 +118,10 @@ def check(args):
     for mode in ("c2d", "c3d", "w2d", "w3d", "a2d", "a3d"):
         cases.append(("Deen", {"mode": mode, "rad": 2, "thrY": 30, "thrUV": 40,
                                "tthY": 25, "tthUV": 35, "scenechange": False, "planes": [0, 2]}))
-    cases.append(("Deen", {"mode": "a3d", "scd": 1, "planes": []}))
+    cases.append(("Deen", {"mode": "a3d", "scd": 1}))
     if not floating:
         cases.append(("MiniDeen", {"radius": [1, 3, 2], "threshold": [20, 30], "planes": [0, 2]}))
-        cases.append(("MiniDeen", {"radius": [], "threshold": [], "planes": []}))
+        cases.append(("MiniDeen", {"radius": [], "threshold": []}))
     if not rgb and not floating:
         for tmode in (0, 1, 4):
             cases.append(("Cnr4", {"scenechange": False, "tmode": tmode, "wmode": tmode % 4, "ref": "REF"}))

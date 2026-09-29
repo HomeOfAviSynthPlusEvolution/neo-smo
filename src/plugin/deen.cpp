@@ -159,6 +159,7 @@ void VS_CC deen_create(const VSMap* in, VSMap* out, void*, VSCore* core, const V
     o.scenechange = scene != 0;
     auto d = std::make_unique<Instance>(std::move(o));
     const int count = api->mapNumElements(in, "planes");
+    require(count != 0, "Deen: planes cannot be empty.");
     if (count > 0) {
       d->process.fill(false);
       for (int i = 0; i < count; ++i) {
