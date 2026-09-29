@@ -122,14 +122,18 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
         for (int i = 0; i < n; ++i) {
           const auto& row = rows[i];
           const auto row_limit = hn::Set(db, row.limits[0]);
+          const auto lower = hn::SaturatedSub(center, row_limit), upper = hn::SaturatedAdd(center, row_limit);
           for (int dx = 0; dx < side; ++dx) {
             const auto sample = integer_row_load<decltype(interior)::value>(
                 db, row.data, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
-            const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
-            const auto pass =
-                hn::Eq(hn::SaturatedSub(difference,
-                                        (Family == DeenFamily::Constant ? row_limit : hn::Set(db, row.limits[dx]))),
-                       hn::Zero(db));
+            const auto pass = [&]() HWY_ATTR {
+              if constexpr (Family == DeenFamily::Constant)
+                return hn::Eq(hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample)), hn::Zero(db));
+              else {
+                const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
+                return hn::Eq(hn::SaturatedSub(difference, hn::Set(db, row.limits[dx])), hn::Zero(db));
+              }
+            }();
             const auto value = Family == DeenFamily::Adaptive ? hn::IfThenElseZero(pass, sample)
                                                               : hn::IfThenElse(pass, sample, center);
 #if HWY_ARCH_X86
@@ -236,6 +240,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
         auto s0 = hn::Zero(df), s1 = hn::Zero(df), s2 = hn::Zero(df), s3 = hn::Zero(df);
         for (int f = 0; f < count; ++f) {
           const auto limit = hn::Set(db, static_cast<std::uint8_t>(std::floor(f ? temporal : spatial)));
+          const auto lower = hn::SaturatedSub(center, limit), upper = hn::SaturatedAdd(center, limit);
           for (int g = 0; g < num_groups; ++g) {
             const auto& group = groups[g];
             auto lo = hn::Zero(dw), hi = hn::Zero(dw);
@@ -247,8 +252,8 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
                   return integer_row_load(db, frames[f].data + (offsets[f][i] - dxs[i]), p.width,
                                           static_cast<std::int64_t>(x) + dxs[i], active);
               }();
-              const auto diff = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
-              const auto pass = hn::Eq(hn::SaturatedSub(diff, limit), hn::Zero(db));
+              const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
+              const auto pass = hn::Eq(outside, hn::Zero(db));
               const auto value = hn::IfThenElse(pass, sample, center);
 #if HWY_ARCH_X86
               lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
