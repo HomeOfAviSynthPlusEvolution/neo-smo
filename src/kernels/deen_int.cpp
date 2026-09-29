@@ -213,19 +213,18 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
   }
   const auto reciprocal = hn::Set(df, static_cast<float>(1 / (denominator * (count == 3 ? 4 : 1))));
   const auto& p = frames[0];
-  struct Tap {
-    const std::uint8_t* row;
-    int dx;
-  };
-  std::array<std::array<Tap, 225>, 3> neighbors;
+  std::array<std::array<std::ptrdiff_t, 225>, 3> offsets;
+  std::array<int, 225> dxs;
+  for (int i = 0; i < taps; ++i)
+    dxs[i] = order[i] % side - radius;
   for (int y = 0; y < p.height; ++y) {
     for (int f = 0; f < count; ++f)
       for (int i = 0; i < taps; ++i) {
         const int dy = order[i] / side - radius;
-        neighbors[f][i] = {frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy, std::int64_t{0},
-                                                       static_cast<std::int64_t>(p.height - 1)) *
-                                                frames[f].stride,
-                           order[i] % side - radius};
+        offsets[f][i] =
+            std::clamp(static_cast<std::int64_t>(y) + dy, std::int64_t{0}, static_cast<std::int64_t>(p.height - 1)) *
+                frames[f].stride +
+            dxs[i];
       }
     for (int x = 0; x < p.width;) {
       const int remaining = x < radius             ? std::min(radius - x, p.width - x)
@@ -241,9 +240,13 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
             const auto& group = groups[g];
             auto lo = hn::Zero(dw), hi = hn::Zero(dw);
             for (int i = group.begin; i < group.end; ++i) {
-              const auto& tap = neighbors[f][i];
-              const auto sample = integer_row_load<decltype(interior)::value>(
-                  db, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active);
+              const auto sample = [&]() HWY_ATTR {
+                if constexpr (decltype(interior)::value)
+                  return integer_raw_load(db, frames[f].data + (offsets[f][i] + x), lanes);
+                else
+                  return integer_row_load(db, frames[f].data + (offsets[f][i] - dxs[i]), p.width,
+                                          static_cast<std::int64_t>(x) + dxs[i], active);
+              }();
               const auto diff = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
               const auto pass = hn::Eq(hn::SaturatedSub(diff, limit), hn::Zero(db));
               const auto value = hn::IfThenElse(pass, sample, center);
