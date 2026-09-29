@@ -176,7 +176,7 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
     }
   }
 }
-// Two float accumulators share one narrow comparison batch. With <=243
+// Four float accumulators share one full byte comparison batch. With <=243
 // nonnegative weighted U8 taps, F32 error is far below half a sample, so
 // rounding cannot leave the accepted integer range; per-tap extrema are unnecessary.
 void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
@@ -185,7 +185,8 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
   const hn::Rebind<float, decltype(d)> df;
   const hn::Rebind<std::int32_t, decltype(d)> di;
   const hn::Rebind<std::uint8_t, decltype(d)> dh;
-  const hn::Twice<decltype(dh)> db;
+  const hn::Twice<decltype(dh)> half;
+  const hn::Twice<decltype(half)> db;
   const int lanes = static_cast<int>(hn::Lanes(db));
   const int side = 2 * radius + 1, taps = side * side;
   double denominator = 0;
@@ -220,9 +221,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
       const int active = std::min(lanes, remaining);
       const auto batch = [&](auto interior) HWY_ATTR {
         const auto center = integer_load(db, p, y, x, active);
-        const auto cl = hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, center)));
-        const auto ch = hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, center)));
-        auto lo = hn::Zero(df), hi = hn::Zero(df);
+        auto s0 = hn::Zero(df), s1 = hn::Zero(df), s2 = hn::Zero(df), s3 = hn::Zero(df);
         for (int i = 0; i < n; ++i) {
           const auto& tap = neighbors[i];
           const auto sample = integer_row_load<decltype(interior)::value>(
@@ -231,12 +230,18 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
           const auto pass = hn::Eq(hn::SaturatedSub(diff, hn::Set(db, tap.limit)), hn::Zero(db));
           const auto value = hn::IfThenElse(pass, sample, center);
           const auto weight = hn::Set(df, tap.weight);
-          lo = hn::MulAdd(weight, hn::Sub(hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, value))), cl), lo);
-          hi = hn::MulAdd(weight, hn::Sub(hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, value))), ch), hi);
+          const auto low = hn::LowerHalf(half, value), high = hn::UpperHalf(half, value);
+          s0 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, low))), s0);
+          s1 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, low))), s1);
+          s2 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, high))), s2);
+          s3 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, high))), s3);
         }
-        const auto ql = hn::ConvertTo(di, hn::Add(hn::MulAdd(lo, reciprocal, cl), hn::Set(df, 0.5f)));
-        const auto qh = hn::ConvertTo(di, hn::Add(hn::MulAdd(hi, reciprocal, ch), hn::Set(df, 0.5f)));
-        integer_store(db, hn::Combine(db, hn::DemoteTo(dh, qh), hn::DemoteTo(dh, ql)), dst + y * stride + x, active);
+        const auto finish = [&](auto sum) HWY_ATTR {
+          return hn::DemoteTo(dh, hn::ConvertTo(di, hn::MulAdd(sum, reciprocal, hn::Set(df, 0.5f))));
+        };
+        const auto low = hn::Combine(half, finish(s1), finish(s0));
+        const auto high = hn::Combine(half, finish(s3), finish(s2));
+        integer_store(db, hn::Combine(db, high, low), dst + y * stride + x, active);
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
         batch(std::true_type{});
