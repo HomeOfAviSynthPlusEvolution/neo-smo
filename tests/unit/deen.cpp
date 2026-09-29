@@ -363,6 +363,12 @@ int main(int argc, char** argv) {
 
       const std::string mode = argc > 1 ? argv[1] : "c2d";
       fixtures(mode);
+      // Exercise both halves of the byte batches and their boundary tails.
+      for (int width : {63, 64, 127, 128, 129})
+        for (double minimum : {0.000001, 0.37})
+          for (bool at_end : {false, true})
+            run_case(mode, DataType::U8, 8, width, 3, mode[1] == '3' ? 4 : 7, minimum, false, false, mode[1] == '3',
+                     at_end);
       invalid();
       scene_integer_vectors();
       float_constants(mode);

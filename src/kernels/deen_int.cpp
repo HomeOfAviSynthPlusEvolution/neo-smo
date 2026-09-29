@@ -81,12 +81,15 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
   // Compare a full byte vector before widening into two independent sums.
   // At most 243 taps: counts fit u8 and sums (including rounding) fit u16.
   const hn::ScalableTag<std::uint8_t> db;
+#if !HWY_ARCH_X86
   const hn::Half<decltype(db)> half;
+#endif
   const hn::Repartition<std::uint16_t, decltype(db)> dw;
   const hn::Half<decltype(dw)> wh;
   const hn::Repartition<std::uint32_t, decltype(dw)> dd;
   const int lanes = static_cast<int>(hn::Lanes(db));
   const int side = 2 * radius + 1, taps = side * side, divisor = taps * count;
+  const auto reciprocal = hn::Set(dw, 65535 / divisor + 1);
   const auto& p = frames[0];
   struct Tap {
     const std::uint8_t* row;
@@ -123,18 +126,24 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
           const auto sample = integer_row_load<decltype(interior)::value>(
               db, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active);
           const auto difference = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
-          const auto pass = hn::Le(difference, hn::Set(db, tap.limit));
+          const auto pass = hn::Eq(hn::SaturatedSub(difference, hn::Set(db, tap.limit)), hn::Zero(db));
           const auto value =
               Family == DeenFamily::Adaptive ? hn::IfThenElseZero(pass, sample) : hn::IfThenElse(pass, sample, center);
+#if HWY_ARCH_X86
+          // Keep each 128-bit block in unpack order until the final pack.
+          lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
+          hi = hn::Add(hi, hn::BitCast(dw, hn::InterleaveUpper(db, value, hn::Zero(db))));
+#else
           lo = hn::Add(lo, hn::PromoteTo(dw, hn::LowerHalf(half, value)));
           hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
+#endif
           if constexpr (Family == DeenFamily::Adaptive)
             accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(db, 1)));
         }
         const auto mean = [&](auto sum, auto counts) HWY_ATTR {
           if constexpr (Family == DeenFamily::Constant) {
             const auto numerator = hn::Add(sum, hn::Set(dw, divisor / 2));
-            auto q = hn::MulHigh(numerator, hn::Set(dw, 65535 / divisor + 1));
+            auto q = hn::MulHigh(numerator, reciprocal);
             return hn::Sub(q, hn::IfThenElseZero(hn::Gt(hn::Mul(q, hn::Set(dw, divisor)), numerator), hn::Set(dw, 1)));
           } else {
             const auto qlo = integer_mean<false>(dd, hn::PromoteTo(dd, hn::LowerHalf(wh, sum)),
@@ -144,10 +153,16 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
             return hn::Combine(dw, hn::DemoteTo(wh, qhi), hn::DemoteTo(wh, qlo));
           }
         };
+#if HWY_ARCH_X86
+        lo = mean(lo, hn::BitCast(dw, hn::InterleaveLower(db, accepted, hn::Zero(db))));
+        hi = mean(hi, hn::BitCast(dw, hn::InterleaveUpper(db, accepted, hn::Zero(db))));
+        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+#else
         lo = mean(lo, hn::PromoteTo(dw, hn::LowerHalf(half, accepted)));
         hi = mean(hi, hn::PromoteTo(dw, hn::UpperHalf(half, accepted)));
         integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
                       active);
+#endif
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
         batch(std::true_type{});
@@ -157,6 +172,77 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
     }
   }
 }
+// Two float accumulators share one narrow comparison batch. With <=243
+// nonnegative weighted U8 taps, F32 error is far below half a sample, so
+// rounding cannot leave the accepted integer range; per-tap extrema are unnecessary.
+void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                                   double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+  const hn::ScalableTag<std::uint32_t> d;
+  const hn::Rebind<float, decltype(d)> df;
+  const hn::Rebind<std::int32_t, decltype(d)> di;
+  const hn::Rebind<std::uint8_t, decltype(d)> dh;
+  const hn::Twice<decltype(dh)> db;
+  const int lanes = static_cast<int>(hn::Lanes(db));
+  const int side = 2 * radius + 1, taps = side * side;
+  double denominator = 0;
+  for (int i = 0; i < taps; ++i)
+    denominator += weights[i];
+  const auto reciprocal = hn::Set(df, static_cast<float>(1 / (denominator * (count == 3 ? 4 : 1))));
+  const auto& p = frames[0];
+  struct Tap {
+    const std::uint8_t* row;
+    int dx;
+    std::uint8_t limit;
+    float weight;
+  };
+  std::array<Tap, 243> neighbors;
+  for (int y = 0; y < p.height; ++y) {
+    int n = 0;
+    for (int f = 0; f < count; ++f)
+      for (int dy = 0; dy < side; ++dy) {
+        const auto* row = frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
+                                                      static_cast<std::int64_t>(p.height - 1)) *
+                                               frames[f].stride;
+        for (int dx = 0; dx < side; ++dx) {
+          const auto weight = static_cast<float>(weights[dy * side + dx] * (count == 3 && f == 0 ? 2 : 1));
+          if (weight != 0)
+            neighbors[n++] = {row, dx - radius, static_cast<std::uint8_t>(std::floor(f ? temporal : spatial)), weight};
+        }
+      }
+    for (int x = 0; x < p.width;) {
+      const int remaining = x < radius             ? std::min(radius - x, p.width - x)
+                            : x < p.width - radius ? p.width - radius - x
+                                                   : p.width - x;
+      const int active = std::min(lanes, remaining);
+      const auto batch = [&](auto interior) HWY_ATTR {
+        const auto center = integer_load(db, p, y, x, active);
+        const auto cl = hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, center)));
+        const auto ch = hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, center)));
+        auto lo = hn::Zero(df), hi = hn::Zero(df);
+        for (int i = 0; i < n; ++i) {
+          const auto& tap = neighbors[i];
+          const auto sample = integer_row_load<decltype(interior)::value>(
+              db, tap.row, p.width, static_cast<std::int64_t>(x) + tap.dx, active);
+          const auto diff = hn::Or(hn::SaturatedSub(sample, center), hn::SaturatedSub(center, sample));
+          const auto pass = hn::Eq(hn::SaturatedSub(diff, hn::Set(db, tap.limit)), hn::Zero(db));
+          const auto value = hn::IfThenElse(pass, sample, center);
+          const auto weight = hn::Set(df, tap.weight);
+          lo = hn::MulAdd(weight, hn::Sub(hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(dh, value))), cl), lo);
+          hi = hn::MulAdd(weight, hn::Sub(hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(dh, value))), ch), hi);
+        }
+        const auto ql = hn::ConvertTo(di, hn::Add(hn::MulAdd(lo, reciprocal, cl), hn::Set(df, 0.5f)));
+        const auto qh = hn::ConvertTo(di, hn::Add(hn::MulAdd(hi, reciprocal, ch), hn::Set(df, 0.5f)));
+        integer_store(db, hn::Combine(db, hn::DemoteTo(dh, qh), hn::DemoteTo(dh, ql)), dst + y * stride + x, active);
+      };
+      if (x >= radius && active == lanes && x <= p.width - radius - lanes)
+        batch(std::true_type{});
+      else
+        batch(std::false_type{});
+      x += active;
+    }
+  }
+}
+
 #endif
 template <class T, DeenFamily Family>
 void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,
@@ -164,6 +250,10 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
 #if HWY_TARGET != HWY_SCALAR
   if constexpr (sizeof(T) == 1 && Family != DeenFamily::Weighted)
     return integer_byte_process<Family>(frames, count, radius, spatial, temporal, weights, dst, stride);
+#endif
+#if HWY_TARGET != HWY_SCALAR
+  if constexpr (sizeof(T) == 1 && Family == DeenFamily::Weighted)
+    return integer_weighted_byte_process(frames, count, radius, spatial, temporal, weights, dst, stride);
 #endif
   constexpr bool weighted = Family == DeenFamily::Weighted;
   using Acc = std::conditional_t<sizeof(T) == 1 && !weighted && HWY_TARGET != HWY_SCALAR, std::uint16_t, std::uint32_t>;
