@@ -171,6 +171,46 @@ void fixtures(const std::string& mode) {
   deen_process(Deen(o), false, false, f, out, 3);
   check(std::memcmp(a, out, 9) == 0, "zero threshold identity");
 }
+// Check the rounding boundaries of fixed U8 means, including large sums.
+void constant_integer_rounding(const std::string& mode) {
+  const bool temporal = mode[1] == '3';
+  const int count = temporal ? 3 : 1;
+  for (int radius = 1; radius <= (temporal ? 4 : 7); ++radius) {
+    const int side = 2 * radius + 1, divisor = side * side * count;
+    std::vector<int> sums;
+    for (int q : {0, 1, 127, 254}) {
+      sums.push_back(q * divisor + divisor / 2);
+      sums.push_back(q * divisor + divisor / 2 + 1);
+    }
+    sums.push_back(255 * divisor);
+    const int width = side * static_cast<int>(sums.size());
+    std::array<std::vector<std::uint8_t>, 3> input;
+    std::array<DeenPlane, 3> frames{};
+    for (int f = 0; f < count; ++f) {
+      input[f].resize(width * side);
+      frames[f] = {input[f].data(), width, width, side, DataType::U8, 8};
+    }
+    for (std::size_t tile = 0; tile < sums.size(); ++tile) {
+      int remaining = sums[tile];
+      for (int f = 0; f < count; ++f)
+        for (int y = 0; y < side; ++y)
+          for (int x = 0; x < side; ++x) {
+            const int value = std::min(remaining, 255);
+            input[f][y * width + tile * side + x] = static_cast<std::uint8_t>(value);
+            remaining -= value;
+          }
+    }
+    DeenOptions o;
+    o.mode = mode;
+    o.radius = radius;
+    o.spatial_y = o.temporal_y = 255;
+    std::vector<std::uint8_t> output(width * side);
+    deen_process(Deen(o), false, temporal, frames, output.data(), width);
+    for (std::size_t tile = 0; tile < sums.size(); ++tile)
+      check(output[radius * width + tile * side + radius] == (sums[tile] + divisor / 2) / divisor,
+            "fixed integer mean rounding boundary");
+  }
+}
 void float_constants(const std::string& mode) {
   for (auto type : {DataType::F16, DataType::F32})
     for (double value : {0.0, -0.125, 0.3, std::ldexp(1.0, -24), -std::ldexp(1.0, -24), 65504.0}) {
@@ -363,6 +403,8 @@ int main(int argc, char** argv) {
 
       const std::string mode = argc > 1 ? argv[1] : "c2d";
       fixtures(mode);
+      if (mode[0] == 'c')
+        constant_integer_rounding(mode);
       // Exercise both halves of the byte batches and their boundary tails.
       for (int width : {63, 64, 127, 128, 129})
         for (double minimum : {0.000001, 0.37})

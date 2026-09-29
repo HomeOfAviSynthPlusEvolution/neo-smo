@@ -89,7 +89,21 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
   const hn::Repartition<std::uint32_t, decltype(dw)> dd;
   const int lanes = static_cast<int>(hn::Lanes(db));
   const int side = 2 * radius + 1, taps = side * side, divisor = taps * count;
-  const auto reciprocal = hn::Set(dw, 65535 / divisor + 1);
+  // Exact division over the bounded U8 numerator range. Pick a rounded-down
+  // reciprocal plus one in the numerator, or a rounded-up reciprocal. The
+  // error bound at quotient 255 proves all smaller quotients exact as well.
+  int shift = 0;
+  while ((1 << (shift + 1)) <= divisor)
+    ++shift;
+  const unsigned scale = 1u << (16 + shift);
+  unsigned multiplier = scale / divisor;
+  unsigned rounding = divisor / 2;
+  if (255u * (scale - multiplier * divisor) <= multiplier)
+    ++rounding;
+  else
+    ++multiplier;
+  const auto reciprocal = hn::Set(dw, multiplier);
+  const auto rounding_bias = hn::Set(dw, rounding);
   const auto& p = frames[0];
   struct Row {
     const std::uint8_t* data;
@@ -150,9 +164,7 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
         }
         const auto mean = [&](auto sum, auto counts) HWY_ATTR {
           if constexpr (Family == DeenFamily::Constant) {
-            const auto numerator = hn::Add(sum, hn::Set(dw, divisor / 2));
-            auto q = hn::MulHigh(numerator, reciprocal);
-            return hn::Sub(q, hn::IfThenElseZero(hn::Gt(hn::Mul(q, hn::Set(dw, divisor)), numerator), hn::Set(dw, 1)));
+            return hn::ShiftRightSame(hn::MulHigh(hn::Add(sum, rounding_bias), reciprocal), shift);
           } else {
             const auto qlo = integer_mean<false>(dd, hn::PromoteTo(dd, hn::LowerHalf(wh, sum)),
                                                  hn::PromoteTo(dd, hn::LowerHalf(wh, counts)), 0);
