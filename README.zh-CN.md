@@ -35,12 +35,13 @@ neo-smo 将滤镜计算与宿主帧管理分离。核心负责图像平面的采
 | 邻域去噪与修复 | `RemoveGrain`、`Repair`：多模式空间处理及参考邻域限幅。 |
 | 时间限幅与修复 | `Clense`、`ForwardClense`、`BackwardClense`、`TemporalRepair`：利用相邻帧约束当前像素。 |
 | 时间与时空降噪 | `TemporalMedian`、`TemporalSoften`、`DegrainMedian`、`FluxSmoothT`、`FluxSmoothST`、`TTempSmooth`：时间排序、阈值平均、方向选择及加权平滑。 |
+| 阈值邻域平滑 | [Deen、MiniDeen](docs/api/zh-CN/deen.md)：空间及三帧降噪，支持固定分母、自适应与距离加权平均。 |
 | 色彩降噪 | `CCD`、`Cnr4`：颜色差异引导的空间采样与时间色度降噪。 |
 | 块频率滤波 | `DCTFilter`：不重叠 8×8 块的 DCT 系数加权。 |
 
-共 19 个函数。通常支持固定格式、固定尺寸的平面 GRAY/YUV/RGB，以及 8–16 位整数、16 位浮点（F16）、32 位浮点（F32）样本。F16 仅适用于 VapourSynth；AviSynth+ 支持无 alpha 的平面格式。TTempSmooth 不接受 F16，CCD 不接受 GRAY，Cnr4 仅接受整数 YUV。
+共 21 个函数。通常支持固定格式、固定尺寸的平面 GRAY/YUV/RGB，以及 8–16 位整数、16 位浮点（F16）、32 位浮点（F32）样本。F16 仅适用于 VapourSynth；AviSynth+ 支持无 alpha 的平面格式。TTempSmooth 不接受 F16，CCD 不接受 GRAY，Cnr4 仅接受整数 YUV，MiniDeen 仅接受整数输入。
 
-输出保留输入格式、尺寸、帧数和帧率。支持 `planes` 的函数在省略该参数时处理全部平面，`planes=[0]` 只处理第一个平面；显式空数组不被接受。部分函数用 `mode` 或阈值控制平面处理，不能向所有函数统一传入 `planes`。这些滤镜不估计运动向量，也不做运动补偿。
+输出保留输入格式、尺寸、帧数和帧率。支持 `planes` 的函数在省略该参数时处理全部平面，`planes=[0]` 只处理第一个平面；显式传入空平面数组会报错。部分函数用 `mode` 或阈值控制平面处理，不能向所有函数统一传入 `planes`。这些滤镜不估计运动向量，也不做运动补偿。
 
 ## 文档与使用
 
@@ -75,7 +76,7 @@ return neo_smo_Median(clip, radius=[1], planes=[0])
 
 函数名和参数顺序对应 API 使用参考，函数名前加 `neo_smo_`。数组参数接受 `[0, 1]` 这样的原生数组，单值可作为一个元素的简写；DCTFilter 的 `factors` 仍需恰好八项；Cnr4 的 `sense`、`str`、`pow` 各须恰好三项，不能用单值替代。布尔参数使用 `true`/`false`。音频和场序从主输入剪辑传递，输出帧属性来自对应的源帧。详见 [AviSynth 接口](docs/api/zh-CN/README.md#avisynth-调用与构建)。
 
-显式表达参数省略语义时，VapourSynth 使用 `None`，AviSynth 使用 `Undefined()`；也可以直接不写该参数。省略参数会使用相应默认行为，不等于传入零或空数组。例如 `planes=None` 或 `planes=Undefined()` 使用默认平面选择，而 neo-smo 不接受 `planes=[]`。
+显式表达参数省略语义时，VapourSynth 使用 `None`，AviSynth 使用 `Undefined()`；也可以直接不写该参数。省略参数会使用相应默认行为，不等于传入零或空数组。例如 `planes=None` 或 `planes=Undefined()` 使用默认平面选择，滤镜不接受 `planes=[]`。
 
 ## SIMD 与 CPU 选择
 

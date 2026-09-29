@@ -35,12 +35,13 @@ Filters and DCT execute on the calling host thread, without creating worker thre
 | Neighborhood denoising and repair | `RemoveGrain`, `Repair`: spatial processing modes and clamping against a reference neighborhood. |
 | Temporal clamping and repair | `Clense`, `ForwardClense`, `BackwardClense`, `TemporalRepair`: constrain current pixels using adjacent frames. |
 | Temporal and spatiotemporal denoising | `TemporalMedian`, `TemporalSoften`, `DegrainMedian`, `FluxSmoothT`, `FluxSmoothST`, `TTempSmooth`: temporal order statistics, thresholded averaging, direction selection, and weighted smoothing. |
+| Thresholded neighborhood smoothing | [Deen, MiniDeen](docs/api/en/deen.md): spatial and three-frame denoising, with fixed, adaptive or distance-weighted means. |
 | Color denoising | `CCD`, `Cnr4`: spatial sampling guided by color differences and temporal chroma denoising. |
 | Block frequency filtering | `DCTFilter`: DCT coefficient weighting in non-overlapping 8×8 blocks. |
 
-There are 19 functions. Common support covers constant-format, constant-size planar GRAY/YUV/RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept GRAY, and Cnr4 accepts integer YUV only.
+There are 21 functions. Common support covers constant-format, constant-size planar GRAY/YUV/RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept GRAY, Cnr4 accepts integer YUV only, and MiniDeen accepts integer input only.
 
-Output preserves the input format, dimensions, frame count, and frame rate. Functions exposing `planes` process all planes when it is omitted; `planes=[0]` processes only the first plane. Explicit empty arrays are rejected. Some functions use `mode` or thresholds to control plane processing, so `planes` cannot be passed to every function. These filters do not estimate motion vectors or perform motion compensation.
+Output preserves the input format, dimensions, frame count, and frame rate. Functions exposing `planes` process all planes when it is omitted; `planes=[0]` processes only the first plane. Explicit empty plane arrays are rejected. Some functions use `mode` or thresholds to control plane processing, so `planes` cannot be passed to every function. These filters do not estimate motion vectors or perform motion compensation.
 
 ## Documentation and use
 
@@ -75,7 +76,7 @@ return neo_smo_Median(clip, radius=[1], planes=[0])
 
 Function names and parameter order follow the API reference, with `neo_smo_` prefixed to each name. Array parameters accept native arrays such as `[0, 1]`; a scalar is shorthand for one element. DCTFilter's `factors` still requires exactly eight elements; Cnr4's `sense`, `str`, and `pow` each require exactly three elements and cannot be replaced with a scalar. Boolean parameters use `true`/`false`. Audio and parity are forwarded from the main input clip, and output frame properties come from the corresponding source frame. See the [AviSynth interface](docs/api/en/README.md#avisynth-calls-and-builds).
 
-To explicitly express an omitted parameter, use `None` in VapourSynth or `Undefined()` in AviSynth, or simply leave the argument out. Omitting an argument selects its default behavior, which is different from passing zero or an empty array. For example, `planes=None` or `planes=Undefined()` selects the default planes; neo-smo rejects `planes=[]`.
+To explicitly express an omitted parameter, use `None` in VapourSynth or `Undefined()` in AviSynth, or simply leave the argument out. Omitting an argument selects its default behavior, which is different from passing zero or an empty array. For example, `planes=None` or `planes=Undefined()` selects the default planes; filters reject `planes=[]`.
 
 ## SIMD and CPU selection
 
