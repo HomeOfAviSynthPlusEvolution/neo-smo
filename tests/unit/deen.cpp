@@ -134,10 +134,14 @@ void run_case(const std::string& mode, DataType type, int bits, int width, int h
       check(got >= low && got <= high, "new extrema introduced");
       if (integer && mode[0] == 'w' && got != ref) {
         const double boundary = std::floor(unrounded) + 0.5;
-        // Weighted integer kernels accumulate in F32; a final integer rounding
-        // may differ when the reference is within the F32 arithmetic budget.
-        check(std::abs(unrounded - boundary) <= 2e-6 * std::max(1.0, magnitude),
-              "integer w difference away from rounding boundary");
+        // Largest-remainder Q15 coefficients have L1 error <=N/65536.
+        // Normalization halves its effect over the participating range.
+        // Centered Q8 product error is <=(N+1)/512 samples, including the
+        // cached bias rounding. U16 keeps the existing F32 arithmetic budget.
+        const int side = 2 * radius + 1, taps = side * side * (temporal ? 3 : 1);
+        const double budget = type == DataType::U8 ? (taps + 1) / 512.0 + (high - low) * taps / 131072.0
+                                                   : 2e-6 * std::max(1.0, magnitude);
+        check(std::abs(unrounded - boundary) <= budget, "integer w difference away from rounding boundary");
       }
       double tolerance = integer ? (mode[0] == 'w' ? 1 : 0) : 2e-6 * std::max(1.0, magnitude);
       if (type == DataType::F16) {
@@ -234,6 +238,24 @@ void weighted_fixture(const std::string& mode) {
   DeenPlane p{data, 3, 3, 3, DataType::U8, 8};
   deen_process(Deen(o), false, false, {p, {}, {}}, out, 3);
   check(out[4] == 105, "distance weighted fixture");
+}
+void weighted_byte_constants(const std::string& mode) {
+  constexpr int width = 129;
+  const bool temporal = mode[1] == '3';
+  for (int radius : {1, temporal ? 4 : 7})
+    for (double minimum : {0.0, 0.37, 1.0})
+      for (int value : {0, 1, 63, 127, 128, 129, 254, 255}) {
+        std::array<std::uint8_t, width> input, output;
+        input.fill(static_cast<std::uint8_t>(value));
+        DeenPlane plane{input.data(), width, width, 1, DataType::U8, 8};
+        DeenOptions o;
+        o.mode = mode;
+        o.radius = radius;
+        o.minimum = minimum;
+        o.spatial_y = o.temporal_y = 255;
+        deen_process(Deen(o), false, temporal, {plane, plane, plane}, output.data(), width);
+        check(input == output, "weighted byte constant changed");
+      }
 }
 void adaptive_fixture(const std::string& mode) {
   std::uint8_t data[9] = {112, 112, 112, 112, 100, 112, 112, 112, 112}, out[9]{};
@@ -415,8 +437,10 @@ int main(int argc, char** argv) {
       scene_integer_vectors();
       float_constants(mode);
       scaled_boundary(mode);
-      if (mode[0] == 'w')
+      if (mode[0] == 'w') {
         weighted_fixture(mode);
+        weighted_byte_constants(mode);
+      }
       if (mode[0] == 'a') {
         adaptive_fixture(mode);
         rational_adaptive_boundary(mode);

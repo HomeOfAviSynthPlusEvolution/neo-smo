@@ -6,10 +6,35 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numeric>
 #include <utility>
 
 namespace neo_smo {
 namespace {
+// Largest-remainder quantization preserves each frame's total weight. Its
+// coefficient L1 error is at most half a coefficient unit per spatial tap.
+void byte_coefficients(const std::vector<double>& weights, int total, std::uint16_t* dst) {
+  const int taps = static_cast<int>(weights.size());
+  std::array<int, 225> order{};
+  std::array<double, 225> fractions{};
+  double denominator = 0;
+  for (double weight : weights)
+    denominator += weight;
+  int remainder = total;
+  for (int i = 0; i < taps; ++i) {
+    const double scaled = weights[i] * (total / denominator);
+    const int whole = static_cast<int>(std::floor(scaled));
+    dst[i] = static_cast<std::uint16_t>(whole);
+    fractions[i] = scaled - whole;
+    order[i] = i;
+    remainder -= whole;
+  }
+  require(remainder >= 0 && remainder <= taps, "Deen: invalid byte weight normalization.");
+  std::sort(order.begin(), order.begin() + taps,
+            [&](int a, int b) { return fractions[a] != fractions[b] ? fractions[a] > fractions[b] : a < b; });
+  for (int i = 0; i < remainder; ++i)
+    ++dst[order[i]];
+}
 std::size_t product(std::size_t a, std::size_t b) {
   require(!b || a <= static_cast<std::size_t>(PTRDIFF_MAX) / b, "Deen: plane size overflow.");
   return a * b;
@@ -94,6 +119,27 @@ Deen::Deen(DeenOptions options) : options_(std::move(options)) {
                          : std::abs(x) == r && std::abs(y) == r ? p.minimum
                                                                 : 1 - (1 - p.minimum) * rho);
     }
+  if (family_ == DeenFamily::Weighted) {
+    byte_coefficients(weights_, 32768, byte_weights_[0].coefficients.data());
+    if (temporal_) {
+      byte_coefficients(weights_, 16384, byte_weights_[1].coefficients.data());
+      byte_coefficients(weights_, 8192, byte_weights_[1].coefficients.data() + 225);
+    }
+    for (int temporal = 0; temporal <= static_cast<int>(temporal_); ++temporal) {
+      auto& table = byte_weights_[temporal];
+      unsigned truncation_span = 0;
+      for (int frame = 0; frame <= temporal; ++frame)
+        for (std::size_t i = 0; i < weights_.size(); ++i) {
+          auto& coefficient = table.coefficients[frame * 225 + i];
+          // The fractional part of sample*coefficient/128 ranges from zero
+          // to (128-gcd(coefficient,128))/128. Center that interval once per
+          // output, then double Q15 coefficients for unsigned high multiply.
+          truncation_span += (128u - std::gcd(unsigned(coefficient), 128u)) * (frame == 1 ? 2 : 1);
+          coefficient *= 2;
+        }
+      table.rounding = static_cast<std::uint16_t>(128 + (truncation_span + 128) / 256);
+    }
+  }
 }
 
 void deen_process(const Deen& filter, bool chroma, bool temporal, const std::array<DeenPlane, 3>& frames,
@@ -111,7 +157,8 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
     const auto& o = filter.options();
     const double peak = (1u << p.bits) - 1;
     deen_integer_kernel(filter.family(), frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) * peak / 255,
-                        (chroma ? o.temporal_uv : o.temporal_y) * peak / 255, filter.weights().data(), dst, stride);
+                        (chroma ? o.temporal_uv : o.temporal_y) * peak / 255, filter.weights().data(),
+                        filter.byte_weights(temporal), dst, stride);
     return;
   }
   const std::size_t pitch = static_cast<std::size_t>(p.width) + 2 * r;

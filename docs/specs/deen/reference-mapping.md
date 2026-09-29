@@ -15,7 +15,7 @@ The mathematical definitions and fixtures in this specification family are the c
 | Area | Structure or behavior reported by the supplied materials | This specification |
 | --- | --- | --- |
 | c | Replace rejected samples with the center; fixed tap count | Preserve structure; correct normalization and final rounding |
-| w | Distance weights, rejection substitution, temporal weights 1:2:1 | Preserve structure; normalize real weights once; remove per-tap truncation and final +1 |
+| w | Distance weights, rejection substitution, temporal weights 1:2:1 | Preserve structure and normalization; permit bounded U8 fixed-point rounding; no unconditional final +1 |
 | a | Distance thresholds; average accepted samples | Preserve structure; count center once; no byte threshold quantization or approximate count reciprocals |
 | Comparison | Inclusive threshold against the current center | Preserve; define high-bit-depth and floating difference units explicitly |
 | Borders | Some paths read padding; borderfix has differing frame coordinates | Replicate borders consistently in every frame and filter all visible samples |

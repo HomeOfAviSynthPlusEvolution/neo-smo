@@ -192,15 +192,14 @@ void integer_byte_process(const std::array<DeenPlane, 3>& frames, int count, int
     }
   }
 }
+#if HWY_ARCH_X86 && HWY_TARGET <= HWY_AVX3
 // Equal-weight taps can be summed exactly in u16 before conversion to F32.
 // A spatial window has at most 225 U8 samples (sum <=57375). Each frame is
 // accumulated separately; the current frame's temporal factor is applied in F32.
-void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+void integer_weighted_byte_grouped(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
                                    double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
   const hn::ScalableTag<std::uint8_t> db;
-  const hn::Half<decltype(db)> half;
   const hn::Repartition<std::uint16_t, decltype(db)> dw;
-  const hn::Half<decltype(dw)> wh;
   const hn::Repartition<std::uint32_t, decltype(db)> d;
   const hn::Rebind<float, decltype(d)> df;
   const hn::Rebind<std::int32_t, decltype(d)> di;
@@ -274,7 +273,6 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
               return hn::IfThenElse(pass, sample, center);
             };
             int i = group.begin;
-#if HWY_ARCH_X86
             const hn::Rebind<std::int16_t, decltype(dw)> ds;
             const hn::Rebind<std::int8_t, decltype(db)> dsb;
             const auto ones = hn::Set(dsb, 1);
@@ -283,46 +281,24 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
               lo = hn::Add(lo, hn::BitCast(dw, hn::SatWidenMulPairwiseAdd(ds, hn::InterleaveLower(db, a, b), ones)));
               hi = hn::Add(hi, hn::BitCast(dw, hn::SatWidenMulPairwiseAdd(ds, hn::InterleaveUpper(db, a, b), ones)));
             }
-#endif
             for (; i < group.end; ++i) {
               const auto value = select(i);
-#if HWY_ARCH_X86
               lo = hn::Add(lo, hn::BitCast(dw, hn::InterleaveLower(db, value, hn::Zero(db))));
               hi = hn::Add(hi, hn::BitCast(dw, hn::InterleaveUpper(db, value, hn::Zero(db))));
-#else
-              lo = hn::Add(lo, hn::PromoteTo(dw, hn::LowerHalf(half, value)));
-              hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
-#endif
             }
             const auto weight = hn::Set(df, group.weight[f != 0]);
-#if HWY_ARCH_X86
             s0 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveLower(dw, lo, hn::Zero(dw)))), s0);
             s1 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveUpper(dw, lo, hn::Zero(dw)))), s1);
             s2 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveLower(dw, hi, hn::Zero(dw)))), s2);
             s3 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveUpper(dw, hi, hn::Zero(dw)))), s3);
-#else
-            s0 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(wh, lo))), s0);
-            s1 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(wh, lo))), s1);
-            s2 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(wh, hi))), s2);
-            s3 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(wh, hi))), s3);
-#endif
           }
         }
-#if HWY_ARCH_X86
         const auto finish = [&](auto sum) HWY_ATTR {
           return hn::ConvertTo(di, hn::MulAdd(sum, reciprocal, hn::Set(df, 0.5f)));
         };
         const auto lo = hn::ReorderDemote2To(dw, finish(s0), finish(s1));
         const auto hi = hn::ReorderDemote2To(dw, finish(s2), finish(s3));
         integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
-#else
-        const auto finish = [&](auto sum) HWY_ATTR {
-          return hn::DemoteTo(wh, hn::ConvertTo(di, hn::MulAdd(sum, reciprocal, hn::Set(df, 0.5f))));
-        };
-        const auto lo = hn::Combine(dw, finish(s1), finish(s0)), hi = hn::Combine(dw, finish(s3), finish(s2));
-        integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
-                      active);
-#endif
       };
       if (x >= radius && active == lanes && x <= p.width - radius - lanes)
         batch(std::true_type{});
@@ -334,16 +310,100 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
 }
 
 #endif
+// U8 uses normalized Q15 coefficients stored doubled for unsigned MulHigh.
+// Unpacking bytes into the high halves folds in Q8 scaling. The cached bias
+// centers the products' truncation interval before the final output rounding.
+void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                                   double temporal, const double* weights, const DeenByteWeights& byte_weights,
+                                   std::uint8_t* dst, std::ptrdiff_t stride) {
+#if HWY_ARCH_X86 && HWY_TARGET <= HWY_AVX3
+  // Wide targets favor fewer multiplies for larger distance windows.
+  if (radius >= 3)
+    return integer_weighted_byte_grouped(frames, count, radius, spatial, temporal, weights, dst, stride);
+#endif
+  const hn::ScalableTag<std::uint8_t> db;
+#if !HWY_ARCH_X86
+  const hn::Half<decltype(db)> half;
+#endif
+  const hn::Repartition<std::uint16_t, decltype(db)> dw;
+  const int lanes = static_cast<int>(hn::Lanes(db));
+  const int side = 2 * radius + 1;
+  // A uniform spatial window is already an exact constant mean.
+  if (count == 1 && weights[0] == 1)
+    return integer_byte_process<DeenFamily::Constant>(frames, count, radius, spatial, temporal, weights, dst, stride);
+  const std::array<std::uint8_t, 2> limits{static_cast<std::uint8_t>(std::floor(spatial)),
+                                           static_cast<std::uint8_t>(std::floor(temporal))};
+  const auto& p = frames[0];
+  std::array<std::array<const std::uint8_t*, 15>, 3> rows;
+  for (int y = 0; y < p.height; ++y) {
+    for (int f = 0; f < count; ++f)
+      for (int dy = 0; dy < side; ++dy)
+        rows[f][dy] = frames[f].data + std::clamp(static_cast<std::int64_t>(y) + dy - radius, std::int64_t{0},
+                                                  static_cast<std::int64_t>(p.height - 1)) *
+                                           frames[f].stride;
+    const auto process_range = [&](auto interior, int begin, int end) HWY_ATTR {
+      for (int x = begin; x < end;) {
+        const int active = decltype(interior)::value ? lanes : std::min(lanes, end - x);
+        const auto center = integer_raw_load(db, p.data + y * p.stride + x, active);
+        auto lo = hn::Set(dw, byte_weights.rounding), hi = hn::Set(dw, byte_weights.rounding);
+        for (int f = 0; f < count; ++f) {
+          const auto limit = hn::Set(db, limits[f != 0]);
+          const auto lower = hn::SaturatedSub(center, limit), upper = hn::SaturatedAdd(center, limit);
+          for (int dy = 0; dy < side; ++dy) {
+            const auto* row = rows[f][dy];
+            const auto* coeff = byte_weights.coefficients.data() + (f != 0 ? 225 : 0) + dy * side;
+            for (int dx = 0; dx < side; ++dx) {
+              const auto sample = integer_row_load<decltype(interior)::value>(
+                  db, row, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
+              const auto outside = hn::Or(hn::SaturatedSub(sample, upper), hn::SaturatedSub(lower, sample));
+              const auto value = hn::IfThenElse(hn::Eq(outside, hn::Zero(db)), sample, center);
+#if HWY_ARCH_X86
+              const auto vl = hn::BitCast(dw, hn::InterleaveLower(db, hn::Zero(db), value));
+              const auto vh = hn::BitCast(dw, hn::InterleaveUpper(db, hn::Zero(db), value));
+#else
+              const auto vl = hn::ShiftLeft<8>(hn::PromoteTo(dw, hn::LowerHalf(half, value)));
+              const auto vh = hn::ShiftLeft<8>(hn::PromoteTo(dw, hn::UpperHalf(half, value)));
+#endif
+              const auto weight = hn::Set(dw, coeff[dx]);
+              lo = hn::Add(lo, hn::MulHigh(vl, weight));
+              hi = hn::Add(hi, hn::MulHigh(vh, weight));
+            }
+          }
+        }
+        // The coefficient sum is 65536 and the centered product error is
+        // below 122 Q8 units. Including output rounding, the total stays
+        // within U16 and less than half a sample outside the weighted mean.
+        lo = hn::ShiftRight<8>(lo);
+        hi = hn::ShiftRight<8>(hi);
+#if HWY_ARCH_X86
+        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+#else
+        integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
+                      active);
+#endif
+        x += active;
+      }
+    };
+    const int left = std::min(radius, p.width);
+    const int vector_end = left + std::max(0, (p.width - radius - left) / lanes) * lanes;
+    process_range(std::false_type{}, 0, left);
+    process_range(std::true_type{}, left, vector_end);
+    process_range(std::false_type{}, vector_end, p.width);
+  }
+}
+
+#endif
 template <class T, DeenFamily Family>
 void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,
-                     const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+                     const double* weights, const DeenByteWeights& byte_weights, std::uint8_t* dst,
+                     std::ptrdiff_t stride) {
 #if HWY_TARGET != HWY_SCALAR
   if constexpr (sizeof(T) == 1 && Family != DeenFamily::Weighted)
     return integer_byte_process<Family>(frames, count, radius, spatial, temporal, weights, dst, stride);
 #endif
 #if HWY_TARGET != HWY_SCALAR
   if constexpr (sizeof(T) == 1 && Family == DeenFamily::Weighted)
-    return integer_weighted_byte_process(frames, count, radius, spatial, temporal, weights, dst, stride);
+    return integer_weighted_byte_process(frames, count, radius, spatial, temporal, weights, byte_weights, dst, stride);
 #endif
   constexpr bool weighted = Family == DeenFamily::Weighted;
   using Acc = std::conditional_t<sizeof(T) == 1 && !weighted && HWY_TARGET != HWY_SCALAR, std::uint16_t, std::uint32_t>;
@@ -482,23 +542,29 @@ void integer_process(const std::array<DeenPlane, 3>& frames, int count, int radi
 }
 template <class T>
 void integer_dispatch(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
-                      double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+                      double temporal, const double* weights, const DeenByteWeights& byte_weights, std::uint8_t* dst,
+                      std::ptrdiff_t stride) {
   switch (family) {
     case DeenFamily::Constant:
-      return integer_process<T, DeenFamily::Constant>(frames, count, radius, spatial, temporal, weights, dst, stride);
+      return integer_process<T, DeenFamily::Constant>(frames, count, radius, spatial, temporal, weights, byte_weights,
+                                                      dst, stride);
     case DeenFamily::Adaptive:
-      return integer_process<T, DeenFamily::Adaptive>(frames, count, radius, spatial, temporal, weights, dst, stride);
+      return integer_process<T, DeenFamily::Adaptive>(frames, count, radius, spatial, temporal, weights, byte_weights,
+                                                      dst, stride);
     case DeenFamily::Weighted:
-      return integer_process<T, DeenFamily::Weighted>(frames, count, radius, spatial, temporal, weights, dst, stride);
+      return integer_process<T, DeenFamily::Weighted>(frames, count, radius, spatial, temporal, weights, byte_weights,
+                                                      dst, stride);
   }
 }
 void deen_integer_target(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius,
-                         double spatial, double temporal, const double* weights, std::uint8_t* dst,
-                         std::ptrdiff_t stride) {
+                         double spatial, double temporal, const double* weights, const DeenByteWeights& byte_weights,
+                         std::uint8_t* dst, std::ptrdiff_t stride) {
   if (frames[0].type == DataType::U8)
-    integer_dispatch<std::uint8_t>(family, frames, count, radius, spatial, temporal, weights, dst, stride);
+    integer_dispatch<std::uint8_t>(family, frames, count, radius, spatial, temporal, weights, byte_weights, dst,
+                                   stride);
   else
-    integer_dispatch<std::uint16_t>(family, frames, count, radius, spatial, temporal, weights, dst, stride);
+    integer_dispatch<std::uint16_t>(family, frames, count, radius, spatial, temporal, weights, byte_weights, dst,
+                                    stride);
 }
 } // namespace HWY_NAMESPACE
 } // namespace neo_smo
@@ -507,9 +573,10 @@ HWY_AFTER_NAMESPACE();
 namespace neo_smo {
 HWY_EXPORT(deen_integer_target);
 void deen_integer_kernel(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius,
-                         double spatial, double temporal, const double* weights, std::uint8_t* dst,
-                         std::ptrdiff_t stride) {
-  HWY_DYNAMIC_DISPATCH(deen_integer_target)(family, frames, count, radius, spatial, temporal, weights, dst, stride);
+                         double spatial, double temporal, const double* weights, const DeenByteWeights& byte_weights,
+                         std::uint8_t* dst, std::ptrdiff_t stride) {
+  HWY_DYNAMIC_DISPATCH(deen_integer_target)(family, frames, count, radius, spatial, temporal, weights, byte_weights,
+                                            dst, stride);
 }
 } // namespace neo_smo
 #endif

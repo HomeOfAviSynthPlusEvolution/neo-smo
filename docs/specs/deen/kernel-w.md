@@ -9,7 +9,7 @@ G = Σ[o∈Ω] g(o)
 z = Σ[f∈F] α_f · Σ[o∈Ω] g(o)·b_f(o) / (G·Σ[f∈F] α_f)
 ```
 
-Since G≥1, the denominator is strictly positive. Rejected taps retain their weights and substitute c. Weights depend on spatial distance only, not a three-dimensional distance including time. Form the weighted sum before normalization. Do not truncate individual tap products, transfer fixed-point residuals to the center, or add 1 to the final output.
+Since G≥1, the denominator is strictly positive. Rejected taps retain their weights and substitute c. Weights depend on spatial distance only, not a three-dimensional distance including time. The equation defines the normalized weighted mean. U8 implementations may quantize normalized coefficients and intermediate products under the [acceptance criteria](acceptance.md), while preserving the total weight and the 2:1:1 temporal proportions. Distribute coefficient rounding residuals without preferentially assigning them to the center. Do not add an unconditional integer code value to the final output.
 
 In w3d, the current frame contributes half the total weight and each adjacent frame contributes one quarter. Fallback to w2d retains only the current frame and renormalizes. With m=0, corner weights vanish but the center still has weight 1. With m=1, w2d equals c2d; w3d does not equal c3d because their temporal weights differ.
 

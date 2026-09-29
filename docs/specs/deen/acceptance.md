@@ -10,10 +10,11 @@ Check the hand-calculated examples in each kernel document before broader format
 
 ## Error assessment
 
-FMA and floating rounding differences are permitted. Error allowances do not excuse displaced neighborhoods, incorrect denominators, wrong threshold scaling, or incorrect scene formulas.
+FMA and floating rounding differences are permitted. U8 w may also use validated fixed-point rounding. Error allowances do not excuse displaced neighborhoods, incorrect denominators, wrong threshold scaling, or incorrect scene formulas.
 
 - Integer c/a: for identical accepted sets, output must follow exact integer rounding.
-- Integer w: for identical accepted sets and scene decisions, output may differ from the rounded binary64 reference by at most one integer code value. Persistent one-sided bias, shifted constants, or differences away from rounding boundaries still require investigation; a difference of one is not automatic acceptance.
+- U8 w: for identical accepted sets and scene decisions, fixed-point coefficient and product rounding may differ from the rounded binary64 reference by at most one integer code value. Constants must remain unchanged and no new extrema are allowed. Bound the approximation error and check representative signed-error statistics; an unconditional output offset is not permitted.
+- U16 w: for identical accepted sets and scene decisions, output may differ from the rounded binary64 reference by at most one integer code value near a final rounding boundary within the F32 arithmetic budget. Persistent one-sided bias or differences away from these boundaries require investigation.
 - F32: for identical accepted sets and scene decisions, absolute output error must not exceed `2e−6·max(1,M)`, where M is the maximum absolute participating value for that output.
 - F16: for identical accepted sets and scene decisions, compare the stored output, promoted exactly to binary64, against the unrounded reference result z. Allow the F32 budget above plus ULP16(q), where q is z rounded to binary16 with round-to-nearest, ties-to-even. Output must remain finite; half-precision accumulation overflow is not an acceptable explanation.
 

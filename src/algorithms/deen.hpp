@@ -15,6 +15,10 @@ struct DeenOptions {
   double minimum = 0.5, scene_threshold = 9;
   bool scenechange = true;
 };
+struct DeenByteWeights {
+  std::array<std::uint16_t, 450> coefficients{};
+  std::uint16_t rounding = 128;
+};
 class Deen {
 public:
   explicit Deen(DeenOptions options);
@@ -22,12 +26,14 @@ public:
   DeenFamily family() const { return family_; }
   bool temporal() const { return temporal_; }
   const std::vector<double>& weights() const { return weights_; }
+  const DeenByteWeights& byte_weights(bool temporal) const { return byte_weights_[temporal]; }
 
 private:
   DeenOptions options_;
   DeenFamily family_{};
   bool temporal_{};
   std::vector<double> weights_;
+  std::array<DeenByteWeights, 2> byte_weights_{};
 };
 struct DeenPlane {
   const std::uint8_t* data = nullptr;
