@@ -13,7 +13,8 @@ namespace neo_smo {
 namespace {
 // Largest-remainder quantization preserves each frame's total weight. Its
 // coefficient L1 error is at most half a coefficient unit per spatial tap.
-void byte_coefficients(const std::vector<double>& weights, int total, std::uint16_t* dst) {
+template <class T>
+void quantize_coefficients(const std::vector<double>& weights, int total, T* dst) {
   const int taps = static_cast<int>(weights.size());
   std::array<int, 225> order{};
   std::array<double, 225> fractions{};
@@ -24,12 +25,12 @@ void byte_coefficients(const std::vector<double>& weights, int total, std::uint1
   for (int i = 0; i < taps; ++i) {
     const double scaled = weights[i] * (total / denominator);
     const int whole = static_cast<int>(std::floor(scaled));
-    dst[i] = static_cast<std::uint16_t>(whole);
+    dst[i] = static_cast<T>(whole);
     fractions[i] = scaled - whole;
     order[i] = i;
     remainder -= whole;
   }
-  require(remainder >= 0 && remainder <= taps, "Deen: invalid byte weight normalization.");
+  require(remainder >= 0 && remainder <= taps, "Deen: invalid weight normalization.");
   std::sort(order.begin(), order.begin() + taps,
             [&](int a, int b) { return fractions[a] != fractions[b] ? fractions[a] > fractions[b] : a < b; });
   for (int i = 0; i < remainder; ++i)
@@ -120,13 +121,21 @@ Deen::Deen(DeenOptions options) : options_(std::move(options)) {
                                                                 : 1 - (1 - p.minimum) * rho);
     }
   if (family_ == DeenFamily::Weighted) {
-    byte_coefficients(weights_, 32768, byte_weights_[0].coefficients.data());
+    quantize_coefficients(weights_, 32768, byte_weights_[0].coefficients.data());
     if (temporal_) {
-      byte_coefficients(weights_, 16384, byte_weights_[1].coefficients.data());
-      byte_coefficients(weights_, 8192, byte_weights_[1].coefficients.data() + 225);
+      quantize_coefficients(weights_, 16384, byte_weights_[1].coefficients.data());
+      quantize_coefficients(weights_, 8192, byte_weights_[1].coefficients.data() + 225);
     }
     for (int temporal = 0; temporal <= static_cast<int>(temporal_); ++temporal) {
       auto& table = byte_weights_[temporal];
+      quantize_coefficients(weights_, temporal ? (1 << 23) : (1 << 24), table.word_coefficients.data());
+      if (temporal)
+        quantize_coefficients(weights_, 1 << 22, table.word_coefficients.data() + 225);
+      unsigned word_span = 0;
+      for (int frame = 0; frame <= temporal; ++frame)
+        for (std::size_t i = 0; i < weights_.size(); ++i)
+          word_span += (65536u - std::gcd(table.word_coefficients[frame * 225 + i], 65536u)) * (frame == 1 ? 2 : 1);
+      table.word_rounding = 128 + (word_span + 65536) / 131072;
       unsigned truncation_span = 0;
       for (int frame = 0; frame <= temporal; ++frame)
         for (std::size_t i = 0; i < weights_.size(); ++i) {

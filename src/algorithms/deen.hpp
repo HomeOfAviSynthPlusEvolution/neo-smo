@@ -18,6 +18,8 @@ struct DeenOptions {
 struct DeenByteWeights {
   std::array<std::uint16_t, 450> coefficients{};
   std::uint16_t rounding = 128;
+  std::array<std::uint32_t, 450> word_coefficients{};
+  std::uint32_t word_rounding = 128;
 };
 class Deen {
 public:

@@ -86,7 +86,7 @@ double reference(const DeenOptions& o, const std::array<DeenPlane, 3>& f, int x,
   return numerator / denominator;
 }
 void run_case(const std::string& mode, DataType type, int bits, int width, int height, int radius, double minimum,
-              bool constant, bool chroma, bool temporal, bool at_end) {
+              bool constant, bool chroma, bool temporal, bool at_end, double threshold = -1) {
   const auto b = bytes(type);
   const std::size_t stride = width * b + 3;
   Guarded a(stride * height, at_end), prev((stride + 5) * height, at_end), next((stride + 7) * height, at_end),
@@ -117,6 +117,8 @@ void run_case(const std::string& mode, DataType type, int bits, int width, int h
   o.spatial_uv = 61.75;
   o.temporal_y = 37;
   o.temporal_uv = 127;
+  if (threshold >= 0)
+    o.spatial_y = o.spatial_uv = o.temporal_y = o.temporal_uv = threshold;
   std::memset(out.data, 0xcc, (stride + 9) * height);
   deen_process(Deen(o), chroma, temporal, f, out.data, stride + 9);
   if (mode == "w2d" && minimum == 1 && integer) {
@@ -143,10 +145,10 @@ void run_case(const std::string& mode, DataType type, int bits, int width, int h
         // Largest-remainder Q15 coefficients have L1 error <=N/65536.
         // Normalization halves its effect over the participating range.
         // Centered Q8 product error is <=(N+1)/512 samples, including the
-        // cached bias rounding. U16 keeps the existing F32 arithmetic budget.
+        // cached bias rounding. U16 uses Q24 coefficients and Q8 products.
         const int side = 2 * radius + 1, taps = side * side * (temporal ? 3 : 1);
         const double budget = type == DataType::U8 ? (taps + 1) / 512.0 + (high - low) * taps / 131072.0
-                                                   : 2e-6 * std::max(1.0, magnitude);
+                                                   : (taps + 1) / 512.0 + (high - low) * taps / 33554432.0;
         check(std::abs(unrounded - boundary) <= budget, "integer w difference away from rounding boundary");
       }
       double tolerance = integer ? (mode[0] == 'w' ? 1 : 0) : 2e-6 * std::max(1.0, magnitude);
@@ -181,32 +183,39 @@ void fixtures(const std::string& mode) {
   deen_process(Deen(o), false, false, f, out, 3);
   check(std::memcmp(a, out, 9) == 0, "zero threshold identity");
 }
-// Check the rounding boundaries of fixed U8 means, including large sums.
+// Check the rounding boundaries of fixed integer means, including large sums.
+template <class T = std::uint8_t>
 void constant_integer_rounding(const std::string& mode) {
+  constexpr int peak = sizeof(T) == 1 ? 255 : 65535;
   const bool temporal = mode[1] == '3';
   const int count = temporal ? 3 : 1;
   for (int radius = 1; radius <= (temporal ? 4 : 7); ++radius) {
     const int side = 2 * radius + 1, divisor = side * side * count;
     std::vector<int> sums;
-    for (int q : {0, 1, 127, 254}) {
+    for (int q : {0, 1, peak / 2, peak - 1}) {
       sums.push_back(q * divisor + divisor / 2);
       sums.push_back(q * divisor + divisor / 2 + 1);
     }
-    sums.push_back(255 * divisor);
+    sums.push_back(peak * divisor);
     const int width = side * static_cast<int>(sums.size());
-    std::array<std::vector<std::uint8_t>, 3> input;
+    std::array<std::vector<T>, 3> input;
     std::array<DeenPlane, 3> frames{};
     for (int f = 0; f < count; ++f) {
       input[f].resize(width * side);
-      frames[f] = {input[f].data(), width, width, side, DataType::U8, 8};
+      frames[f] = {reinterpret_cast<const std::uint8_t*>(input[f].data()),
+                   width * static_cast<std::ptrdiff_t>(sizeof(T)),
+                   width,
+                   side,
+                   sizeof(T) == 1 ? DataType::U8 : DataType::U16,
+                   int(sizeof(T) * 8)};
     }
     for (std::size_t tile = 0; tile < sums.size(); ++tile) {
       int remaining = sums[tile];
       for (int f = 0; f < count; ++f)
         for (int y = 0; y < side; ++y)
           for (int x = 0; x < side; ++x) {
-            const int value = std::min(remaining, 255);
-            input[f][y * width + tile * side + x] = static_cast<std::uint8_t>(value);
+            const int value = std::min(remaining, peak);
+            input[f][y * width + tile * side + x] = static_cast<T>(value);
             remaining -= value;
           }
     }
@@ -214,8 +223,8 @@ void constant_integer_rounding(const std::string& mode) {
     o.mode = mode;
     o.radius = radius;
     o.spatial_y = o.temporal_y = 255;
-    std::vector<std::uint8_t> output(width * side);
-    deen_process(Deen(o), false, temporal, frames, output.data(), width);
+    std::vector<T> output(width * side);
+    deen_process(Deen(o), false, temporal, frames, reinterpret_cast<std::uint8_t*>(output.data()), width * sizeof(T));
     for (std::size_t tile = 0; tile < sums.size(); ++tile)
       check(output[radius * width + tile * side + radius] == (sums[tile] + divisor / 2) / divisor,
             "fixed integer mean rounding boundary");
@@ -262,6 +271,25 @@ void weighted_byte_constants(const std::string& mode) {
         deen_process(Deen(o), false, temporal, {plane, plane, plane}, output.data(), width);
         check(input == output, "weighted byte constant changed");
       }
+}
+void weighted_word_constants(const std::string& mode) {
+  constexpr int width = 67;
+  for (int bits : {10, 12, 16})
+    for (int radius : {1, mode[1] == '3' ? 4 : 7})
+      for (double minimum : {0.0, 0.000001, 0.37, 1.0})
+        for (unsigned value :
+             {0u, 1u, 127u, 255u, 256u, (1u << (bits - 1)) - 1, 1u << (bits - 1), (1u << bits) - 2, (1u << bits) - 1}) {
+          std::vector<std::uint16_t> input(width, static_cast<std::uint16_t>(value)), output(width);
+          DeenPlane plane{
+              reinterpret_cast<const std::uint8_t*>(input.data()), width * 2, width, 1, DataType::U16, bits};
+          DeenOptions o;
+          o.mode = mode;
+          o.radius = radius;
+          o.minimum = minimum;
+          deen_process(Deen(o), false, mode[1] == '3', {plane, plane, plane},
+                       reinterpret_cast<std::uint8_t*>(output.data()), width * 2);
+          check(input == output, "weighted word constant changed");
+        }
 }
 void weighted_float_extremes(const std::string& mode) {
   const bool temporal = mode[1] == '3';
@@ -502,14 +530,23 @@ int main(int argc, char** argv) {
 
       const std::string mode = argc > 1 ? argv[1] : "c2d";
       fixtures(mode);
-      if (mode[0] == 'c')
+      if (mode[0] == 'c') {
         constant_integer_rounding(mode);
+        constant_integer_rounding<std::uint16_t>(mode);
+      }
       // Exercise both halves of the byte batches and their boundary tails.
       for (int width : {63, 64, 127, 128, 129})
         for (double minimum : {0.000001, 0.37})
           for (bool at_end : {false, true})
             run_case(mode, DataType::U8, 8, width, 3, mode[1] == '3' ? 4 : 7, minimum, false, false, mode[1] == '3',
                      at_end);
+      if (mode[0] == 'a' || mode[0] == 'c')
+        for (auto type : {DataType::U8, DataType::U16})
+          for (int width : {15, 16, 17, 63, 64, 65, 127, 128, 129})
+            for (double threshold : {0.0, 7.0, 255.0})
+              for (bool at_end : {false, true})
+                run_case(mode, type, type == DataType::U8 ? 8 : 16, width, 3, mode[1] == '3' ? 4 : 7, 0.37, false,
+                         false, mode[1] == '3', at_end, threshold);
       invalid();
       scene_integer_vectors();
       float_constants(mode);
@@ -517,6 +554,12 @@ int main(int argc, char** argv) {
       if (mode[0] == 'w') {
         weighted_fixture(mode);
         weighted_byte_constants(mode);
+        weighted_word_constants(mode);
+        for (int width : {63, 64, 65, 127, 128, 129})
+          for (double minimum : {0.000001, 0.37})
+            for (double threshold : {0.0, 7.0, 255.0})
+              run_case(mode, DataType::U16, 16, width, 3, mode[1] == '3' ? 4 : 7, minimum, false, false, mode[1] == '3',
+                       true, threshold);
         weighted_float_extremes(mode);
       }
       if (mode[0] == 'a') {
