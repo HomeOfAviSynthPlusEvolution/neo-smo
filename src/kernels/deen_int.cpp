@@ -203,7 +203,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
   std::sort(order.begin(), order.begin() + taps, [&](int a, int b) { return weights[a] < weights[b]; });
   struct Group {
     int begin, end;
-    float weight;
+    std::array<float, 2> weight;
   };
   std::array<Group, 225> groups;
   int num_groups = 0;
@@ -212,10 +212,15 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
     while (end < taps && weights[order[end]] == weights[order[begin]])
       ++end;
     if (weights[order[begin]] != 0)
-      groups[num_groups++] = {begin, end, static_cast<float>(weights[order[begin]])};
+      groups[num_groups++] = {begin,
+                              end,
+                              {static_cast<float>(weights[order[begin]] * (count == 3 ? 2 : 1)),
+                               static_cast<float>(weights[order[begin]])}};
     begin = end;
   }
   const auto reciprocal = hn::Set(df, static_cast<float>(1 / (denominator * (count == 3 ? 4 : 1))));
+  const std::array<std::uint8_t, 2> limits{static_cast<std::uint8_t>(std::floor(spatial)),
+                                           static_cast<std::uint8_t>(std::floor(temporal))};
   const auto& p = frames[0];
   std::array<std::array<std::ptrdiff_t, 225>, 3> offsets;
   std::array<int, 225> dxs;
@@ -239,7 +244,7 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
         const auto center = integer_load(db, p, y, x, active);
         auto s0 = hn::Zero(df), s1 = hn::Zero(df), s2 = hn::Zero(df), s3 = hn::Zero(df);
         for (int f = 0; f < count; ++f) {
-          const auto limit = hn::Set(db, static_cast<std::uint8_t>(std::floor(f ? temporal : spatial)));
+          const auto limit = hn::Set(db, limits[f != 0]);
           const auto lower = hn::SaturatedSub(center, limit), upper = hn::SaturatedAdd(center, limit);
           for (int g = 0; g < num_groups; ++g) {
             const auto& group = groups[g];
@@ -263,20 +268,32 @@ void integer_weighted_byte_process(const std::array<DeenPlane, 3>& frames, int c
               hi = hn::Add(hi, hn::PromoteTo(dw, hn::UpperHalf(half, value)));
 #endif
             }
-            const auto weight = hn::Set(df, group.weight * (count == 3 && f == 0 ? 2 : 1));
+            const auto weight = hn::Set(df, group.weight[f != 0]);
+#if HWY_ARCH_X86
+            s0 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveLower(dw, lo, hn::Zero(dw)))), s0);
+            s1 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveUpper(dw, lo, hn::Zero(dw)))), s1);
+            s2 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveLower(dw, hi, hn::Zero(dw)))), s2);
+            s3 = hn::MulAdd(weight, hn::ConvertTo(df, hn::BitCast(d, hn::InterleaveUpper(dw, hi, hn::Zero(dw)))), s3);
+#else
             s0 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(wh, lo))), s0);
             s1 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(wh, lo))), s1);
             s2 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::LowerHalf(wh, hi))), s2);
             s3 = hn::MulAdd(weight, hn::ConvertTo(df, hn::PromoteTo(d, hn::UpperHalf(wh, hi))), s3);
+#endif
           }
         }
+#if HWY_ARCH_X86
+        const auto finish = [&](auto sum) HWY_ATTR {
+          return hn::ConvertTo(di, hn::MulAdd(sum, reciprocal, hn::Set(df, 0.5f)));
+        };
+        const auto lo = hn::ReorderDemote2To(dw, finish(s0), finish(s1));
+        const auto hi = hn::ReorderDemote2To(dw, finish(s2), finish(s3));
+        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
+#else
         const auto finish = [&](auto sum) HWY_ATTR {
           return hn::DemoteTo(wh, hn::ConvertTo(di, hn::MulAdd(sum, reciprocal, hn::Set(df, 0.5f))));
         };
         const auto lo = hn::Combine(dw, finish(s1), finish(s0)), hi = hn::Combine(dw, finish(s3), finish(s2));
-#if HWY_ARCH_X86
-        integer_store(db, hn::ReorderDemote2To(db, lo, hi), dst + y * stride + x, active);
-#else
         integer_store(db, hn::Combine(db, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo)), dst + y * stride + x,
                       active);
 #endif
