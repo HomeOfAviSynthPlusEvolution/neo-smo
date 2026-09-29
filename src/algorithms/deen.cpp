@@ -82,22 +82,6 @@ double read(const DeenPlane& p, int x, int y) {
     throw std::invalid_argument("Deen: sample exceeds bit depth.");
   return u;
 }
-void write(std::uint8_t* dst, DataType type, double value) {
-  if (type == DataType::U8) {
-    *dst = static_cast<std::uint8_t>(std::floor(value + 0.5));
-    return;
-  }
-  if (type == DataType::U16) {
-    const auto v = static_cast<std::uint16_t>(std::floor(value + 0.5));
-    std::memcpy(dst, &v, sizeof(v));
-  } else if (type == DataType::F16) {
-    const auto v = fp32_to_fp16(static_cast<float>(value));
-    std::memcpy(dst, &v, sizeof(v));
-  } else {
-    const auto v = static_cast<float>(value);
-    std::memcpy(dst, &v, sizeof(v));
-  }
-}
 } // namespace
 
 Deen::Deen(DeenOptions options) : options_(std::move(options)) {
@@ -170,48 +154,11 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
                         filter.byte_weights(temporal), dst, stride);
     return;
   }
-  if (filter.family() == DeenFamily::Weighted) {
-    for (int f = 0; f < count; ++f)
-      matching(p, frames[f]);
-    const auto& o = filter.options();
-    deen_weighted_float_kernel(frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) / 255,
-                               (chroma ? o.temporal_uv : o.temporal_y) / 255, filter.weights().data(), dst, stride);
-    return;
-  }
-  const std::size_t pitch = static_cast<std::size_t>(p.width) + 2 * r;
-  const auto length = product(pitch, static_cast<std::size_t>(p.height) + 2 * r);
-  product(length, sizeof(double));
-  std::array<std::vector<double>, 3> padded;
-  std::array<const double*, 3> sources{};
-  for (int f = 0; f < count; ++f) {
+  for (int f = 0; f < count; ++f)
     matching(p, frames[f]);
-    auto& buf = padded[f];
-    buf.resize(length);
-    for (int y = 0; y < p.height; ++y) {
-      auto* row = buf.data() + (static_cast<std::size_t>(y) + r) * pitch;
-      for (int x = 0; x < p.width; ++x)
-        row[static_cast<std::size_t>(x) + r] = read(frames[f], x, y);
-      std::fill_n(row, r, row[r]);
-      std::fill_n(row + r + p.width, r, row[static_cast<std::size_t>(r) + p.width - 1]);
-    }
-    for (int y = 0; y < r; ++y) {
-      std::copy_n(buf.data() + r * pitch, pitch, buf.data() + y * pitch);
-      std::copy_n(buf.data() + (static_cast<std::size_t>(r) + p.height - 1) * pitch, pitch,
-                  buf.data() + (static_cast<std::size_t>(r) + p.height + y) * pitch);
-    }
-    sources[f] = buf.data();
-  }
-  const auto out_size = product(p.width, p.height);
-  product(out_size, sizeof(double));
-  std::vector<double> output(out_size);
   const auto& o = filter.options();
-  const double peak = p.type == DataType::U8 || p.type == DataType::U16 ? (1u << p.bits) - 1 : 1;
-  deen_kernel(filter.family(), sources, count, pitch, p.width, p.height, r,
-              (chroma ? o.spatial_uv : o.spatial_y) * peak / 255, (chroma ? o.temporal_uv : o.temporal_y) * peak / 255,
-              filter.weights().data(), output.data());
-  for (int y = 0; y < p.height; ++y)
-    for (int x = 0; x < p.width; ++x)
-      write(dst + y * stride + x * sample_bytes(p.type), p.type, output[static_cast<std::size_t>(y) * p.width + x]);
+  deen_float_kernel(filter.family(), frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) / 255,
+                    (chroma ? o.temporal_uv : o.temporal_y) / 255, filter.weights().data(), dst, stride);
 }
 
 bool deen_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const std::vector<DeenPlane>& b) {

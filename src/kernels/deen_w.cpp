@@ -15,7 +15,7 @@ namespace HWY_NAMESPACE {
 #include "common/fp16_simd.hpp"
 
 template <bool Half, bool Interior, class D>
-auto weighted_load(D d, const std::uint8_t* row, int width, std::int64_t x, std::size_t active) {
+auto deen_float_load(D d, const std::uint8_t* row, int width, std::int64_t x, std::size_t active) {
   if constexpr (!Half)
     return deen_row_load<Interior>(d, row, width, x, active);
   else {
@@ -33,7 +33,7 @@ auto weighted_load(D d, const std::uint8_t* row, int width, std::int64_t x, std:
 }
 
 template <bool Half, class D>
-void weighted_store(D d, hn::Vec<D> value, std::uint8_t* dst, std::size_t active) {
+void deen_float_store(D d, hn::Vec<D> value, std::uint8_t* dst, std::size_t active) {
   if constexpr (!Half)
     deen_store(d, value, dst, active);
   else {
@@ -48,9 +48,9 @@ void weighted_store(D d, hn::Vec<D> value, std::uint8_t* dst, std::size_t active
   }
 }
 
-template <bool Half>
-void weighted_float_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
-                            double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+template <bool Half, DeenFamily Family>
+void deen_float_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,
+                        const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
   const hn::ScalableTag<float> d;
   const hn::Rebind<std::conditional_t<Half, std::uint16_t, std::uint32_t>, decltype(d)> du;
   constexpr std::size_t bytes = Half ? 2 : 4;
@@ -72,12 +72,17 @@ void weighted_float_process(const std::array<DeenPlane, 3>& frames, int count, i
   double denominator = 0;
   for (int i = 0; i < side * side; ++i)
     denominator += weights[i];
-  denominator *= count == 3 ? 4 : 1;
+  denominator = Family == DeenFamily::Weighted ? denominator * (count == 3 ? 4 : 1) : side * side * count;
   const auto reciprocal = hn::Set(d, static_cast<float>(1 / denominator));
   std::array<std::array<float, 225>, 2> coefficients{};
   for (int i = 0; i < side * side; ++i) {
-    coefficients[0][i] = static_cast<float>(weights[i] * (count == 3 ? 2 : 1));
-    coefficients[1][i] = static_cast<float>(weights[i]);
+    if constexpr (Family == DeenFamily::Adaptive) {
+      coefficients[0][i] = static_cast<float>(spatial * weights[i]);
+      coefficients[1][i] = static_cast<float>(temporal * weights[i]);
+    } else {
+      coefficients[0][i] = static_cast<float>(weights[i] * (count == 3 ? 2 : 1));
+      coefficients[1][i] = static_cast<float>(weights[i]);
+    }
   }
   std::array<std::array<const std::uint8_t*, 15>, 3> rows{};
   for (int y = 0; y < p.height; ++y) {
@@ -89,40 +94,53 @@ void weighted_float_process(const std::array<DeenPlane, 3>& frames, int count, i
     const auto process_range = [&](auto interior, int begin, int end) HWY_ATTR {
       for (int x = begin; x < end;) {
         const int active = decltype(interior)::value ? lanes : std::min(lanes, end - x);
-        const auto center = weighted_load<Half, false>(d, p.data + y * p.stride, p.width, x, active);
+        const auto center = deen_float_load<Half, false>(d, p.data + y * p.stride, p.width, x, active);
         auto sum0 = hn::Zero(d), sum1 = hn::Zero(d);
+        auto count0 = hn::Zero(d), count1 = hn::Zero(d);
         auto low0 = center, low1 = center, high0 = center, high1 = center;
         for (int f = 0; f < count; ++f) {
           const auto threshold = hn::Set(d, static_cast<float>(f ? temporal : spatial));
           for (int dy = 0; dy < side; ++dy) {
             const auto* row = rows[f][dy];
             const auto* coeff = coefficients[f != 0].data() + dy * side;
-            const auto accumulate = [&](int dx, auto& sum, auto& low, auto& high) HWY_ATTR {
-              if (coeff[dx] == 0)
-                return;
-              const auto sample = weighted_load<Half, decltype(interior)::value>(
+            const auto accumulate = [&](int dx, auto& sum, auto& accepted, auto& low, auto& high) HWY_ATTR {
+              if constexpr (Family == DeenFamily::Weighted)
+                if (coeff[dx] == 0)
+                  return;
+              const auto sample = deen_float_load<Half, decltype(interior)::value>(
                   d, row, p.width, static_cast<std::int64_t>(x) + dx - radius, active);
               const auto difference = hn::Sub(sample, center);
-              const auto pass = hn::Le(hn::Abs(difference), threshold);
+              const auto limit = Family == DeenFamily::Adaptive ? hn::Set(d, coeff[dx]) : threshold;
+              const auto pass = hn::Le(hn::Abs(difference), limit);
               // Accepted differences are <=1, even for large finite F32
               // samples. Mask rejected (possibly overflowing) differences
               // before multiplication; the accumulated residual stays small.
-              sum = hn::MulAdd(hn::Set(d, coeff[dx]), hn::IfThenElseZero(pass, difference), sum);
+              if constexpr (Family == DeenFamily::Weighted)
+                sum = hn::MulAdd(hn::Set(d, coeff[dx]), hn::IfThenElseZero(pass, difference), sum);
+              else
+                sum = hn::Add(sum, hn::IfThenElseZero(pass, difference));
+              if constexpr (Family == DeenFamily::Adaptive)
+                accepted = hn::Add(accepted, hn::IfThenElseZero(pass, hn::Set(d, 1)));
               const auto value = hn::IfThenElse(pass, sample, center);
               low = hn::Min(low, value);
               high = hn::Max(high, value);
             };
             int dx = 0;
             for (; dx + 1 < side; dx += 2) {
-              accumulate(dx, sum0, low0, high0);
-              accumulate(dx + 1, sum1, low1, high1);
+              accumulate(dx, sum0, count0, low0, high0);
+              accumulate(dx + 1, sum1, count1, low1, high1);
             }
-            accumulate(dx, sum0, low0, high0);
+            accumulate(dx, sum0, count0, low0, high0);
           }
         }
-        const auto result =
-            hn::Clamp(hn::MulAdd(hn::Add(sum0, sum1), reciprocal, center), hn::Min(low0, low1), hn::Max(high0, high1));
-        weighted_store<Half>(d, result, dst + y * stride + x * bytes, active);
+        const auto mean = [&]() HWY_ATTR {
+          if constexpr (Family == DeenFamily::Adaptive)
+            return hn::Add(center, hn::Div(hn::Add(sum0, sum1), hn::Add(count0, count1)));
+          else
+            return hn::MulAdd(hn::Add(sum0, sum1), reciprocal, center);
+        }();
+        const auto result = hn::Clamp(mean, hn::Min(low0, low1), hn::Max(high0, high1));
+        deen_float_store<Half>(d, result, dst + y * stride + x * bytes, active);
         x += active;
       }
     };
@@ -134,12 +152,28 @@ void weighted_float_process(const std::array<DeenPlane, 3>& frames, int count, i
   }
 }
 
-void deen_weighted_float_target(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
-                                double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+template <bool Half>
+void deen_float_dispatch(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius,
+                         double spatial, double temporal, const double* weights, std::uint8_t* dst,
+                         std::ptrdiff_t stride) {
+  switch (family) {
+    case DeenFamily::Constant:
+      return deen_float_process<Half, DeenFamily::Constant>(frames, count, radius, spatial, temporal, weights, dst,
+                                                            stride);
+    case DeenFamily::Adaptive:
+      return deen_float_process<Half, DeenFamily::Adaptive>(frames, count, radius, spatial, temporal, weights, dst,
+                                                            stride);
+    case DeenFamily::Weighted:
+      return deen_float_process<Half, DeenFamily::Weighted>(frames, count, radius, spatial, temporal, weights, dst,
+                                                            stride);
+  }
+}
+void deen_float_target(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                       double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
   if (frames[0].type == DataType::F16)
-    weighted_float_process<true>(frames, count, radius, spatial, temporal, weights, dst, stride);
+    deen_float_dispatch<true>(family, frames, count, radius, spatial, temporal, weights, dst, stride);
   else
-    weighted_float_process<false>(frames, count, radius, spatial, temporal, weights, dst, stride);
+    deen_float_dispatch<false>(family, frames, count, radius, spatial, temporal, weights, dst, stride);
 }
 
 void deen_w_target(const std::array<const double*, 3>& src, int count, std::size_t pitch, int width, int height,
@@ -182,10 +216,10 @@ void deen_w_target(const std::array<const double*, 3>& src, int count, std::size
 HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace neo_smo {
-HWY_EXPORT(deen_weighted_float_target);
-void deen_weighted_float_kernel(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
-                                double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
-  HWY_DYNAMIC_DISPATCH(deen_weighted_float_target)(frames, count, radius, spatial, temporal, weights, dst, stride);
+HWY_EXPORT(deen_float_target);
+void deen_float_kernel(DeenFamily family, const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial,
+                       double temporal, const double* weights, std::uint8_t* dst, std::ptrdiff_t stride) {
+  HWY_DYNAMIC_DISPATCH(deen_float_target)(family, frames, count, radius, spatial, temporal, weights, dst, stride);
 }
 HWY_EXPORT(deen_w_target);
 void deen_w_kernel(const std::array<const double*, 3>& src, int count, std::size_t pitch, int width, int height,

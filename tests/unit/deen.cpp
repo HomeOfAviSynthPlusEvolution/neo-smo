@@ -64,13 +64,12 @@ double reference(const DeenOptions& o, const std::array<DeenPlane, 3>& f, int x,
           g = o.minimum;
         const double t =
             (k == 0 ? (chroma ? o.spatial_uv : o.spatial_y) : (chroma ? o.temporal_uv : o.temporal_y)) * peak / 255;
-        // Floating w compares in F32, including differences rounded to the
+        // Floating paths compare in F32, including differences rounded to the
         // threshold. Keep the independent weight/mean equation in binary64
         // and assess its error for the same selected sample set.
-        const bool accepted =
-            !integer && o.mode[0] == 'w'
-                ? std::abs(static_cast<float>(v) - static_cast<float>(center)) <= static_cast<float>(t)
-                : std::abs(v - center) <= t * (o.mode[0] == 'a' ? g : 1);
+        const bool accepted = !integer ? std::abs(static_cast<float>(v) - static_cast<float>(center)) <=
+                                             static_cast<float>(t * (o.mode[0] == 'a' ? g : 1))
+                                       : std::abs(v - center) <= t * (o.mode[0] == 'a' ? g : 1);
         if (o.mode[0] == 'a' && !accepted)
           continue;
         const double weight = o.mode[0] == 'w' ? g * (temporal && k == 0 ? 2 : 1) : 1;
@@ -291,7 +290,7 @@ void weighted_word_constants(const std::string& mode) {
           check(input == output, "weighted word constant changed");
         }
 }
-void weighted_float_extremes(const std::string& mode) {
+void float_extremes(const std::string& mode) {
   const bool temporal = mode[1] == '3';
   constexpr int width = 65, height = 2;
   for (auto type : {DataType::F16, DataType::F32}) {
@@ -323,11 +322,11 @@ void weighted_float_extremes(const std::string& mode) {
         const double ref = reference(o, frames, x, y, temporal, false, magnitude, low, high);
         const double got = get(output.data() + y * stride + x * b, type);
         const double budget = 2e-6 * std::max(1.0, magnitude) + (type == DataType::F16 ? 0x1p-10 : 0);
-        check(std::isfinite(got) && got >= low && got <= high, "weighted float extreme range");
+        check(std::isfinite(got) && got >= low && got <= high, "float extreme range");
         if (std::abs(got - ref) > budget) {
-          std::cerr << "weighted float extreme " << static_cast<int>(type) << " at " << x << "," << y << " got " << got
+          std::cerr << "float extreme " << static_cast<int>(type) << " at " << x << "," << y << " got " << got
                     << " expected " << ref << " budget " << budget << "\n";
-          throw std::runtime_error("weighted float extreme accuracy");
+          throw std::runtime_error("float extreme accuracy");
         }
       }
     for (double value : values) {
@@ -338,7 +337,7 @@ void weighted_float_extremes(const std::string& mode) {
       deen_process(Deen(o), false, temporal, frames, output.data(), stride);
       for (int y = 0; y < height; ++y)
         for (int x = 0; x < width; ++x)
-          check(get(output.data() + y * stride + x * b, type) == value, "weighted float extreme constant");
+          check(get(output.data() + y * stride + x * b, type) == value, "float extreme constant");
     }
     // Test invalid values in every participating frame and in the vector tail.
     for (int f = 0; f < (temporal ? 3 : 1); ++f)
@@ -391,6 +390,19 @@ void adaptive_fixture(const std::string& mode) {
   deen_process(Deen(o), false, false, {p, {}, {}}, out, 3);
   check(out[4] == 105, "adaptive zero corner threshold still counts equal samples");
 }
+void float_rounded_threshold(const std::string& mode) {
+  float input[9] = {-1, -1, -1, -1, -1, -1, -1, -1, 0x1p-25f}, output[9]{};
+  DeenOptions o;
+  o.mode = mode;
+  o.minimum = 1;
+  o.spatial_y = 255;
+  DeenPlane p{reinterpret_cast<const std::uint8_t*>(input), 12, 3, 3, DataType::F32, 32};
+  deen_process(Deen(o), false, false, {p, {}, {}}, reinterpret_cast<std::uint8_t*>(output), 12);
+  check(std::abs(output[4] + 8.0f / 9) < 2e-6f, "F32 rounded threshold equality rejected");
+  o.spatial_y = double(std::nextafter(1.0f, 0.0f)) * 255;
+  deen_process(Deen(o), false, false, {p, {}, {}}, reinterpret_cast<std::uint8_t*>(output), 12);
+  check(output[4] == -1, "F32 difference above threshold accepted");
+}
 void rational_adaptive_boundary(const std::string& mode) {
   float data[9] = {1, 1, 1, 1, 0, 1, 1, 1, 0.0625f}, out[9]{};
   DeenOptions o;
@@ -399,7 +411,7 @@ void rational_adaptive_boundary(const std::string& mode) {
   o.minimum = 0.9375;
   DeenPlane p{reinterpret_cast<const std::uint8_t*>(data), 12, 3, 3, DataType::F32, 32};
   deen_process(Deen(o), false, false, {p, {}, {}}, reinterpret_cast<std::uint8_t*>(out), 12);
-  check(out[4] == 0.03125f, "rational corner threshold equality");
+  check(std::abs(out[4] - 0.03125f) <= 2e-6f * 0.03125f, "rational corner threshold equality");
   o.spatial_y = 16.999;
   deen_process(Deen(o), false, false, {p, {}, {}}, reinterpret_cast<std::uint8_t*>(out), 12);
   check(out[4] == 0, "rational corner threshold just below equality");
@@ -550,6 +562,8 @@ int main(int argc, char** argv) {
       invalid();
       scene_integer_vectors();
       float_constants(mode);
+      float_extremes(mode);
+      float_rounded_threshold(mode);
       scaled_boundary(mode);
       if (mode[0] == 'w') {
         weighted_fixture(mode);
@@ -560,7 +574,6 @@ int main(int argc, char** argv) {
             for (double threshold : {0.0, 7.0, 255.0})
               run_case(mode, DataType::U16, 16, width, 3, mode[1] == '3' ? 4 : 7, minimum, false, false, mode[1] == '3',
                        true, threshold);
-        weighted_float_extremes(mode);
       }
       if (mode[0] == 'a') {
         adaptive_fixture(mode);
