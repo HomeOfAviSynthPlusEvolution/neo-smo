@@ -68,9 +68,9 @@ int main() {
     format.bitsPerSample = 8;
     format.numPlanes = 1;
     for (const char* mode : {"c2d", "c3d", "w2d", "w3d", "a2d", "a3d"}) {
-      neo_smo::DeenOptions options;
+      neo_smo::DeenParameters options;
       options.mode = mode;
-      neo_smo::plugin::Instance instance(options);
+      neo_smo::plugin::Instance instance(neo_smo::deen_config(options, {1, false, 8, 1, 1, 0, 0}, false));
       instance.vi.format = format;
       instance.vi.width = instance.vi.height = 3;
       instance.vi.numFrames = 3;
@@ -105,7 +105,7 @@ int main() {
       std::memcpy(source, &nan, 4);
       fetched = released = errors = 0;
       check(!neo_smo::plugin::get_frame(1, arAllFramesReady, &instance, nullptr, nullptr, nullptr, &api));
-      check(released == (count == 3 ? 3 : 2) && errors == 1);
+      check(released == (count + 1) && errors == 1);
       std::memset(source, 0, sizeof(source));
       format.sampleType = stInteger;
       format.bitsPerSample = 8;

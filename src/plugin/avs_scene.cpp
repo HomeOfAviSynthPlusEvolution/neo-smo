@@ -1,4 +1,5 @@
 #include "plugin/avs_filter.hpp"
+#include "algorithms/scene_detection.hpp"
 #include <algorithm>
 
 namespace neo_smo::avs {
@@ -36,29 +37,19 @@ public:
 
 private:
   double threshold_;
-  template <class T>
-  double difference(const PVideoFrame& a, const PVideoFrame& b) const {
-    double sum = 0;
-    for (int y = 0; y < vi.height; ++y) {
-      const auto* ap =
-          reinterpret_cast<const T*>(a->GetReadPtr(PLANAR_Y) + static_cast<std::ptrdiff_t>(y) * a->GetPitch(PLANAR_Y));
-      const auto* bp =
-          reinterpret_cast<const T*>(b->GetReadPtr(PLANAR_Y) + static_cast<std::ptrdiff_t>(y) * b->GetPitch(PLANAR_Y));
-      for (int x = 0; x < vi.width; ++x)
-        sum += std::abs(static_cast<double>(ap[x]) - bp[x]);
-    }
-    const double peak = vi.BitsPerComponent() == 32 ? 1.0 : (1u << vi.BitsPerComponent()) - 1u;
-    return sum / (static_cast<double>(vi.width) * vi.height * peak);
-  }
   double difference(int n, IScriptEnvironment* env) const {
     if (n == vi.num_frames - 1)
       return 0;
     auto a = child->GetFrame(n, env), b = child->GetFrame(n + 1, env);
-    if (vi.ComponentSize() == 1)
-      return difference<std::uint8_t>(a, b);
-    if (vi.ComponentSize() == 2)
-      return difference<std::uint16_t>(a, b);
-    return difference<float>(a, b);
+    const auto plane = [&](const PVideoFrame& f) {
+      return DeenPlane{f->GetReadPtr(PLANAR_Y),
+                       f->GetPitch(PLANAR_Y),
+                       vi.width,
+                       vi.height,
+                       get_data_type(vi.ComponentSize(), vi.BitsPerComponent() == 32),
+                       vi.BitsPerComponent()};
+    };
+    return scene_difference(plane(a), plane(b));
   }
 };
 } // namespace

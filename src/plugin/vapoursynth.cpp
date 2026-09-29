@@ -1,3 +1,4 @@
+#include "plugin/deen_descriptor.hpp"
 #include "plugin/deen.hpp"
 #include "plugin/descriptors.hpp"
 #include "plugin/dct_filter.hpp"
@@ -2227,9 +2228,8 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
                            cnr4_create, nullptr, plugin);
   vspapi->registerFunction("DCTFilter", "clip:vnode;factors:float[];planes:int[]:opt;", "clip:vnode;",
                            dct_filter_create, nullptr, plugin);
-  vspapi->registerFunction("Deen", "clip:vnode;mode:data:opt;rad:int:opt;thrY:float:opt;thrUV:float:opt;"
-                           "tthY:float:opt;tthUV:float:opt;min:float:opt;scd:float:opt;scenechange:int:opt;planes:int[]:opt;",
-                           "clip:vnode;", deen_create, nullptr, plugin);
-  vspapi->registerFunction("MiniDeen", "clip:vnode;radius:int[]:opt:empty;threshold:int[]:opt:empty;planes:int[]:opt;",
-                           "clip:vnode;", mini_deen_create, nullptr, plugin);
+  const auto deen_sig = ds::make_vapoursynth_signature(deen_descriptor(false)).value();
+  const auto mini_sig = ds::make_vapoursynth_signature(deen_descriptor(true)).value();
+  vspapi->registerFunction("Deen", deen_sig.c_str(), "clip:vnode;", deen_create, nullptr, plugin);
+  vspapi->registerFunction("MiniDeen", mini_sig.c_str(), "clip:vnode;", mini_deen_create, nullptr, plugin);
 }

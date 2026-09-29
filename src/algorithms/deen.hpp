@@ -47,5 +47,8 @@ struct DeenPlane {
 // Frames are current, previous, next. Only current is consumed for spatial evaluation.
 void deen_process(const Deen& filter, bool chroma, bool temporal, const std::array<DeenPlane, 3>& frames,
                   std::uint8_t* dst, std::ptrdiff_t stride);
+// Thresholds are already in native sample units.
+void deen_process_native(const Deen& filter, double spatial, double temporal_threshold, bool temporal,
+                         const std::array<DeenPlane, 3>& frames, std::uint8_t* dst, std::ptrdiff_t stride);
 bool deen_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const std::vector<DeenPlane>& b);
 } // namespace neo_smo

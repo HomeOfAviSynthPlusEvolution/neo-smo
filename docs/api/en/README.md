@@ -40,7 +40,7 @@ See the [AviSynth+ interface](#avisynth-calls-and-builds) for loading, argument 
 
 ## Common conventions
 
-- Input must have a constant format and dimensions. Filters supporting the common formats accept Gray, RGB, and YUV with 8–16-bit integer, 16-bit floating-point (F16), or 32-bit floating-point (F32) samples. AviSynth+ does not provide F16 and accepts planar formats without alpha only. Exceptions: TTempSmooth does not accept F16; CCD does not accept Gray; Cnr4 accepts only 8–16-bit integer YUV; MiniDeen accepts integer input only.
+- Input must have a constant format and dimensions. Filters supporting the common formats accept Gray, RGB, and YUV with 8–16-bit integer, 16-bit floating-point (F16), or 32-bit floating-point (F32) samples. AviSynth+ does not provide F16 and accepts planar formats without alpha only. Exceptions: TTempSmooth does not accept F16; CCD does not accept Gray; Cnr4 accepts only 8–16-bit integer YUV.
 - Omitting `planes` processes every plane. An explicitly supplied array must be nonempty; `planes=[]` is rejected. Plane indices 0/1/2 mean Y/U/V for YUV and R/G/B for RGB; Gray has only plane 0. Duplicate and out-of-range indices are errors.
 - Per-plane arrays such as `radius` and `mode` generally repeat their last element for remaining planes. For example, `[1, 0]` becomes `[1, 0, 0]` on a three-plane clip. Each of Cnr4's three arrays must contain exactly three elements. DCTFilter's `factors` must contain exactly eight elements and describes frequencies, not planes. See the individual pages. A required `mode` array cannot be empty.
 - Spatial radii use each plane's own pixel grid. A radius of 1 on a YUV420 chroma plane covers a different image area from a radius of 1 on the luma plane.
@@ -75,16 +75,16 @@ return neo_smo_Median(src, radius=[1], planes=[0])
 ### Arguments and formats
 
 - After removing `neo_smo_`, names match the index above. Argument names, order, defaults, and algorithm behavior follow the individual filter pages.
-- Write Python `True` / `False` as AVS `true` / `false`. `scalep`, `interlaced`, `norow`, `fp`, and boolean `scenechange` arguments accept booleans. TemporalSoften's `scenechange` remains an integer.
-- Numeric arrays use `[1, 2, 3]`; a scalar is also accepted as a one-element array. String arrays are not accepted. Empty arrays are normally rejected; MiniDeen radius/threshold exceptions are documented on its page. CCD's `points` takes three integers: zero disables a set, nonzero enables it.
+- Write Python `True` / `False` as AVS `true` / `false`. `scalep`, `interlaced`, `norow`, `fp`, and boolean `scenechange` arguments accept booleans. TemporalSoften and Deen use integer `scenechange`.
+- Numeric arrays use `[1, 2, 3]`; a scalar is also accepted as a one-element array. String arrays are not accepted. Empty arrays are normally rejected. CCD's `points` takes three integers: zero disables a set, nonzero enables it.
 - `planes` uses Y/U/V or R/G/B indices 0/1/2; Gray has only plane 0. AVS storage order does not change this mapping. Only functions already exposing `planes` accept it.
-- Planar Gray, YUV, and RGB support 8/10/12/14/16-bit integers and F32. The AVS interface has no F16 support and rejects packed formats and alpha. CCD rejects Gray; Cnr4 accepts integer YUV only; MiniDeen accepts integer input only.
+- Planar Gray, YUV, and RGB support 8/10/12/14/16-bit integers and F32. The AVS interface has no F16 support and rejects packed formats and alpha. CCD rejects Gray; Cnr4 accepts integer YUV only.
 - Reference clips must match the source format and dimensions. Frame rates and counts need not match, but callers must preserve temporal alignment. Requests beyond a reference clip's valid frame range report an error.
 - Output preserves source audio, parity, and current-frame properties. Unprocessed planes retain source pixels. Each frame request owns its scratch space and supports `Prefetch`.
 
 ### Scene changes and resizing
 
-Positive TemporalSoften `scenechange` and TTempSmooth `scthresh` values use built-in luma difference detection, without requiring VS's misc plugin. Threshold units remain `/255` and `/100`, respectively. TTempSmooth detects on `pfclip` when supplied. Automatic detection requires at least two frames and rejects RGB.
+Positive TemporalSoften/Deen `scenechange` and TTempSmooth `scthresh` values use built-in luma difference detection, without requiring VS's misc plugin. Threshold units remain `/255` and `/100`, respectively. TTempSmooth detects on `pfclip` when supplied. Automatic detection requires at least two frames and rejects RGB.
 
 Existing scene information uses integer `_SceneChangePrev` and `_SceneChangeNext` properties. TemporalMedian with scene handling enabled, and Cnr4 with its default scene handling, report missing properties. Supply the properties or explicitly disable `scenechange`; TTempSmooth uses `scthresh=0` to disable detection.
 

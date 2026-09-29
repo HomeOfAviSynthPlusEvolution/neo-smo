@@ -26,39 +26,7 @@ void deen_float_target(DeenFamily family, const std::array<DeenPlane, 3>& frames
 #include "kernels/deen_io-inl.hpp"
 #include "common/fp16_simd.hpp"
 
-template <bool Half, bool Interior, class D>
-auto deen_float_load(D d, const std::uint8_t* row, int width, std::int64_t x, std::size_t active) {
-  if constexpr (!Half)
-    return deen_row_load<Interior>(d, row, width, x, active);
-  else {
-    const hn::Rebind<std::uint16_t, D> du;
-    const auto bits = deen_row_load<Interior>(du, row, width, x, active);
-#if HWY_HAVE_FLOAT16 || (HWY_ARCH_X86 && HWY_TARGET <= HWY_AVX2 && !defined(HWY_DISABLE_F16C))
-    const hn::Rebind<hwy::float16_t, D> dh;
-    return hn::PromoteTo(d, hn::BitCast(dh, bits));
-#else
-    HWY_ALIGN std::uint16_t values[hn::MaxLanes(d)]{};
-    hn::StoreU(bits, du, values);
-    return load_f16(d, values, active);
-#endif
-  }
-}
-
-template <bool Half, class D>
-void deen_float_store(D d, hn::Vec<D> value, std::uint8_t* dst, std::size_t active) {
-  if constexpr (!Half)
-    deen_store(d, value, dst, active);
-  else {
-#if HWY_HAVE_FLOAT16 || (HWY_ARCH_X86 && HWY_TARGET <= HWY_AVX2 && !defined(HWY_DISABLE_F16C))
-    const hn::Rebind<hwy::float16_t, D> dh;
-    deen_store(dh, hn::DemoteTo(dh, value), dst, active);
-#else
-    HWY_ALIGN std::uint16_t values[hn::MaxLanes(d)]{};
-    store_f16(d, value, values, active);
-    std::memcpy(dst, values, active * sizeof(std::uint16_t));
-#endif
-  }
-}
+#include "kernels/deen_float_io-inl.hpp"
 
 template <bool Half, DeenFamily Family>
 void deen_float_process(const std::array<DeenPlane, 3>& frames, int count, int radius, double spatial, double temporal,

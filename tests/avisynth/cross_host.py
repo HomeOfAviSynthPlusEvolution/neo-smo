@@ -116,12 +116,15 @@ def check(args):
              ("CCD", {"scale": 1, "temporal_radius": 1, "ref": "REF"}),
              ("DCTFilter", {"factors": [1, 0.9, 0.75, 0.5, 0.4, 0.25, 0.1, 0]})]
     for mode in ("c2d", "c3d", "w2d", "w3d", "a2d", "a3d"):
-        cases.append(("Deen", {"mode": mode, "rad": 2, "thrY": 30, "thrUV": 40,
-                               "tthY": 25, "tthUV": 35, "scenechange": False, "planes": [0, 2]}))
-    cases.append(("Deen", {"mode": "a3d", "scd": 1}))
-    if not floating:
-        cases.append(("MiniDeen", {"radius": [1, 3, 2], "threshold": [20, 30], "planes": [0, 2]}))
-        cases.append(("MiniDeen", {"radius": [], "threshold": []}))
+        cases.append(("Deen", {"mode": mode, "radius": [2, 0, 1], "threshold": [30, 40],
+                               "temporal_threshold": [25, 35], "minimum": [0.3, 0.7], "scalep": True, "planes": [0, 2]}))
+    cases.append(("Deen", {"mode": "a3d", "scenechange": -1}))
+    if not rgb:
+        for sc in (1, 254):
+            cases.append(("Deen", {"scenechange": sc, "threshold": 255,
+                                   "temporal_threshold": 255, "scalep": True}))
+    cases.append(("MiniDeen", {"radius": [1, 3, 2], "threshold": [20, 30], "scalep": True, "planes": [0, 2]}))
+    cases.append(("MiniDeen", {}))
     if not rgb and not floating:
         for tmode in (0, 1, 4):
             cases.append(("Cnr4", {"scenechange": False, "tmode": tmode, "wmode": tmode % 4, "ref": "REF"}))

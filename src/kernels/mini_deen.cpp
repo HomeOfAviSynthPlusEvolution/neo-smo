@@ -18,6 +18,10 @@ void mini_deen_target(const std::uint8_t* src, std::ptrdiff_t src_stride, std::u
                       int width, int height, bool byte_samples, int radius, unsigned threshold) {
   mini_deen_scalar(src, src_stride, dst, dst_stride, width, height, byte_samples, radius, threshold);
 }
+void mini_deen_float_target(const std::uint8_t* src, std::ptrdiff_t ss, std::uint8_t* dst, std::ptrdiff_t ds, int width,
+                            int height, bool half, int radius, float threshold) {
+  mini_deen_float_scalar(src, ss, dst, ds, width, height, half, radius, threshold);
+}
 #else
 namespace hn = hwy::HWY_NAMESPACE;
 template <class D>
@@ -30,6 +34,62 @@ auto rounded_mean(D d, hn::VFromD<D> sum, hn::VFromD<D> count) {
   return hn::Add(q, hn::IfThenElseZero(hn::Ge(hn::Add(remainder, remainder), count), hn::Set(d, 1)));
 }
 #include "kernels/deen_io-inl.hpp"
+
+#include "common/fp16_simd.hpp"
+#include "kernels/deen_float_io-inl.hpp"
+
+template <bool Half>
+void float_process(const std::uint8_t* src, std::ptrdiff_t ss, std::uint8_t* dst, std::ptrdiff_t ds, int width,
+                   int height, int radius, float threshold) {
+  const hn::ScalableTag<float> d;
+  const hn::Rebind<std::conditional_t<Half, std::uint16_t, std::uint32_t>, decltype(d)> du;
+  constexpr std::size_t bytes = Half ? 2 : 4;
+  const int lanes = static_cast<int>(hn::Lanes(d));
+  const auto exponent = hn::Set(du, Half ? 0x7c00u : 0x7f800000u);
+  for (int y = 0; y < height; ++y)
+    for (int x = 0; x < width;) {
+      const int active = std::min(lanes, width - x);
+      const auto bits = deen_raw_load(du, src + y * ss + std::size_t(x) * bytes, active);
+      if (!hn::AllFalse(du, hn::Eq(hn::And(bits, exponent), exponent)))
+        throw std::invalid_argument("MiniDeen: non-finite sample");
+      x += active;
+    }
+  for (int y = 0; y < height; ++y) {
+    int x = 0;
+    while (x < width) {
+      if (x >= radius && width - x - radius >= lanes) {
+        const auto center = deen_float_load<Half, true>(d, src + y * ss, width, x, lanes);
+        auto sum = hn::Zero(d), count = hn::Set(d, 2.0f), low = center, high = center;
+        for (int dy = -std::min(y, radius); dy <= std::min(radius, height - 1 - y); ++dy)
+          for (int dx = -radius; dx <= radius; ++dx) {
+            const auto value = deen_float_load<Half, true>(d, src + (y + dy) * ss, width, x + dx, lanes);
+            const auto diff = hn::Sub(value, center);
+            const auto pass = hn::Lt(hn::Abs(diff), hn::Set(d, threshold));
+            sum = hn::Add(sum, hn::IfThenElseZero(pass, diff));
+            count = hn::Add(count, hn::IfThenElseZero(pass, hn::Set(d, 1.0f)));
+            const auto accepted = hn::IfThenElse(pass, value, center);
+            low = hn::Min(low, accepted);
+            high = hn::Max(high, accepted);
+          }
+        const auto result = hn::Min(high, hn::Max(low, hn::Add(center, hn::Div(sum, count))));
+        deen_float_store<Half>(d, result, dst + y * ds + std::size_t(x) * bytes, lanes);
+        x += lanes;
+      } else {
+        mini_deen_detail::float_store(
+            dst + y * ds, x, Half,
+            mini_deen_detail::float_pixel(src, ss, width, height, Half, radius, threshold, x, y));
+        ++x;
+      }
+    }
+  }
+}
+void mini_deen_float_target(const std::uint8_t* src, std::ptrdiff_t ss, std::uint8_t* dst, std::ptrdiff_t ds, int width,
+                            int height, bool half, int radius, float threshold) {
+  if (half)
+    float_process<true>(src, ss, dst, ds, width, height, radius, threshold);
+  else
+    float_process<false>(src, ss, dst, ds, width, height, radius, threshold);
+}
 
 template <class T>
 void process(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* dst, std::ptrdiff_t dst_stride,
@@ -131,6 +191,11 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace neo_smo {
 HWY_EXPORT(mini_deen_target);
+HWY_EXPORT(mini_deen_float_target);
+void mini_deen_float_kernel(const std::uint8_t* src, std::ptrdiff_t ss, std::uint8_t* dst, std::ptrdiff_t ds, int width,
+                            int height, bool half, int radius, float threshold) {
+  HWY_DYNAMIC_DISPATCH(mini_deen_float_target)(src, ss, dst, ds, width, height, half, radius, threshold);
+}
 void mini_deen_kernel(const std::uint8_t* src, std::ptrdiff_t src_stride, std::uint8_t* dst, std::ptrdiff_t dst_stride,
                       int width, int height, bool byte_samples, int radius, unsigned threshold) {
   HWY_DYNAMIC_DISPATCH(mini_deen_target)(src, src_stride, dst, dst_stride, width, height, byte_samples, radius,

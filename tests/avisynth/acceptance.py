@@ -51,8 +51,6 @@ def main():
     run("registration", "\n".join(f'Assert(FunctionExists("neo_smo_{f}"))' for f in filters) + "\nreturn c")
     for pixel in ("Y8", "YUV420P8", "YUV422P10", "YUV444P16", "Y32", "YUV420PS", "RGBP", "RGBPS"):
         for f, params in filters.items():
-            if f == "MiniDeen" and (pixel == "Y32" or pixel.endswith("PS")):
-                continue
             if f == "CCD" and pixel in ("Y8", "Y32"):
                 continue
             if f == "Cnr4" and (not pixel.startswith("YUV") or pixel.endswith("PS")):
@@ -118,26 +116,39 @@ last""").Prefetch(2)
     for mode in ("c2d", "c3d", "w2d", "w3d", "a2d", "a3d"):
         expected = 90 if mode.endswith("2d") else 55 if mode.startswith("w") else 43
         run("deen-value-" + mode,
-            f'return neo_smo_Deen(c,mode="{mode}",thrY=255,tthY=255,scenechange=false,min=1)',
+            f'return neo_smo_Deen(c,mode="{mode}",threshold=255,temporal_threshold=255,scenechange=0,minimum=1)',
             setup=temporal, frame=1, extra=("--expect-y8-sum", str(256 * expected)))
         run("deen-scene-" + mode,
-            f'return neo_smo_Deen(c,mode="{mode}",thrY=255,tthY=255,scd=1)',
+            f'return neo_smo_Deen(c,mode="{mode}",threshold=255,temporal_threshold=255,scenechange=1)',
             setup=temporal, frame=1, extra=("--expect-y8-sum", str(256 * 90)))
     for name, expr, error in (
         ("deen-mode", 'Deen(c,mode="bad")', "mode"),
-        ("deen-radius", 'Deen(c,rad=5)', "radius"),
-        ("deen-threshold", 'Deen(c,thrUV=-1)', "threshold"),
+        ("deen-radius", 'Deen(c,radius=5)', "radius"),
+        ("deen-threshold", 'Deen(c,threshold=-1)', "threshold"),
         ("deen-planes", 'Deen(c,planes=[0,0])', "planes"),
         ("mini-radius", 'MiniDeen(c,radius=[1,8])', "radius"),
         ("mini-threshold", 'MiniDeen(c,threshold=-1)', "threshold"),
         ("mini-planes", 'MiniDeen(c,planes=3)', "planes"),
-        ("mini-float", 'MiniDeen(c.ConvertBits(32))', "sample format"),
+        ("mini-float-range", 'MiniDeen(c.ConvertBits(32),threshold=2)', "threshold"),
     ):
         run(name, "return neo_smo_" + expr, error=error)
     for name in ("Deen", "MiniDeen"):
         for pixel in ("RGB32", "YUY2", "RGBAP", "YUVA444"):
             run(name + "-reject-" + pixel, "return neo_smo_" + name + "(c)", pixel=pixel, error="only planar")
         run(name + "-empty-planes", "return neo_smo_" + name + "(c,planes=[])", error="planes cannot be empty")
+    for name in ("Deen", "MiniDeen"):
+        for key in ("radius", "threshold", "planes"):
+            run(name + "-empty-" + key, f"return neo_smo_{name}(c,{key}=[])" , error=key)
+        for key in ("radius", "threshold"):
+            run(name + "-gray-array-" + key, f"return neo_smo_{name}(c,{key}=[1,1])", pixel="Y8", error=key)
+        run(name + "-radius-zero", f"return neo_smo_{name}(c,radius=0)", pixel="Y32")
+        run(name + "-float-scalep", f"return neo_smo_{name}(c,threshold=10,scalep=true)", pixel="RGBPS")
+    for key in ("minimum", "temporal_threshold"):
+        run("deen-empty-" + key, f"return neo_smo_Deen(c,{key}=[])" , error=key)
+    run("deen-rgb-auto", 'return neo_smo_Deen(c,scenechange=12)', pixel="RGBP", error="Gray or YUV")
+    run("deen-scene-missing", 'return neo_smo_Deen(c,scenechange=-1)')
+    run("deen-order", 'return neo_smo_Deen(c,"a3d",[1,0],[7,9],[4,6],[0.5],0,true,[0])')
+    run("mini-order", 'return neo_smo_MiniDeen(c,[1,0],[10,6],true,[0])')
     print(f"AviSynth acceptance: {count} cases passed")
 
 

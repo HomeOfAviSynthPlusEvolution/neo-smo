@@ -39,7 +39,7 @@ neo-smo 将滤镜计算与宿主帧管理分离。核心负责图像平面的采
 | 色彩降噪 | `CCD`、`Cnr4`：颜色差异引导的空间采样与时间色度降噪。 |
 | 块频率滤波 | `DCTFilter`：不重叠 8×8 块的 DCT 系数加权。 |
 
-共 21 个函数。通常支持固定格式、固定尺寸的平面 GRAY/YUV/RGB，以及 8–16 位整数、16 位浮点（F16）、32 位浮点（F32）样本。F16 仅适用于 VapourSynth；AviSynth+ 支持无 alpha 的平面格式。TTempSmooth 不接受 F16，CCD 不接受 GRAY，Cnr4 仅接受整数 YUV，MiniDeen 仅接受整数输入。
+共 21 个函数。通常支持固定格式、固定尺寸的平面 GRAY/YUV/RGB，以及 8–16 位整数、16 位浮点（F16）、32 位浮点（F32）样本。F16 仅适用于 VapourSynth；AviSynth+ 支持无 alpha 的平面格式。TTempSmooth 不接受 F16，CCD 不接受 GRAY，Cnr4 仅接受整数 YUV。
 
 输出保留输入格式、尺寸、帧数和帧率。支持 `planes` 的函数在省略该参数时处理全部平面，`planes=[0]` 只处理第一个平面；显式传入空平面数组会报错。部分函数用 `mode` 或阈值控制平面处理，不能向所有函数统一传入 `planes`。这些滤镜不估计运动向量，也不做运动补偿。
 

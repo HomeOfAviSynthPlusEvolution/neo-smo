@@ -39,7 +39,7 @@ Filters and DCT execute on the calling host thread, without creating worker thre
 | Color denoising | `CCD`, `Cnr4`: spatial sampling guided by color differences and temporal chroma denoising. |
 | Block frequency filtering | `DCTFilter`: DCT coefficient weighting in non-overlapping 8×8 blocks. |
 
-There are 21 functions. Common support covers constant-format, constant-size planar GRAY/YUV/RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept GRAY, Cnr4 accepts integer YUV only, and MiniDeen accepts integer input only.
+There are 21 functions. Common support covers constant-format, constant-size planar GRAY/YUV/RGB with 8–16-bit integer, 16-bit floating-point (F16), and 32-bit floating-point (F32) samples. F16 is available only in VapourSynth; AviSynth+ accepts planar formats without alpha. TTempSmooth does not accept F16, CCD does not accept GRAY, and Cnr4 accepts integer YUV only.
 
 Output preserves the input format, dimensions, frame count, and frame rate. Functions exposing `planes` process all planes when it is omitted; `planes=[0]` processes only the first plane. Explicit empty plane arrays are rejected. Some functions use `mode` or thresholds to control plane processing, so `planes` cannot be passed to every function. These filters do not estimate motion vectors or perform motion compensation.
 

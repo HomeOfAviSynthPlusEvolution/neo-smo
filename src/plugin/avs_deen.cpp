@@ -2,22 +2,55 @@
 #include "algorithms/deen.hpp"
 #include "algorithms/mini_deen.hpp"
 #include "base/checked.hpp"
+#include "algorithms/deen_config.hpp"
+#include "plugin/deen_descriptor.hpp"
+#include "plugin/avs_filter.hpp"
 #include <dualsynth/avisynth/video_bridge.hpp>
 #include <memory>
 
 namespace neo_smo::avs {
 namespace {
-std::vector<int> integers(const AVSValue& value) {
-  std::vector<int> out;
-  if (!value.Defined())
-    return out;
-  const int count = value.IsArray() ? value.ArraySize() : 1;
-  for (int i = 0; i < count; ++i) {
-    const auto v = value.IsArray() ? value[i] : value;
-    require(v.IsInt(), "parameters must contain integers");
-    out.push_back(v.AsInt());
+DeenParameters parameters(const AVSValue& args, bool mini) {
+  DeenParameters p;
+  const auto descriptor = plugin::deen_descriptor(mini);
+  for (std::size_t i = 1; i < descriptor.params.size(); ++i) {
+    const auto value = args[static_cast<int>(i)];
+    if (!value.Defined())
+      continue;
+    const auto& spec = descriptor.params[i];
+    if (spec.is_array) {
+      const int count = value.IsArray() ? value.ArraySize() : 1;
+      if (spec.type == ds::ParamType::Integer) {
+        auto& target = spec.name == "radius" ? p.radius : p.planes;
+        target.emplace();
+        for (int j = 0; j < count; ++j) {
+          const auto v = value.IsArray() ? value[j] : value;
+          require(v.IsInt(), spec.name + " requires integers");
+          target->push_back(v.AsInt());
+        }
+      } else {
+        auto& target = spec.name == "threshold" ? p.threshold
+                       : spec.name == "minimum" ? p.minimum
+                                                : p.temporal_threshold;
+        target.emplace();
+        for (int j = 0; j < count; ++j) {
+          const auto v = value.IsArray() ? value[j] : value;
+          require(v.IsFloat(), spec.name + " requires numbers");
+          target->push_back(v.AsFloat());
+        }
+      }
+    } else if (spec.name == "mode") {
+      require(value.IsString(), "mode requires a string");
+      p.mode = value.AsString();
+    } else if (spec.name == "scalep") {
+      require(value.IsBool(), "scalep requires a boolean");
+      p.scalep = value.AsBool();
+    } else {
+      require(value.IsInt(), "scenechange requires an integer");
+      p.scenechange = value.AsInt();
+    }
   }
-  return out;
+  return p;
 }
 PClip input_clip(const AVSValue& args) {
   require(args[0].IsClip(), "clip is required");
@@ -25,58 +58,31 @@ PClip input_clip(const AVSValue& args) {
 }
 class DeenFilter final : public GenericVideoFilter {
 public:
-  DeenFilter(const AVSValue& args, bool mini) : GenericVideoFilter(input_clip(args)), mini_(mini) {
+  DeenFilter(const AVSValue& args, bool mini, IScriptEnvironment* env)
+      : GenericVideoFilter(input_clip(args)), mini_(mini) {
     require(vi.HasVideo() && vi.width > 0 && vi.height > 0 && vi.num_frames > 0 && vi.IsPlanar() &&
                 (vi.NumComponents() == 1 || vi.NumComponents() == 3),
             "only planar Gray, RGB and YUV without alpha are supported");
     const int bits = vi.BitsPerComponent();
-    require(bits == 8 || bits == 10 || bits == 12 || bits == 14 || bits == 16 || (!mini && bits == 32),
+    require(bits == 8 || bits == 10 || bits == 12 || bits == 14 || bits == 16 || bits == 32,
             "unsupported sample format");
     const auto format = ds::avisynth::make_video_format(vi);
     require(format.has_value(), "unsupported pixel format");
     format_ = format.value();
-    const auto& planes = args[mini ? 3 : 10];
-    require(!planes.IsArray() || planes.ArraySize() > 0, "planes cannot be empty");
-    const auto selected = integers(planes);
-    process_.fill(selected.empty());
-    for (int p : selected) {
-      require(p >= 0 && p < vi.NumComponents() && !process_[p], "planes must contain distinct valid indices");
-      process_[p] = true;
-    }
-    if (mini) {
-      const auto parse = [&](int index, std::array<int, 3>& values, int lo, int hi) {
-        const auto list = integers(args[index]);
-        require(list.size() <= 3, "at most three parameter values are allowed");
-        for (std::size_t i = 0; i < list.size(); ++i) {
-          require(list[i] >= lo && list[i] <= hi, "invalid radius or threshold");
-          values[i] = list[i];
-        }
-        for (std::size_t i = list.size(); i < 3; ++i)
-          if (i > 0)
-            values[i] = values[i - 1];
-      };
-      parse(1, radius_, 1, 7);
-      parse(2, threshold_, 0, 255);
+    const FormatInfo fmt{
+        vi.IsY() ? 1 : vi.IsRGB() ? 2 : 3, bits == 32, bits, vi.ComponentSize(), vi.NumComponents(), 0, 0};
+    config_ = deen_config(parameters(args, mini), fmt, mini);
+    if (!mini) {
       for (int p = 0; p < vi.NumComponents(); ++p)
-        process_[p] = process_[p] && threshold_[p] * ((1u << bits) - 1) / 255u > 1;
-    } else {
-      DeenOptions o;
-      o.mode = args[1].AsString("c3d");
-      o.radius = args[2].AsInt(1);
-      o.spatial_y = args[3].AsFloat(7);
-      o.spatial_uv = args[4].AsFloat(9);
-      o.temporal_y = args[5].AsFloat(4);
-      o.temporal_uv = args[6].AsFloat(6);
-      o.minimum = args[7].AsFloat(0.5);
-      o.scene_threshold = args[8].AsFloat(9);
-      o.scenechange = args[9].AsBool(true);
-      deen_ = std::make_unique<Deen>(std::move(o));
+        deen_[p] = std::make_unique<Deen>(deen_plane_filter(config_, p));
+      if (config_.temporal && config_.scenechange > 0)
+        child = scene_detect(child, config_.scenechange / 255.0, env);
     }
   }
   int __stdcall SetCacheHints(int hints, int) override { return hints == CACHE_GET_MTMODE ? MT_NICE_FILTER : 0; }
   PVideoFrame __stdcall GetFrame(int n, IScriptEnvironment* env) override {
     try {
-      const bool temporal = !mini_ && deen_->temporal() && n > 0 && n < vi.num_frames - 1;
+      const bool temporal = config_.temporal && n > 0 && n < vi.num_frames - 1;
       const int count = temporal ? 3 : 1;
       const int indices[3] = {n, n - 1, n + 1};
       std::array<PVideoFrame, 3> frames;
@@ -87,27 +93,27 @@ public:
         inputs[f] = views(frames[f]);
       }
       bool use_temporal = temporal;
-      if (temporal && deen_->options().scenechange) {
-        const bool left = deen_scene_cut(*deen_, inputs[0], inputs[1]);
-        const bool right = deen_scene_cut(*deen_, inputs[0], inputs[2]);
+      if (temporal && config_.scenechange != 0) {
+        const bool left = scene_property(frames[0], "_SceneChangePrev", env) != 0;
+        const bool right = scene_property(frames[0], "_SceneChangeNext", env) != 0;
         use_temporal = !left && !right;
       }
       auto dst = env->NewVideoFrameP(vi, &frames[0]);
       for (int p = 0; p < vi.NumComponents(); ++p) {
         const int id = ds::avisynth::plane_id(format_, p);
         const auto& src = inputs[0][p];
-        if (!process_[p]) {
+        if (!config_.process[p]) {
           env->BitBlt(dst->GetWritePtr(id), dst->GetPitch(id), frames[0]->GetReadPtr(id), frames[0]->GetPitch(id),
                       frames[0]->GetRowSize(id), frames[0]->GetHeight(id));
         } else if (mini_) {
-          mini_deen_process(src.data, src.stride, dst->GetWritePtr(id), dst->GetPitch(id), src.width, src.height,
-                            src.bits, radius_[p], threshold_[p]);
+          mini_deen_process_native(src.data, src.stride, dst->GetWritePtr(id), dst->GetPitch(id), src.width, src.height,
+                                   src.type, src.bits, config_.radius[p], config_.threshold[p]);
         } else {
           std::array<DeenPlane, 3> planes{};
           for (int f = 0; f < (use_temporal ? 3 : 1); ++f)
             planes[f] = inputs[f][p];
-          deen_process(*deen_, vi.IsYUV() && !vi.IsY() && p > 0, use_temporal, planes, dst->GetWritePtr(id),
-                       dst->GetPitch(id));
+          deen_process_native(*deen_[p], config_.threshold[p], config_.temporal_threshold[p], use_temporal, planes,
+                              dst->GetWritePtr(id), dst->GetPitch(id));
         }
       }
       return dst;
@@ -138,9 +144,8 @@ private:
   }
   bool mini_;
   ds::VideoFormat format_{};
-  std::unique_ptr<Deen> deen_;
-  std::array<bool, 3> process_{};
-  std::array<int, 3> radius_{1, 1, 1}, threshold_{10, 10, 10};
+  DeenConfig config_;
+  std::array<std::unique_ptr<Deen>, 3> deen_;
 };
 template <bool Mini>
 AVSValue __cdecl create(AVSValue args, void*, IScriptEnvironment* env) {
@@ -148,7 +153,7 @@ AVSValue __cdecl create(AVSValue args, void*, IScriptEnvironment* env) {
     env->CheckVersion(11);
     // PClip transfers ownership through the host SDK linkage table.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-    PClip filter = new DeenFilter(args, Mini);
+    PClip filter = new DeenFilter(args, Mini, env);
     return AVSValue(filter);
   } catch (const AvisynthError&) {
     throw;
@@ -161,9 +166,15 @@ AVSValue __cdecl create(AVSValue args, void*, IScriptEnvironment* env) {
 }
 } // namespace
 void add_deen(IScriptEnvironment* env) {
-  env->AddFunction("neo_smo_MiniDeen", "[clip]c[radius]i*[threshold]i*[planes]i*", create<true>, nullptr);
-  env->AddFunction("neo_smo_Deen",
-                   "[clip]c[mode]s[rad]i[thrY]f[thrUV]f[tthY]f[tthUV]f[min]f[scd]f[scenechange]b[planes]i*",
-                   create<false>, nullptr);
+  for (bool mini : {false, true}) {
+    auto descriptor = plugin::deen_descriptor(mini);
+    for (auto& p : descriptor.params)
+      p.required = false;
+    const auto result = ds::make_avisynth_signature(descriptor);
+    require(result.has_value(), result.has_value() ? "" : result.error().message);
+    const auto name = std::string("neo_smo_") + descriptor.name;
+    env->AddFunction(env->SaveString(name.c_str()), env->SaveString(result.value().c_str()),
+                     mini ? create<true> : create<false>, nullptr);
+  }
 }
 } // namespace neo_smo::avs

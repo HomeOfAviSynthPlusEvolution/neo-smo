@@ -69,6 +69,7 @@ int main() {
     format.bitsPerSample = 8;
     format.numPlanes = 1;
     neo_smo::plugin::Instance instance;
+    instance.config = neo_smo::deen_config({}, {1, false, 8, 1, 1, 0, 0}, true);
     instance.vi.format = format;
     instance.vi.width = instance.vi.height = 3;
     instance.vi.numFrames = 3;

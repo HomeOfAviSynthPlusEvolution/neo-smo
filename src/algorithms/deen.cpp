@@ -135,8 +135,8 @@ Deen::Deen(DeenOptions options) : options_(std::move(options)) {
   }
 }
 
-void deen_process(const Deen& filter, bool chroma, bool temporal, const std::array<DeenPlane, 3>& frames,
-                  std::uint8_t* dst, std::ptrdiff_t stride) {
+void deen_process_native(const Deen& filter, double spatial, double temporal_threshold, bool temporal,
+                         const std::array<DeenPlane, 3>& frames, std::uint8_t* dst, std::ptrdiff_t stride) {
   const auto& p = frames[0];
   validate(p);
   require(!temporal || filter.temporal(), "Deen: invalid temporal evaluation.");
@@ -147,18 +147,24 @@ void deen_process(const Deen& filter, bool chroma, bool temporal, const std::arr
   if (p.type == DataType::U8 || p.type == DataType::U16) {
     for (int f = 0; f < count; ++f)
       matching(p, frames[f]);
-    const auto& o = filter.options();
-    const double peak = (1u << p.bits) - 1;
-    deen_integer_kernel(filter.family(), frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) * peak / 255,
-                        (chroma ? o.temporal_uv : o.temporal_y) * peak / 255, filter.weights().data(),
+    deen_integer_kernel(filter.family(), frames, count, r, spatial, temporal_threshold, filter.weights().data(),
                         filter.byte_weights(temporal), dst, stride);
     return;
   }
   for (int f = 0; f < count; ++f)
     matching(p, frames[f]);
+  deen_float_kernel(filter.family(), frames, count, r, spatial, temporal_threshold, filter.weights().data(), dst,
+                    stride);
+}
+
+void deen_process(const Deen& filter, bool chroma, bool temporal, const std::array<DeenPlane, 3>& frames,
+                  std::uint8_t* dst, std::ptrdiff_t stride) {
   const auto& o = filter.options();
-  deen_float_kernel(filter.family(), frames, count, r, (chroma ? o.spatial_uv : o.spatial_y) / 255,
-                    (chroma ? o.temporal_uv : o.temporal_y) / 255, filter.weights().data(), dst, stride);
+  const auto& p = frames[0];
+  validate(p);
+  const double peak = (p.type == DataType::U8 || p.type == DataType::U16) ? (1u << p.bits) - 1 : 1;
+  deen_process_native(filter, (chroma ? o.spatial_uv : o.spatial_y) * peak / 255,
+                      (chroma ? o.temporal_uv : o.temporal_y) * peak / 255, temporal, frames, dst, stride);
 }
 
 bool deen_scene_cut(const Deen& filter, const std::vector<DeenPlane>& a, const std::vector<DeenPlane>& b) {

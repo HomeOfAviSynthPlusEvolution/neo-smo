@@ -53,7 +53,7 @@ def main():
             out.props['DeenFrame'] = n
             return out
         clip = core.std.ModifyFrame(base, clips=base, selector=fill)
-        kwargs = dict(mode=mode, thrY=100, thrUV=100, tthY=100, tthUV=100, scenechange=False)
+        kwargs = dict(mode=mode, threshold=100, temporal_threshold=100, scalep=True)
         out = core.neo_smo.Deen(clip, **kwargs)
         # Exercise asynchronous scheduling, reverse order, endpoints, and repeat requests.
         requests = [(n, out.get_frame_async(n)) for n in (2, 0, 1, 1)]
@@ -64,7 +64,7 @@ def main():
             frames = [clip.get_frame(i) for i in indices]
             peak = (1 << f.format.bits_per_sample)-1 if f.format.sample_type == vs.INTEGER else 1
             for p in range(f.format.num_planes):
-                ref = expected([pixels(src, p) for src in frames], mode, 100*peak/255)
+                ref = expected([pixels(src, p) for src in frames], mode, 100 * (2**(f.format.bits_per_sample-8) if f.format.sample_type == vs.INTEGER else 1/255))
                 if f.format.sample_type == vs.INTEGER:
                     ref = np.floor(ref+0.5)
                     tolerance = 1 if mode[0] == 'w' else 0
@@ -82,17 +82,19 @@ def main():
             for p in (1, 2):
                 assert np.array_equal(pixels(f, p), pixels(source, p))
         if mode[1] == '3':
-            cut = core.neo_smo.Deen(clip, **dict(kwargs, scenechange=True, scd=0)).get_frame(1)
+            marked = clip.std.SetFrameProps(_SceneChangePrev=1)
+            cut = core.neo_smo.Deen(marked, **dict(kwargs, scenechange=-1)).get_frame(1)
             spatial = core.neo_smo.Deen(clip, **dict(kwargs, mode=mode[0]+'2d')).get_frame(1)
             for p in range(clip.format.num_planes):
                 assert np.array_equal(pixels(cut, p), pixels(spatial, p))
     base = core.std.BlankClip(width=3, height=3, length=1, format=vs.GRAY8, color=[100])
-    invalid = [dict(mode='bad'), dict(rad=0), dict(rad=8), dict(thrY=-1),
-               dict(thrUV=float('nan')), dict(tthY=float('inf')), dict(min=-0.01),
-               dict(min=1.01), dict(scd=-1), dict(scenechange=2), dict(planes=[1]),
-               dict(planes=[0, 0]), dict(planes=[])]
+    invalid = [dict(mode='bad'), dict(radius=-1), dict(radius=8), dict(threshold=-1),
+               dict(threshold=float('nan')), dict(temporal_threshold=float('inf')), dict(minimum=-0.01),
+               dict(minimum=1.01), dict(scenechange=-2), dict(scenechange=255), dict(planes=[1]),
+               dict(planes=[0, 0]), dict(planes=[]), dict(radius=[]), dict(threshold=[]),
+               dict(temporal_threshold=[]), dict(minimum=[]), dict(radius=[1,1]), dict(threshold=[1,1])]
     if mode[1] == '3':
-        invalid.append(dict(rad=5))
+        invalid.append(dict(radius=5))
     for override in invalid:
         try:
             core.neo_smo.Deen(base, **dict(dict(mode=mode), **override))

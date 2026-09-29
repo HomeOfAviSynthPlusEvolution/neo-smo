@@ -40,7 +40,7 @@ AviSynth+ 的加载方法、参数写法与宿主差异见 [AviSynth+ 接口](#a
 
 ## 通用约定
 
-- 输入必须是固定格式、固定尺寸的视频。通用滤镜接受 Gray、RGB、YUV 的 8–16 位整数、16 位浮点（F16）与 32 位浮点（F32）。AviSynth+ 不提供 F16，只接受无 alpha 的平面格式。例外：TTempSmooth 不接受 F16；CCD 不接受 Gray；Cnr4 只接受 YUV 8–16 位整数；MiniDeen 仅接受整数输入。
+- 输入必须是固定格式、固定尺寸的视频。通用滤镜接受 Gray、RGB、YUV 的 8–16 位整数、16 位浮点（F16）与 32 位浮点（F32）。AviSynth+ 不提供 F16，只接受无 alpha 的平面格式。例外：TTempSmooth 不接受 F16；CCD 不接受 Gray；Cnr4 只接受 YUV 8–16 位整数。
 - `planes` 省略时处理全部平面；显式传入须为非空数组，`planes=[]` 会报错。YUV 的 0/1/2 是 Y/U/V；RGB 是 R/G/B；Gray 只有 0。重复或越界编号会报错。
 - `radius`、`mode` 等逐平面数组一般将最后一项重复到剩余平面，如 `[1, 0]` 对三平面等价于 `[1, 0, 0]`。Cnr4 的三个数组必须各有三项；DCTFilter 的 `factors` 必须恰好八项，按频率而非按平面解释，见各专页。必填的 `mode` 不能是空数组。
 - 空间半径按各平面自己的像素计算。YUV420 的色度平面半径 1 并不等于亮度平面半径 1 的画面覆盖范围。
@@ -75,16 +75,16 @@ return neo_smo_Median(src, radius=[1], planes=[0])
 ### 参数与格式
 
 - 函数名去掉 `neo_smo_` 后，与上方目录中的名称一致。参数名称、顺序、默认值及算法行为共用各滤镜页面的说明。
-- Python 示例中的 `True` / `False` 在 AVS 中写作 `true` / `false`。`scalep`、`interlaced`、`norow`、`fp` 和布尔型 `scenechange` 接受布尔值；TemporalSoften 的 `scenechange` 仍是整数。
-- 数值数组写作 `[1, 2, 3]`，也接受单个数值作为单元素数组。不解析字符串数组；空数组通常也不接受，MiniDeen 的 radius/threshold 例外见对应页面。CCD 的 `points` 使用三个整数，0 表示关闭，非零表示开启。
+- Python 示例中的 `True` / `False` 在 AVS 中写作 `true` / `false`。`scalep`、`interlaced`、`norow`、`fp` 和布尔型 `scenechange` 接受布尔值；TemporalSoften 和 Deen 的 `scenechange` 为整数。
+- 数值数组写作 `[1, 2, 3]`，也接受单个数值作为单元素数组。不解析字符串数组；空数组通常也不接受。CCD 的 `points` 使用三个整数，0 表示关闭，非零表示开启。
 - `planes` 使用 Y/U/V 或 R/G/B 的 0/1/2 索引，Gray 只有 0；不受 AVS 内部平面存储顺序影响。只对原本提供 `planes` 的函数开放该参数。
-- 支持 Gray、YUV、RGB 的平面 8/10/12/14/16 位整数与 F32。AVS 不提供 F16 接口，不接受 packed 或带 alpha 的格式。CCD 不支持 Gray，Cnr4 仅支持整数 YUV，MiniDeen 仅支持整数输入。
+- 支持 Gray、YUV、RGB 的平面 8/10/12/14/16 位整数与 F32。AVS 不提供 F16 接口，不接受 packed 或带 alpha 的格式。CCD 不支持 Gray，Cnr4 仅支持整数 YUV。
 - 参考片必须具有相同格式和尺寸。帧率和帧数不强制相同，但调用方必须保证时间对齐；请求超过参考片有效范围时会报错。
 - 输出保留主片音频、场序和当前帧属性，未处理平面复制主片内容。各帧请求使用独立工作空间，可配合 `Prefetch`。
 
 ### 场景切换与缩放
 
-TemporalSoften 的正 `scenechange` 和 TTempSmooth 的正 `scthresh` 使用内置亮度帧差检测，无需安装 VS 的 misc 插件。阈值单位分别为 `/255` 和 `/100`；有 `pfclip` 时 TTempSmooth 在参考片上检测。自动检测要求至少两帧，不接受 RGB。
+TemporalSoften/Deen 的正 `scenechange` 和 TTempSmooth 的正 `scthresh` 使用内置亮度帧差检测，无需安装 VS 的 misc 插件。阈值单位分别为 `/255` 和 `/100`；有 `pfclip` 时 TTempSmooth 在参考片上检测。自动检测要求至少两帧，不接受 RGB。
 
 读取已有属性时，使用整数 `_SceneChangePrev` 与 `_SceneChangeNext`。TemporalMedian 启用检测、Cnr4 保持默认检测时，缺失属性会报错。可以先准备场景属性，或明确关闭 `scenechange`；TTempSmooth 则用 `scthresh=0` 关闭。
 

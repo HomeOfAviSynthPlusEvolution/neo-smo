@@ -1,6 +1,9 @@
 #include "guarded.hpp"
 #include "hwy/targets.h"
 #include "algorithms/mini_deen.hpp"
+#include "base/fp16.hpp"
+#include <cmath>
+#include <limits>
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -26,6 +29,62 @@ void store(std::uint8_t* p, unsigned v, int bytes) {
     const auto t = static_cast<std::uint16_t>(v);
     std::memcpy(p, &t, 2);
   }
+}
+void float_run(bool half, int w, int r) {
+  const int bytes = half ? 2 : 4, h = 3, ss = w * bytes + 3, ds = w * bytes + 7;
+  std::vector<std::uint8_t> input(ss * h + 2, 0xa5), output(ds * h + 2, 0xcc);
+  auto* src = input.data() + 1;
+  auto* dst = output.data() + 1;
+  std::vector<float> values(w * h);
+  for (int y = 0; y < h; ++y)
+    for (int x = 0; x < w; ++x) {
+      const float value = ((x * 7 + y * 13) % 41 - 20) / 64.0f;
+      values[y * w + x] = value;
+      if (half)
+        store(src + y * ss + x * bytes, fp32_to_fp16(value), 2);
+      else
+        std::memcpy(src + y * ss + x * bytes, &value, 4);
+    }
+  const auto original = input;
+  for (float threshold : {0.0f, 0.125f, 1.0f}) {
+    mini_deen_process_native(src, ss, dst, ds, w, h, half ? DataType::F16 : DataType::F32, half ? 16 : 32, r,
+                             threshold);
+    for (int y = 0; y < h; ++y)
+      for (int x = 0; x < w; ++x) {
+        double sum = 2 * values[y * w + x];
+        int count = 2;
+        for (int yy = 0; yy < h; ++yy)
+          for (int xx = 0; xx < w; ++xx)
+            if (std::abs(yy - y) <= r && std::abs(xx - x) <= r &&
+                std::abs(values[yy * w + xx] - values[y * w + x]) < threshold) {
+              sum += values[yy * w + xx];
+              ++count;
+            }
+        float actual;
+        if (half)
+          actual = fp16_to_fp32(static_cast<std::uint16_t>(load(dst + y * ds + x * bytes, 2)));
+        else
+          std::memcpy(&actual, dst + y * ds + x * bytes, 4);
+        check(std::abs(actual - sum / count) <= (half ? 0.00025 : 1e-7));
+      }
+    check(input == original && output.front() == 0xcc && output.back() == 0xcc);
+    for (int y = 0; y < h; ++y)
+      for (int x = w * bytes; x < ds; ++x)
+        check(dst[y * ds + x] == 0xcc);
+  }
+  if (half)
+    store(src, 0x7c00, 2);
+  else {
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    std::memcpy(src, &nan, 4);
+  }
+  bool threw = false;
+  try {
+    mini_deen_process_native(src, ss, dst, ds, w, h, half ? DataType::F16 : DataType::F32, half ? 16 : 32, r, 0);
+  } catch (const std::invalid_argument&) {
+    threw = true;
+  }
+  check(threw);
 }
 void run(int bits, int w, int h, int r, int t) {
   const int bytes = bits == 8 ? 1 : 2, ss = w * bytes + 3, ds = w * bytes + 7;
@@ -99,6 +158,15 @@ int main() {
           for (int radius : {1, 7})
             for (int threshold : {2, 10, 255})
               run(bits, width, 3, radius, threshold);
+      for (bool half : {false, true})
+        for (int width : {1, 2, 7, 17, 31, 65, 129})
+          for (int radius : {1, 7})
+            float_run(half, width, radius);
+      {
+        std::uint8_t src[]{100, 110}, dst[2]{};
+        mini_deen_process_native(src, 2, dst, 2, 2, 1, DataType::U8, 8, 1, 10.5);
+        check(dst[0] == 103 && dst[1] == 108);
+      }
       // All 227 contributions at the maximum input value stress sums/counts.
       for (int bits : {8, 16}) {
         const int bytes = bits / 8;
