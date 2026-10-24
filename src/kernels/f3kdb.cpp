@@ -386,7 +386,10 @@ HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<D
   return hn::Combine(d, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
 }
 template <int Mode, bool Blur, int SX, int SY>
-std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
+std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
+  // Output byte stores may alias caller-owned metadata. Keep the immutable
+  // descriptor local so the sampling loop can retain its invariants.
+  const IntegerRow row = input_row;
   const hn::ScalableTag<std::int32_t> d;
   const hn::Rebind<std::int32_t, decltype(d)> di;
   const hn::Rebind<std::uint8_t, decltype(d)> db;
