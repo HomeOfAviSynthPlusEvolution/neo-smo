@@ -54,6 +54,21 @@ SamplingResult process_cross_row(const CrossSamplingRow&, const Row&, const doub
 SamplingResult process_sampled_row(const SamplingRow&, const Row&, int mode, double threshold, bool integer, bool blur);
 std::size_t collect_simple_row(const SamplingRow&, int mode);
 void process_row(const Row&, int mode, const double* thresholds, bool integer, bool blur, double angle, double boost);
+// Native byte input is borrowed for the duration of a frame call. Distances
+// are immutable Filter-owned coordinates, validated when the filter is built.
+struct ByteRow {
+  const std::uint8_t* source = nullptr;
+  const Distance* distances = nullptr;
+  const std::int16_t* grain = nullptr;
+  std::uint8_t* output = nullptr;
+  std::size_t width = 0, stride = 0;
+  int sub_x = 0, sub_y = 0;
+  bool chroma = false, limited = false;
+  std::array<const std::uint8_t*, 4> collected{};
+  const std::uint8_t* base = nullptr;
+  std::size_t row_offset = 0, extent = 0;
+};
+std::size_t process_byte_row(const ByteRow&, int mode, const double* thresholds, bool blur);
 // Exact 16-bit processing units in 32-bit lanes. The caller handles the tail.
 struct IntegerRow {
   const std::int32_t* center;

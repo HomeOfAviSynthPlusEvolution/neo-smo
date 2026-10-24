@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
 #define HWY_COMPILE_ALL_ATTAINABLE
 #endif
@@ -28,6 +29,9 @@ std::size_t collect_simple_target(const SamplingRow&, int) {
 }
 SamplingResult sampled_target(const SamplingRow&, const Row&, int, double, bool, bool) {
   return {0, 0};
+}
+std::size_t byte_target(const ByteRow&, int, const double*, bool) {
+  return 0;
 }
 std::size_t integer_target(const IntegerRow&, int, const double*, bool) {
   return 0;
@@ -385,6 +389,219 @@ HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<D
   const auto lo = weighted_half(dd, hn::PromoteTo(dd, hn::LowerHalf(half, center)), low, thresholds);
   const auto hi = weighted_half(dd, hn::PromoteTo(dd, hn::UpperHalf(half, center)), high, thresholds);
   return hn::Combine(d, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
+}
+template <int Mode, bool Blur, int SX = 0, int SY = 0, bool WordGather = false>
+std::size_t byte_reference_samples(const ByteRow& input_row, const double* thresholds) {
+  const ByteRow row = input_row;
+  using D = std::conditional_t<WordGather, hn::Rebind<std::uint16_t, hn::ScalableTag<std::int32_t>>,
+                               std::conditional_t<Mode == 2 && HWY_TARGET == HWY_AVX3_ZEN4,
+                                                  hn::CappedTag<std::uint16_t, 16>, hn::ScalableTag<std::uint16_t>>>;
+  const D d;
+  const hn::Rebind<std::uint8_t, decltype(d)> db;
+  const hn::Rebind<std::int16_t, decltype(d)> ds;
+  const auto lanes = hn::Lanes(d), full = row.width / lanes * lanes;
+  const auto* source = row.source;
+  if constexpr (Mode == 3) {
+    if (lanes < 32 && !row.collected[0])
+      return 0;
+  }
+
+  constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
+  const auto main_limit = hn::Set(d, std::uint16_t(std::ceil(thresholds[0] / (N == 2 ? 128.0 : 64.0))));
+  const auto pixel_limit = hn::Set(d, std::uint16_t(std::ceil(thresholds[0] / 256.0)));
+  const auto pair_limit = hn::Set(d, std::uint16_t(std::ceil(thresholds[0] / 128.0)));
+  for (std::size_t x = 0; x < full; x += lanes) {
+    const auto center = hn::PromoteTo(d, hn::LoadU(db, source + x));
+    hn::VFromD<decltype(d)> r[N];
+    auto sum = hn::Zero(d);
+    if constexpr (Mode == 2 || WordGather) {
+      if constexpr (WordGather) {
+        const hn::Rebind<std::int32_t, D> di;
+        const hn::Rebind<std::uint32_t, D> du;
+        hn::VFromD<decltype(db)> first, second;
+        const auto* distance = reinterpret_cast<const std::uint8_t*>(row.distances) + 2 * (x << SX);
+        if constexpr (SX == 0)
+          hn::LoadInterleaved2(db, distance, first, second);
+        else {
+          hn::VFromD<decltype(db)> skip1, skip2;
+          hn::LoadInterleaved4(db, distance, first, second, skip1, skip2);
+        }
+        const auto one = hn::PromoteTo(di, first), two = hn::PromoteTo(di, second);
+        const auto stride = hn::Set(di, static_cast<std::int32_t>(row.stride));
+        const auto h1 = hn::ShiftRight<SX>(one), h2 = hn::ShiftRight<SX>(two);
+        const auto v1 = hn::Mul(hn::ShiftRight<SY>(one), stride), v2 = hn::Mul(hn::ShiftRight<SY>(two), stride);
+        const auto column = hn::Iota(di, static_cast<std::int32_t>(x));
+        const auto row_start = hn::Set(di, static_cast<std::int32_t>(row.row_offset));
+        hn::VFromD<decltype(di)> columns[4], rows[4];
+        if constexpr (Mode == 2) {
+          columns[0] = hn::Add(column, h1);
+          columns[1] = hn::Add(column, h2);
+          columns[2] = hn::Sub(column, h1);
+          columns[3] = hn::Sub(column, h2);
+          rows[0] = hn::Add(row_start, v2);
+          rows[1] = hn::Sub(row_start, v1);
+          rows[2] = hn::Sub(row_start, v2);
+          rows[3] = hn::Add(row_start, v1);
+        } else {
+          columns[0] = column;
+          columns[1] = column;
+          columns[2] = hn::Add(column, h1);
+          columns[3] = hn::Sub(column, h1);
+          rows[0] = hn::Add(row_start, v1);
+          rows[1] = hn::Sub(row_start, v1);
+          rows[2] = row_start;
+          rows[3] = row_start;
+        }
+        for (int j = 0; j < N; ++j) {
+          // Slide the final word inward within its visible row. Every load
+          // covers four actual pixels, without requiring input padding.
+          const auto first = hn::Min(columns[j], hn::Set(di, static_cast<std::int32_t>(row.width - 4)));
+          const auto start = hn::Add(rows[j], first);
+          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(columns[j], first)));
+          const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.base), start);
+          const auto byte = HWY_IS_LITTLE_ENDIAN
+                                ? hn::And(hn::Shr(bits, shift), hn::Set(du, 255))
+                                : hn::And(hn::Shr(bits, hn::Sub(hn::Set(du, 24), shift)), hn::Set(du, 255));
+          r[j] = hn::DemoteTo(d, byte);
+          sum = hn::Add(sum, r[j]);
+        }
+      } else {
+        HWY_ALIGN std::uint8_t gathered[4][hn::MaxLanes(d)];
+        for (std::size_t i = 0; i < lanes; ++i) {
+          const auto distance = row.distances[(x + i) << SX];
+          const auto h1 = std::ptrdiff_t(distance.first >> SX), v1 = std::ptrdiff_t(distance.first >> SY);
+          const auto h2 = std::ptrdiff_t(distance.second >> SX), v2 = std::ptrdiff_t(distance.second >> SY);
+          const auto a = v2 * std::ptrdiff_t(row.stride) + h1, b = h2 - v1 * std::ptrdiff_t(row.stride);
+          const auto* pixel = source + x + i;
+          gathered[0][i] = pixel[a];
+          gathered[1][i] = pixel[b];
+          gathered[2][i] = pixel[-a];
+          gathered[3][i] = pixel[-b];
+        }
+        for (int j = 0; j < 4; ++j) {
+          r[j] = hn::PromoteTo(d, hn::LoadU(db, gathered[j]));
+          sum = hn::Add(sum, r[j]);
+        }
+      }
+    } else if constexpr (Mode == 3) {
+      if (lanes >= 32) {
+        hn::VFromD<decltype(db)> first, second;
+        const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances) + (x << SX) * 2;
+        if constexpr (SX == 0)
+          hn::LoadInterleaved2(db, distances, first, second);
+        else {
+          hn::VFromD<decltype(db)> skip1, skip2;
+          hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
+        }
+        const auto h = hn::ShiftRight<SX>(hn::PromoteTo(d, first));
+        // Both complete neighbouring vectors stay inside the source row.
+        if (x >= lanes && row.width - x >= 2 * lanes && hn::AllTrue(d, hn::Le(h, hn::Set(d, std::uint16_t(lanes))))) {
+          const auto left = hn::PromoteTo(d, hn::LoadU(db, source + x - lanes));
+          const auto right = hn::PromoteTo(d, hn::LoadU(db, source + x + lanes));
+          const auto index = hn::Iota(d, 0);
+          r[0] = hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h)));
+          r[1] = hn::TwoTablesLookupLanes(
+              left, center, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h)));
+        } else {
+          HWY_ALIGN std::uint8_t plus[hn::MaxLanes(d)], minus[hn::MaxLanes(d)];
+          for (std::size_t i = 0; i < lanes; ++i) {
+            const auto at = x + i, offset = std::size_t(row.distances[at << SX].first >> SX);
+            plus[i] = source[at + offset];
+            minus[i] = source[at - offset];
+          }
+          r[0] = hn::PromoteTo(d, hn::LoadU(db, plus));
+          r[1] = hn::PromoteTo(d, hn::LoadU(db, minus));
+        }
+      } else {
+        r[0] = hn::PromoteTo(d, hn::LoadU(db, row.collected[0] + x));
+        r[1] = hn::PromoteTo(d, hn::LoadU(db, row.collected[1] + x));
+      }
+      sum = hn::Add(r[0], r[1]);
+    } else {
+      for (int j = 0; j < N; ++j) {
+        r[j] = hn::PromoteTo(d, hn::LoadU(db, row.collected[j] + x));
+        sum = hn::Add(sum, r[j]);
+      }
+    }
+    const auto scaled_center = hn::ShiftLeft<(N == 2 ? 1 : 2)>(center);
+    const auto delta = hn::Sub(hn::Max(sum, scaled_center), hn::Min(sum, scaled_center));
+    auto accepted = hn::Lt(delta, main_limit);
+    if constexpr (!Blur && Mode <= 3) {
+      accepted = hn::Eq(center, center);
+      for (int j = 0; j < N; ++j)
+        accepted = hn::And(accepted, hn::Lt(hn::Sub(hn::Max(r[j], center), hn::Min(r[j], center)), pixel_limit));
+    }
+    if constexpr (Mode == 4) {
+      hn::VFromD<decltype(d)> pairs[2];
+      const auto twice = hn::ShiftLeft<1>(center);
+      for (int j : {0, 2}) {
+        const auto pair = hn::Add(r[j], r[j + 1]);
+        auto accept = hn::Lt(hn::Sub(hn::Max(pair, twice), hn::Min(pair, twice)), pair_limit);
+        if constexpr (!Blur) {
+          accept = hn::And(hn::Lt(hn::Sub(hn::Max(r[j], center), hn::Min(r[j], center)), pixel_limit),
+                           hn::Lt(hn::Sub(hn::Max(r[j + 1], center), hn::Min(r[j + 1], center)), pixel_limit));
+        }
+        pairs[j / 2] = hn::IfThenElse(accept, pair, twice);
+      }
+      sum = hn::Add(pairs[0], pairs[1]);
+      accepted = hn::Eq(center, center);
+    }
+    auto value = hn::ShiftLeft<(N == 2 ? 7 : 6)>(hn::IfThenElse(accepted, sum, scaled_center));
+    const auto grain = hn::LoadU(ds, row.grain + x);
+    value = hn::SaturatedAdd(value, hn::BitCast(d, hn::Max(hn::Zero(ds), grain)));
+    value = hn::SaturatedSub(value, hn::BitCast(d, hn::Neg(hn::Min(hn::Zero(ds), grain))));
+    auto code = hn::ShiftRight<8>(value);
+    const auto remainder = hn::And(value, hn::Set(d, 255));
+    const auto up =
+        hn::Or(hn::Gt(remainder, hn::Set(d, 128)),
+               hn::And(hn::Eq(remainder, hn::Set(d, 128)), hn::Ne(hn::And(code, hn::Set(d, 1)), hn::Zero(d))));
+    code = hn::Add(code, hn::IfThenElseZero(up, hn::Set(d, 1)));
+    if (row.limited)
+      code = hn::Min(hn::Set(d, row.chroma ? 240 : 235), hn::Max(hn::Set(d, 16), code));
+    hn::StoreU(hn::DemoteTo(db, code), db, row.output + x);
+  }
+  return full;
+}
+template <int Mode, bool Blur, int SX, int SY>
+std::size_t byte_cross(const ByteRow& row, const double* thresholds) {
+  // Wide gathers avoid serial byte insertion. Zen 4 benefits from compact
+  // byte loads in 16-pixel blocks; narrow targets also retain byte collection.
+  if constexpr (HWY_TARGET != HWY_AVX3_ZEN4 && hn::MaxLanes(hn::ScalableTag<std::int32_t>()) >= 16) {
+    if (row.width >= 4 && row.extent <= std::size_t(std::numeric_limits<std::int32_t>::max()) &&
+        row.stride <= std::size_t(std::numeric_limits<std::int32_t>::max()))
+      return byte_reference_samples<Mode, Blur, SX, SY, true>(row, thresholds);
+  }
+  if constexpr (Mode != 2) {
+    if (!row.collected[0])
+      return 0;
+  }
+  return byte_reference_samples<Mode, Blur, SX, SY>(row, thresholds);
+}
+template <int Mode, bool Blur>
+std::size_t byte_cross_layout(const ByteRow& row, const double* t) {
+  if (row.sub_x == 0 && row.sub_y == 0)
+    return byte_cross<Mode, Blur, 0, 0>(row, t);
+  if (row.sub_x == 1 && row.sub_y == 0)
+    return byte_cross<Mode, Blur, 1, 0>(row, t);
+  if (row.sub_x == 0 && row.sub_y == 1)
+    return byte_cross<Mode, Blur, 0, 1>(row, t);
+  return byte_cross<Mode, Blur, 1, 1>(row, t);
+}
+std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur) {
+  switch (mode) {
+    case 1:
+      return blur ? byte_cross_layout<1, true>(row, t) : byte_cross_layout<1, false>(row, t);
+    case 2:
+      return blur ? byte_cross_layout<2, true>(row, t) : byte_cross_layout<2, false>(row, t);
+    case 3:
+      if (row.sub_x == 0)
+        return blur ? byte_reference_samples<3, true, 0>(row, t) : byte_reference_samples<3, false, 0>(row, t);
+      return blur ? byte_reference_samples<3, true, 1>(row, t) : byte_reference_samples<3, false, 1>(row, t);
+    case 4:
+      return blur ? byte_cross_layout<4, true>(row, t) : byte_cross_layout<4, false>(row, t);
+    default:
+      return 0;
+  }
 }
 template <int Mode, bool Blur, int SX, int SY>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
@@ -818,6 +1035,10 @@ SamplingResult process_cross_row(const CrossSamplingRow& row, const Row& output,
 HWY_EXPORT(collect_cross_target);
 std::size_t collect_cross_row(const CrossSamplingRow& row) {
   return HWY_DYNAMIC_DISPATCH(collect_cross_target)(row);
+}
+HWY_EXPORT(byte_target);
+std::size_t process_byte_row(const ByteRow& row, int mode, const double* thresholds, bool blur) {
+  return HWY_DYNAMIC_DISPATCH(byte_target)(row, mode, thresholds, blur);
 }
 HWY_EXPORT(integer_target);
 std::size_t process_integer_row(const IntegerRow& row, int mode, const double* thresholds, bool blur) {

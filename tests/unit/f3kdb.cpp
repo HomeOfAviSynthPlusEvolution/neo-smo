@@ -596,6 +596,60 @@ void external_output_tests() {
   for(const auto& bytes:buffers) check(std::all_of(bytes.begin(),bytes.end(),[](auto b){return b==0xa5;}),"invalid input leaves external output intact");
 
 }
+void byte_minimum_extent_tests() {
+  // The final gathered byte may be the final allocated byte. No trailing
+  // padding is available for a four-byte load, even for unaligned input.
+  for(int mode : {1,2,3,4}) for(std::size_t w : {1,2,3,7,16,17,31,32,33,65}) for(std::size_t h : {1,3,17})
+    for(bool blur : {false,true}) {
+      ref::Format f;f.width=w;f.height=h;f.frames=1;f.color=ref::Color::gray;
+      ref::Options o;o.sample_mode=mode;o.dither_algo=1;o.blur_first=blur;
+      o.range=255;
+      o.threshold.fill(100);o.grain_y=3.75;
+      const auto stride=w+3,extent=(h-1)*stride+w;
+      std::vector<std::uint8_t> data(extent+1,0xa5);
+      for(std::size_t y=0;y<h;++y) for(std::size_t x=0;x<w;++x)
+        data[1+y*stride+x]=std::uint8_t((x*73+y*101)%256);
+      const std::vector<ref::PlaneView> views{{data.data()+1,extent,stride}};
+      compare(ScalarFilter(f,o).process(0,views),simd::Filter(f,o).process(0,views),o);
+    }
+}
+void byte_frame_tests() {
+  // Full byte vectors, odd tails, chroma layouts, large offsets, fractional
+  // thresholds, signed grain saturation, and limited-range packing.
+  int variant=0;
+  for(int mode=1;mode<=4;++mode) for(int sx : {0,1}) for(int sy : {0,1})
+    for(bool blur : {false,true}) {
+      const int pattern=variant%4;
+      const bool wide=(mode==2 || mode==3) && sx==0 && sy==0 && blur;
+      ref::Format f;f.width=wide?518:130;f.height=wide?518:38;
+      f.frames=3;f.color=ref::Color::yuv;f.sub_x=sx;f.sub_y=sy;
+      ref::Options o;o.sample_mode=mode;o.blur_first=blur;o.dither_algo=1;o.scale=true;
+      const double thresholds[]={0.0,0.5,257.25,65535.0};
+      o.threshold.fill(thresholds[pattern]);o.range=wide?255:15;
+      o.grain_y=pattern==3?4096:3.75;o.grain_c=pattern==3?4096:2.5;
+      o.keep_tv_range=(variant&1)!=0;o.dynamic_grain=true;
+      const auto in=input(f,pattern);const simd::Filter filter(f,o);
+      compare(ScalarFilter(f,o).process(2,in.views),filter.process(2,in.views),o);
+      std::vector<std::vector<std::uint8_t>> buffers(3);
+      std::vector<ref::MutablePlaneView> views;
+      for(std::size_t plane=0;plane<3;++plane) {
+        const auto w=f.width>>(plane?sx:0),h=f.height>>(plane?sy:0),stride=w+7;
+        const auto extent=(h-1)*stride+w;buffers[plane].assign(extent+2,0xa5);
+        views.push_back({buffers[plane].data()+1,extent,stride});
+      }
+      filter.process_into(0,in.views,views);
+      const auto expected=ScalarFilter(f,o).process(0,in.views);
+      for(std::size_t plane=0;plane<3;++plane) {
+        const auto& e=expected.planes[plane];const auto* data=static_cast<const std::uint8_t*>(views[plane].data);
+        for(std::size_t y=0;y<e.height;++y) {
+          check(std::memcmp(data+y*views[plane].stride,e.data.data()+y*e.stride,e.width)==0,"byte external exact pixels");
+          if(y+1<e.height) for(std::size_t x=e.width;x<views[plane].stride;++x) check(data[y*views[plane].stride+x]==0xa5,"byte output padding");
+        }
+        check(buffers[plane].front()==0xa5 && buffers[plane].back()==0xa5,"byte output guards");
+      }
+      ++variant;
+    }
+}
 void frame_tests() {
   // Integer-output FS must be exercised explicitly; floating output bypasses
   // dithering even when dither_algo=3. These frames also cross the 32-row buffer.
@@ -685,7 +739,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); frame_tests();
+      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

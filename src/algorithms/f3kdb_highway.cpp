@@ -57,6 +57,146 @@ void collect_row(const double* center, const double* gx, const double* gy, const
     }
   }
 }
+template <int Mode, int SX, int SY>
+void collect_native8_fixed(const std::uint8_t* source, const Distance* distances, std::size_t w,
+                           std::size_t source_stride, const std::array<std::uint8_t*, 4>& refs) {
+  for (std::size_t x = 0; x < w; ++x) {
+    const auto d = distances[x << SX];
+    const std::size_t h1 = d.first >> SX, v1 = d.first >> SY;
+    // Filter construction bounds immutable distances for every plane.
+    const auto* center = source + x;
+    std::ptrdiff_t offsets[4];
+    if constexpr (Mode == 1 || Mode == 3) {
+      const auto a = std::ptrdiff_t(Mode == 1 ? v1 * source_stride : h1);
+      offsets[0] = a;
+      offsets[1] = -a;
+    } else {
+      offsets[0] = std::ptrdiff_t(v1 * source_stride);
+      offsets[1] = -offsets[0];
+      offsets[2] = std::ptrdiff_t(h1);
+      offsets[3] = -offsets[2];
+    }
+    for (int j = 0; j < (Mode == 1 || Mode == 3 ? 2 : 4); ++j)
+      refs[j][x] = center[offsets[j]];
+  }
+}
+template <int Mode>
+void collect_byte_row(const ByteRow& row, const std::array<std::uint8_t*, 4>& refs) {
+  if (row.sub_x == 0 && row.sub_y == 0)
+    collect_native8_fixed<Mode, 0, 0>(row.source, row.distances, row.width, row.stride, refs);
+  else if (row.sub_x == 1 && row.sub_y == 0)
+    collect_native8_fixed<Mode, 1, 0>(row.source, row.distances, row.width, row.stride, refs);
+  else if (row.sub_x == 0 && row.sub_y == 1)
+    collect_native8_fixed<Mode, 0, 1>(row.source, row.distances, row.width, row.stride, refs);
+  else
+    collect_native8_fixed<Mode, 1, 1>(row.source, row.distances, row.width, row.stride, refs);
+}
+
+// Eight-bit round-to-even output can operate on borrowed source bytes. Wide
+// formats, diffusion, and weighted/directional modes retain their existing path.
+Frame process_byte_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                         const std::vector<MutablePlaneView>* external) {
+  const auto& params = filter.parameters();
+  const auto& f = params.input;
+  const auto& out = params.output;
+  const auto& o = params.options;
+  const std::size_t planes = f.color == Color::gray ? 1 : 3;
+  // Validate every borrowed plane before any caller-owned output is written.
+  for (std::size_t plane = 0; plane < planes; ++plane) {
+    const auto w = f.width >> (plane ? f.sub_x : 0), h = f.height >> (plane ? f.sub_y : 0);
+    const auto& view = input[plane];
+    const auto extent = add(mul(h - 1, view.stride), w);
+    if (!view.data || view.stride < w || view.bytes < extent)
+      invalid("plane storage/stride");
+    if (extent > std::size_t(std::numeric_limits<std::ptrdiff_t>::max()))
+      invalid("plane extent overflow");
+  }
+  Frame result{out, {}};
+  for (std::size_t plane = 0; plane < planes; ++plane) {
+    const int sx = plane ? f.sub_x : 0, sy = plane ? f.sub_y : 0;
+    const auto w = f.width >> sx, h = f.height >> sy;
+    const auto& view = input[plane];
+    Plane output{w, h, w, {}};
+    std::uint8_t* output_data;
+    if (external) {
+      output.stride = (*external)[plane].stride;
+      output_data = static_cast<std::uint8_t*>((*external)[plane].data);
+    } else {
+      output.data.resize(mul(w, h));
+      output_data = output.data.data();
+    }
+    const auto pitch = mul(add(w, 15) / 16, 16);
+    const auto& grain = plane ? filter.grain_c_integer() : filter.grain_y_integer();
+    std::vector<double> tail(w);
+    std::array<std::vector<std::uint8_t>, 4> collected;
+    const int refs_count = o.sample_mode == 2 ? 0 : (o.sample_mode == 4 ? 4 : 2);
+    for (int j = 0; j < refs_count; ++j)
+      collected[j].resize(w);
+    const std::array<std::uint8_t*, 4> refs{collected[0].data(), collected[1].data(), collected[2].data(),
+                                            collected[3].data()};
+    for (std::size_t y = 0; y < h; ++y) {
+      ByteRow row{static_cast<const std::uint8_t*>(view.data) + y * view.stride,
+                  filter.distances().data() + (y << sy) * f.width,
+                  grain.data() + filter.offsets()[frame] + y * pitch,
+                  output_data + y * output.stride,
+                  w,
+                  view.stride,
+                  sx,
+                  sy,
+                  plane != 0,
+                  o.keep_tv_range,
+                  {}};
+      row.base = static_cast<const std::uint8_t*>(view.data);
+      row.row_offset = y * view.stride;
+      row.extent = (h - 1) * view.stride + w;
+      auto count = process_byte_row(row, o.sample_mode, params.thresholds[plane].data(), o.blur_first);
+      if (count == 0) {
+        switch (o.sample_mode) {
+          case 1:
+            collect_byte_row<1>(row, refs);
+            break;
+          case 3:
+            collect_byte_row<3>(row, refs);
+            break;
+          case 4:
+            collect_byte_row<4>(row, refs);
+            break;
+        }
+        for (int j = 0; j < refs_count; ++j)
+          row.collected[j] = refs[j];
+        count = process_byte_row(row, o.sample_mode, params.thresholds[plane].data(), o.blur_first);
+      }
+      for (std::size_t x = count; x < w; ++x) {
+        const auto d = row.distances[x << sx];
+        const auto h1 = std::ptrdiff_t(d.first >> sx), v1 = std::ptrdiff_t(d.first >> sy);
+        const auto* center = row.source + x;
+        auto pixel = [&](std::ptrdiff_t offset) {
+          return double(center[offset]) * 256;
+        };
+        const auto stride = std::ptrdiff_t(view.stride);
+        std::array<double, 4> samples{};
+        if (o.sample_mode == 1 || o.sample_mode == 3) {
+          const auto a = o.sample_mode == 1 ? v1 * stride : h1;
+          samples[0] = pixel(a);
+          samples[1] = pixel(-a);
+        } else if (o.sample_mode == 2) {
+          const auto h2 = std::ptrdiff_t(d.second >> sx), v2 = std::ptrdiff_t(d.second >> sy);
+          const auto a = v2 * stride + h1, b = h2 - v1 * stride;
+          samples = {pixel(a), pixel(b), pixel(-a), pixel(-b)};
+        } else
+          samples = {pixel(v1 * stride), pixel(-v1 * stride), pixel(h1), pixel(-h1)};
+        tail[x] = deband(pixel(0), samples, o.sample_mode, params.thresholds[plane], true, o.blur_first) + row.grain[x];
+      }
+      if (count < w)
+        pack_row(
+            {tail.data() + count, row.output + count, w - count, y, 8, 1, true, true, plane != 0, o.keep_tv_range});
+    }
+    if (!external)
+      result.planes.push_back(std::move(output));
+  }
+  return result;
+}
+
 // Modes 1-6 keep source samples in exact 32-bit integer lanes.
 // Weighted mode 6 promotes its local references for double-precision weights.
 Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
@@ -192,6 +332,9 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
     invalid("frame index out of range");
   if (input.size() != planes)
     invalid("plane count");
+  if (integer && f.depth == 8 && out.sample == Sample::integer && out.depth == 8 && o.dither_algo == 1 &&
+      o.sample_mode <= 4 && f.sub_x <= 1 && f.sub_y <= 1)
+    return process_byte_frame(filter, frame, input, external);
   // Signed 32-bit gather indices must cover every source-plane displacement.
   if (integer && o.sample_mode <= 6 && f.sub_x <= 1 && f.sub_y <= 1 &&
       mul(f.width, f.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
