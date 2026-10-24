@@ -59,7 +59,8 @@ void collect_row(const double* center, const double* gx, const double* gy, const
 }
 // Modes 1-6 keep source samples in exact 32-bit integer lanes.
 // Weighted mode 6 promotes its local references for double-precision weights.
-Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
+Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                            const std::vector<MutablePlaneView>* external) {
   const auto& params = filter.parameters();
   const auto& f = params.input;
   const auto& out = params.output;
@@ -80,7 +81,14 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.get(), w, h, view.stride, f.depth}))
       invalid("integer pixel exceeds declared depth");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
-    output.data.resize(mul(output.stride, h));
+    std::uint8_t* output_data;
+    if (external) {
+      output.stride = (*external)[plane].stride;
+      output_data = static_cast<std::uint8_t*>((*external)[plane].data);
+    } else {
+      output.data.resize(mul(output.stride, h));
+      output_data = output.data.data();
+    }
     const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
     const auto stripe_height = use_fs ? std::min<std::size_t>(32, h) : 1;
     std::vector<double> processed(mul(w, stripe_height));
@@ -95,9 +103,9 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     auto center = plane_view(static_cast<const std::int32_t*>(source.get()), w, h).cursor();
     auto distances = plane_view(filter.distances().data(), f.width, f.height).cursor();
     auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(std::int16_t))).cursor();
-    auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
+    auto target = plane_view(output_data, output.stride, h, output.stride).cursor();
     std::size_t stripe_rows = 0;
-    auto* stripe_output = output.data.data();
+    auto* stripe_output = output_data;
     auto* processed_row = processed.data();
     for (std::size_t y = 0; y < h; ++y) {
       if (y) {
@@ -166,13 +174,15 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         stripe_rows = 0;
       }
     }
-    result.planes.push_back(std::move(output));
+    if (!external)
+      result.planes.push_back(std::move(output));
   }
   return result;
 }
 } // namespace
 
-Frame process_highway(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
+Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                           const std::vector<MutablePlaneView>* external) {
   const auto& f = filter.parameters().input;
   const auto& out = filter.parameters().output;
   const auto& o = filter.parameters().options;
@@ -185,7 +195,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
   // Signed 32-bit gather indices must cover every source-plane displacement.
   if (integer && o.sample_mode <= 6 && f.sub_x <= 1 && f.sub_y <= 1 &&
       mul(f.width, f.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
-    return process_integer_frame(filter, frame, input);
+    return process_integer_frame(filter, frame, input, external);
   Frame result{out, {}};
   for (std::size_t plane = 0; plane < planes; ++plane) {
     const int sx = plane ? f.sub_x : 0, sy = plane ? f.sub_y : 0;
@@ -200,7 +210,14 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     if (!unpack_plane({data, source.data(), w, h, view.stride, f.depth, integer}))
       invalid(integer ? "integer pixel exceeds declared depth" : "nonfinite input pixel");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
-    output.data.resize(mul(output.stride, h));
+    std::uint8_t* output_data;
+    if (external) {
+      output.stride = (*external)[plane].stride;
+      output_data = static_cast<std::uint8_t*>((*external)[plane].data);
+    } else {
+      output.data.resize(mul(output.stride, h));
+      output_data = output.data.data();
+    }
     const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
     // Deband fills a bounded stripe before wavefront diffusion. Carry raw signed
     // residuals across stripes so the result is independent of stripe height.
@@ -232,7 +249,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         o.sample_mode == 7 ? plane_view(static_cast<const double*>(gy.data()), w, h) : span2d::Plane<const double>{};
     const auto distance_view = plane_view(filter.distances().data(), f.width, f.height);
     const auto processed_view = plane_view(processed.data(), w, stripe_height);
-    const auto output_view = plane_view(output.data.data(), output.stride, h, output.stride);
+    const auto output_view = plane_view(output_data, output.stride, h, output.stride);
     // Distance stores bytes. Build the reachable vertical displacements once
     // by addition; every sampling mode and both gradient planes reuse them.
     std::array<std::int64_t, 256> vertical_offsets{};
@@ -244,7 +261,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     auto gradient_y = o.sample_mode == 7 ? gy_view.cursor() : span2d::RowCursor<const double>{};
     auto processed_row = processed_view.cursor();
     std::size_t stripe_rows = 0;
-    auto* stripe_output = output.data.data();
+    auto* stripe_output = output_data;
     auto noise = integer ? span2d::RowCursor<const float>{}
                          : plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(float))).cursor();
     auto noise_integer =
@@ -410,8 +427,16 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       pack_row({processed.data(), target.ptr(), w, y, out.depth, o.dither_algo, integer, out.sample == Sample::integer,
                 plane != 0, o.keep_tv_range});
     }
-    result.planes.push_back(std::move(output));
+    if (!external)
+      result.planes.push_back(std::move(output));
   }
   return result;
+}
+Frame process_highway(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
+  return process_highway_impl(filter, frame, input, nullptr);
+}
+void process_highway_into(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                          const std::vector<MutablePlaneView>& output) {
+  process_highway_impl(filter, frame, input, &output);
 }
 } // namespace neo_smo::f3kdb

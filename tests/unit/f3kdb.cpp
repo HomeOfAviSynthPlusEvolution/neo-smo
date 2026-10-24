@@ -529,6 +529,73 @@ void identity_frame_tests() {
       }
   }
 }
+void external_output_tests() {
+  int variant=0;
+  for(int depth : {8,10,16,32,-16}) for(int mode=1;mode<=7;++mode) {
+    ref::Format f;f.width=variant%2?194:70;f.height=38;f.frames=3;
+    f.depth=std::abs(depth);f.sample=depth==32 || depth<0?ref::Sample::floating:ref::Sample::integer;
+    f.color=ref::Color::yuv;f.sub_x=variant&1;f.sub_y=(variant>>1)&1;
+    ref::Options o;o.sample_mode=mode;o.dither_algo=variant%3+1;
+    o.dynamic_grain=true;o.grain_y=3.25;o.grain_c=2.5;
+    o.blur_first=(variant&1)!=0;o.keep_tv_range=(variant&2)!=0;
+    o.output_sample_type=variant%4==0?ref::OutputSample::floating:ref::OutputSample::integer;
+    o.output_depth=variant%4==0?(variant%8?16:32):(variant%3==0?8:variant%3==1?10:16);
+    const auto in=input(f,variant%4);const simd::Filter filter(f,o);
+    const auto& out=filter.parameters().output;const auto b=out.depth==8?1:out.depth<=16?2:4;
+    std::vector<std::vector<std::uint8_t>> buffers(3);
+    std::vector<ref::MutablePlaneView> views;
+    for(std::size_t plane=0;plane<3;++plane) {
+      const auto w=f.width>>(plane?f.sub_x:0),h=f.height>>(plane?f.sub_y:0),row=w*b,stride=row+9;
+      const auto extent=(h-1)*stride+row;
+      buffers[plane].assign(extent+2,0xa5);
+      views.push_back({buffers[plane].data()+1,extent,stride});
+    }
+    for(std::size_t frame : {std::size_t{2},std::size_t{0}}) {
+      filter.process_into(frame,in.views,views);
+      ref::Frame actual{out,{}};
+      for(std::size_t plane=0;plane<3;++plane) {
+        const auto w=f.width>>(plane?f.sub_x:0),h=f.height>>(plane?f.sub_y:0),row=w*b,stride=views[plane].stride;
+        ref::Plane image{w,h,row,{}};image.data.resize(row*h);
+        const auto* data=static_cast<const std::uint8_t*>(views[plane].data);
+        for(std::size_t y=0;y<h;++y) {
+          std::memcpy(image.data.data()+y*row,data+y*stride,row);
+          if(y+1<h) for(std::size_t x=row;x<stride;++x) check(data[y*stride+x]==0xa5,"external output padding");
+        }
+        check(buffers[plane].front()==0xa5 && buffers[plane].back()==0xa5,"external output guards");
+        actual.planes.push_back(std::move(image));
+      }
+      compare(ScalarFilter(f,o).process(frame,in.views),actual,o);
+    }
+    ++variant;
+  }
+  ref::Format f;f.width=67;f.height=5;f.color=ref::Color::yuv;f.frames=2;
+  ref::Options o;o.dither_algo=1;const simd::Filter filter(f,o);const auto in=input(f,1);
+  std::vector<std::vector<std::uint8_t>> buffers(3,std::vector<std::uint8_t>(67*5,0xa5));
+  std::vector<ref::MutablePlaneView> views;
+  for(auto& bytes:buffers) views.push_back({bytes.data(),bytes.size(),67});
+  auto reject=[&](const std::vector<ref::MutablePlaneView>& output,const char* reason) {
+    bool rejected=false;
+    try { filter.process_into(0,in.views,output); }
+    catch(const std::invalid_argument& e) { rejected=std::string(e.what()).find(reason)!=std::string::npos; }
+    check(rejected,"external output rejects invalid storage/overlap");
+    for(const auto& bytes:buffers) check(std::all_of(bytes.begin(),bytes.end(),[](auto b){return b==0xa5;}),"external output validates before writing");
+  };
+  auto bad=views;bad[0].stride=66;reject(bad,"storage");
+  bad=views;--bad[2].bytes;reject(bad,"storage");
+  bad=views;bad.pop_back();reject(bad,"plane count");
+  bad=views;bad[0].data=nullptr;reject(bad,"storage");
+  bad=views;bad[1]=bad[0];reject(bad,"overlap");
+  bad=views;bad[0]={const_cast<void*>(in.views[0].data),in.views[0].bytes,in.views[0].stride};reject(bad,"overlap");
+  auto bad_input=in.views;bad_input[2].data=nullptr;
+  bool rejected=false;
+  try { filter.process_into(0,bad_input,views); } catch(const std::invalid_argument&) { rejected=true; }
+  check(rejected,"external output rejects invalid final input plane");
+  rejected=false;
+  try { filter.process_into(f.frames,in.views,views); } catch(const std::invalid_argument&) { rejected=true; }
+  check(rejected,"external output rejects invalid frame");
+  for(const auto& bytes:buffers) check(std::all_of(bytes.begin(),bytes.end(),[](auto b){return b==0xa5;}),"invalid input leaves external output intact");
+
+}
 void frame_tests() {
   // Integer-output FS must be exercised explicitly; floating output bypasses
   // dithering even when dither_algo=3. These frames also cross the 32-row buffer.
@@ -618,7 +685,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
+      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

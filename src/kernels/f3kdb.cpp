@@ -1,6 +1,7 @@
 #include "kernels/f3kdb.hpp"
 #include "kernels/f3kdb_scalar.hpp"
 #include <algorithm>
+#include <cstring>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -774,6 +775,20 @@ void weights_target(const double* c[4], double* output, std::size_t count) {
   }
 }
 #endif
+void frame_into_target(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                       const std::vector<MutablePlaneView>& output) {
+#if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+  const auto result = process_scalar(filter, frame, input);
+  for (std::size_t plane = 0; plane < result.planes.size(); ++plane) {
+    const auto& p = result.planes[plane];
+    for (std::size_t y = 0; y < p.height; ++y)
+      std::memcpy(static_cast<std::uint8_t*>(output[plane].data) + y * output[plane].stride,
+                  p.data.data() + y * p.stride, p.stride);
+  }
+#else
+  process_highway_into(filter, frame, input, output);
+#endif
+}
 Frame frame_target(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
   return process_scalar(filter, frame, input);
@@ -786,6 +801,11 @@ Frame frame_target(const Filter& filter, std::size_t frame, const std::vector<Pl
 HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace neo_smo::f3kdb {
+HWY_EXPORT(frame_into_target);
+void process_frame_into(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                        const std::vector<MutablePlaneView>& output) {
+  HWY_DYNAMIC_DISPATCH(frame_into_target)(filter, frame, input, output);
+}
 HWY_EXPORT(frame_target);
 Frame process_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return HWY_DYNAMIC_DISPATCH(frame_target)(filter, frame, input);

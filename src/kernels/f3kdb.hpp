@@ -6,6 +6,10 @@ namespace neo_smo::f3kdb {
 Frame process_frame(const Filter&, std::size_t frame, const std::vector<PlaneView>& input);
 // Hardware targets use this pipeline; software targets call process_scalar.
 Frame process_highway(const Filter&, std::size_t frame, const std::vector<PlaneView>& input);
+void process_highway_into(const Filter&, std::size_t, const std::vector<PlaneView>&,
+                          const std::vector<MutablePlaneView>&);
+void process_frame_into(const Filter&, std::size_t, const std::vector<PlaneView>&,
+                        const std::vector<MutablePlaneView>&);
 // Full active row, unpacked to processing units. Gradients only used by mode 7.
 struct Row {
   const double* center;

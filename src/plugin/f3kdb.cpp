@@ -78,27 +78,20 @@ const VSFrame* VS_CC get_frame(int n, int activation, void* data, void**, VSFram
         input.push_back(
             {api->getReadPtr(src.get(), p), static_cast<std::size_t>(stride) * h, static_cast<std::size_t>(stride)});
       }
-      const auto result = d.filter->process(static_cast<std::size_t>(n), input);
       std::unique_ptr<VSFrame, FrameDeleter> dst(
           api->newVideoFrame(&d.output.format, d.output.width, d.output.height, src.get(), core), {api});
       if (!dst)
         throw std::bad_alloc();
+      std::vector<f::MutablePlaneView> output;
       for (int p = 0; p < d.output.format.numPlanes; ++p) {
-        const auto& plane = result.planes[p];
-        auto* target = api->getWritePtr(dst.get(), p);
         const auto stride = api->getStride(dst.get(), p);
-        require(stride > 0, "F3kdb: invalid output stride");
-        auto source_row = f::detail::plane_view(plane.data.data(), plane.stride, plane.height, plane.stride).cursor();
-        auto target_row =
-            f::detail::plane_view(target, plane.stride, plane.height, static_cast<std::size_t>(stride)).cursor();
-        for (std::size_t y = 0; y < plane.height; ++y) {
-          if (y) {
-            ++source_row;
-            ++target_row;
-          }
-          std::memcpy(target_row.ptr(), source_row.ptr(), plane.stride);
-        }
+        const auto height = d.output.height >> (p ? d.output.format.subSamplingH : 0);
+        require(stride > 0 && static_cast<std::size_t>(stride) <= std::numeric_limits<std::size_t>::max() / height,
+                "F3kdb: invalid output stride");
+        output.push_back({api->getWritePtr(dst.get(), p), static_cast<std::size_t>(stride) * height,
+                          static_cast<std::size_t>(stride)});
       }
+      d.filter->process_into(static_cast<std::size_t>(n), input, output);
       return dst.release();
     }
   } catch (const std::exception& e) {

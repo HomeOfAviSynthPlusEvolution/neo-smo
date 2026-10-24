@@ -1,4 +1,5 @@
 #include <type_traits>
+#include <utility>
 #include "algorithms/f3kdb_internal.hpp"
 #include "kernels/f3kdb.hpp"
 
@@ -222,6 +223,44 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
     }
 }
 
+void Filter::process_into(std::size_t frame, const std::vector<PlaneView>& input,
+                          const std::vector<MutablePlaneView>& output) const {
+  const auto& f = params_.input;
+  const auto& out = params_.output;
+  const std::size_t planes = f.color == Color::gray ? 1 : 3;
+  if (frame >= f.frames)
+    invalid("frame index out of range");
+  if (input.size() != planes || output.size() != planes)
+    invalid("plane count");
+  std::array<std::pair<std::uintptr_t, std::uintptr_t>, 3> sources{}, targets{};
+  auto bounds = [](const void* data, std::size_t bytes, std::size_t stride, std::size_t row, std::size_t height) {
+    const auto extent = add(mul(height - 1, stride), row);
+    if (!data || stride < row || bytes < extent)
+      invalid("plane storage/stride");
+    const auto first = reinterpret_cast<std::uintptr_t>(data);
+    if (extent > std::numeric_limits<std::uintptr_t>::max() - first)
+      invalid("plane address overflow");
+    return std::make_pair(first, first + extent);
+  };
+  for (std::size_t plane = 0; plane < planes; ++plane) {
+    const auto w = f.width >> (plane ? f.sub_x : 0), h = f.height >> (plane ? f.sub_y : 0);
+    sources[plane] = bounds(input[plane].data, input[plane].bytes, input[plane].stride, mul(w, bytes_per_sample(f)), h);
+    targets[plane] =
+        bounds(output[plane].data, output[plane].bytes, output[plane].stride, mul(w, bytes_per_sample(out)), h);
+  }
+  auto overlap = [](auto a, auto b) {
+    return a.first < b.second && b.first < a.second;
+  };
+  for (std::size_t plane = 0; plane < planes; ++plane) {
+    for (std::size_t other = 0; other < planes; ++other)
+      if (overlap(targets[plane], sources[other]))
+        invalid("input/output overlap");
+    for (std::size_t other = 0; other < plane; ++other)
+      if (overlap(targets[plane], targets[other]))
+        invalid("output plane overlap");
+  }
+  process_frame_into(*this, frame, input, output);
+}
 Frame Filter::process(std::size_t frame, const std::vector<PlaneView>& input) const {
   return process_frame(*this, frame, input);
 }

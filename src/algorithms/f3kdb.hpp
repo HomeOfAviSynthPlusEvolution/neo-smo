@@ -47,6 +47,10 @@ struct PlaneView {
   const void* data = nullptr;
   std::size_t bytes = 0, stride = 0;
 };
+struct MutablePlaneView {
+  void* data = nullptr;
+  std::size_t bytes = 0, stride = 0;
+};
 struct Plane {
   std::size_t width = 0, height = 0, stride = 0;
   std::vector<std::uint8_t> data;
@@ -93,6 +97,10 @@ public:
   const std::vector<std::int16_t>& grain_y_integer() const { return grain_y_integer_; }
   const std::vector<std::int16_t>& grain_c_integer() const { return grain_c_integer_; }
   Frame process(std::size_t frame, const std::vector<PlaneView>& input) const;
+  // Output storage must not overlap input or other output planes. Padding is untouched.
+  // Storage is validated before writing; a later processing error may leave partial output.
+  void process_into(std::size_t frame, const std::vector<PlaneView>& input,
+                    const std::vector<MutablePlaneView>& output) const;
 
 private:
   Parameters params_;

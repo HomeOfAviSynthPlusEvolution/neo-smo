@@ -100,16 +100,20 @@ public:
                 "F3kdb: plane size overflow");
         views.push_back({src->GetReadPtr(id), static_cast<std::size_t>(stride) * h, static_cast<std::size_t>(stride)});
       }
-      const auto output = filter_->process(static_cast<std::size_t>(n), views);
       auto dst = env->NewVideoFrameP(vi, &src);
+      std::vector<f::MutablePlaneView> output;
       for (int p = 0; p < vi.NumComponents(); ++p) {
-        const auto& data = output.planes[p];
-        const auto source_plane = f::detail::plane_view(data.data.data(), data.stride, data.height, data.stride);
-        const auto target_plane = f::detail::plane_view(dst->GetWritePtr(plane(p)), data.stride, data.height,
-                                                        static_cast<std::size_t>(dst->GetPitch(plane(p))));
-        env->BitBlt(target_plane.data(), static_cast<int>(target_plane.stride_bytes()), source_plane.data(),
-                    static_cast<int>(source_plane.stride_bytes()), source_plane.width(), source_plane.height());
+        const int id = plane(p);
+        const auto stride = dst->GetPitch(id);
+        const auto height = dst->GetHeight(id);
+        require(stride > 0 && height > 0 &&
+                    static_cast<std::size_t>(stride) <=
+                        std::numeric_limits<std::size_t>::max() / static_cast<std::size_t>(height),
+                "F3kdb: invalid output stride");
+        output.push_back(
+            {dst->GetWritePtr(id), static_cast<std::size_t>(stride) * height, static_cast<std::size_t>(stride)});
       }
+      filter_->process_into(static_cast<std::size_t>(n), views, output);
       return dst;
     } catch (const AvisynthError&) {
       throw;
