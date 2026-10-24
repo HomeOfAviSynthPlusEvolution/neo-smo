@@ -10,6 +10,26 @@ template <int Mode>
 void collect_row(const double* source, const double* gx, const double* gy, const Distance* distances, std::size_t w,
                  std::size_t h, std::size_t y, int sx, int sy, const std::array<double*, 4>& samples,
                  const std::array<double*, 4>& grad_x, const std::array<double*, 4>& grad_y) {
+  // The two references in modes 1/3 are symmetric around the center.
+  // Validate their shared distance once, then form one linear displacement.
+  if constexpr (Mode == 1 || Mode == 3) {
+    const auto* center = source + y * w;
+    const auto vertical_limit = std::min(y, h - 1 - y);
+    const auto step = std::size_t{1} << sx;
+    auto* first = samples[0];
+    auto* second = samples[1];
+    for (std::size_t x = 0; x < w; ++x, distances += step) {
+      const std::size_t distance = distances->first >> (Mode == 1 ? sy : sx);
+      const auto limit = Mode == 1 ? vertical_limit : std::min(x, w - 1 - x);
+      if (distance > limit)
+        throw std::logic_error("reference outside plane");
+      const auto offset = Mode == 1 ? distance * w : distance;
+      const auto* pixel = center + x;
+      first[x] = pixel[offset];
+      second[x] = *(pixel - offset);
+    }
+    return;
+  }
   constexpr int count = Mode == 1 || Mode == 3 ? 2 : 4;
   for (std::size_t x = 0; x < w; ++x) {
     const auto distance = distances[x << sx];
