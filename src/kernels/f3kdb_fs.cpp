@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
 #include "kernels/f3kdb_scalar.hpp"
 
@@ -58,6 +59,9 @@ void diffuse_stripe_target(const FsStripe& stripe) {
   HWY_ALIGN double residual[hn::MaxLanes(d)];
   std::vector<float> next_boundary(stripe.width);
 
+  const auto values = detail::plane_view(stripe.values, stripe.width, stripe.height);
+  const auto target = detail::plane_view(stripe.output, detail::mul(stripe.width, stripe.output_depth == 8 ? 1 : 2),
+                                         stripe.height, stripe.output_stride);
   for (std::size_t y0 = 0; y0 < stripe.height; y0 += lanes) {
     const auto rows = std::min(lanes, stripe.height - y0);
     auto prev1 = zero, prev2 = zero, prev3 = zero;
@@ -78,7 +82,7 @@ void diffuse_stripe_target(const FsStripe& stripe) {
 
       for (std::size_t k = 0; k < lanes; ++k) {
         const bool active = k < rows && t >= 2 * k && t - 2 * k < stripe.width;
-        source[k] = active ? stripe.values[(y0 + k) * stripe.width + t - 2 * k] : 0;
+        source[k] = active ? values(y0 + k, t - 2 * k) : 0;
         valid[k] = active ? 1 : 0;
       }
       const auto active = hn::Gt(hn::LoadU(d, valid), zero);
@@ -92,7 +96,7 @@ void diffuse_stripe_target(const FsStripe& stripe) {
         if (t < 2 * k || t - 2 * k >= stripe.width)
           continue;
         const auto x = t - 2 * k;
-        auto* dst = stripe.output + (y0 + k) * stripe.output_stride;
+        auto* dst = target.row_ptr(y0 + k);
         if (stripe.output_depth == 8) {
           dst[x] = static_cast<std::uint8_t>(output[k]);
         } else {

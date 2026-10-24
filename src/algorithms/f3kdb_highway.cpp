@@ -1,4 +1,4 @@
-#include "algorithms/f3kdb_internal.hpp"
+#include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
 
 namespace neo_smo::f3kdb {
@@ -7,13 +7,14 @@ namespace {
 // Select the sampling layout once per row, not once per pixel/reference.
 // Modes 1/3 only use two neighbours; their other references are the center.
 template <int Mode>
-void collect_row(const double* source, const double* gx, const double* gy, const Distance* distances, std::size_t w,
-                 std::size_t h, std::size_t y, int sx, int sy, const std::array<double*, 4>& samples,
+void collect_row(span2d::RowCursor<const double> center, span2d::Plane<const double> source,
+                 span2d::Plane<const double> gx, span2d::Plane<const double> gy, const Distance* distances,
+                 std::size_t y, int sx, int sy, const std::array<double*, 4>& samples,
                  const std::array<double*, 4>& grad_x, const std::array<double*, 4>& grad_y) {
+  const auto w = static_cast<std::size_t>(source.width()), h = static_cast<std::size_t>(source.height());
   // The two references in modes 1/3 are symmetric around the center.
   // Validate their shared distance once, then form one linear displacement.
   if constexpr (Mode == 1 || Mode == 3) {
-    const auto* center = source + y * w;
     const auto vertical_limit = std::min(y, h - 1 - y);
     const auto step = std::size_t{1} << sx;
     auto* first = samples[0];
@@ -24,7 +25,7 @@ void collect_row(const double* source, const double* gx, const double* gy, const
       if (distance > limit)
         throw std::logic_error("reference outside plane");
       const auto offset = Mode == 1 ? distance * w : distance;
-      const auto* pixel = center + x;
+      const auto* pixel = center.ptr() + x;
       first[x] = pixel[offset];
       second[x] = *(pixel - offset);
     }
@@ -48,11 +49,10 @@ void collect_row(const double* source, const double* gx, const double* gy, const
       const auto px = positions[j][0], py = positions[j][1];
       if (px >= w || py >= h)
         throw std::logic_error("reference outside plane");
-      const auto index = py * w + px;
-      samples[j][x] = source[index];
+      samples[j][x] = source(py, px);
       if constexpr (Mode == 7) {
-        grad_x[j][x] = gx[index];
-        grad_y[j][x] = gy[index];
+        grad_x[j][x] = gx(py, px);
+        grad_y[j][x] = gy(py, px);
       }
     }
   }
@@ -107,44 +107,55 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       }
     }
     std::vector<double> processed(mul(w, stripe_height));
+    const auto source_view = plane_view(static_cast<const double*>(source.data()), w, h);
+    const auto gx_view =
+        o.sample_mode == 7 ? plane_view(static_cast<const double*>(gx.data()), w, h) : span2d::Plane<const double>{};
+    const auto gy_view =
+        o.sample_mode == 7 ? plane_view(static_cast<const double*>(gy.data()), w, h) : span2d::Plane<const double>{};
+    const auto distance_view = plane_view(filter.distances().data(), f.width, f.height);
+    const auto processed_view = plane_view(processed.data(), w, stripe_height);
+    const auto output_view = plane_view(output.data.data(), output.stride, h, output.stride);
+    auto center = source_view.cursor();
+    auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto target = output_view.cursor();
     for (std::size_t y = 0; y < h; ++y) {
+      if (y) {
+        ++center;
+        ++noise;
+        ++target;
+      }
       const std::array<double*, 4> values = {samples[0].data(), samples[1].data(), samples[2].data(),
                                              samples[3].data()};
       const std::array<double*, 4> gradients_x = {grad_x[0].data(), grad_x[1].data(), grad_x[2].data(),
                                                   grad_x[3].data()};
       const std::array<double*, 4> gradients_y = {grad_y[0].data(), grad_y[1].data(), grad_y[2].data(),
                                                   grad_y[3].data()};
-      const auto* distances = filter.distances().data() + (y << sy) * f.width;
+      const auto* distances = distance_view.row_ptr(y << sy);
       switch (o.sample_mode) {
         case 1:
-          collect_row<1>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
-                         gradients_y);
+          collect_row<1>(center, source_view, gx_view, gy_view, distances, y, sx, sy, values, gradients_x, gradients_y);
           break;
         case 2:
-          collect_row<2>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
-                         gradients_y);
+          collect_row<2>(center, source_view, gx_view, gy_view, distances, y, sx, sy, values, gradients_x, gradients_y);
           break;
         case 3:
-          collect_row<3>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
-                         gradients_y);
+          collect_row<3>(center, source_view, gx_view, gy_view, distances, y, sx, sy, values, gradients_x, gradients_y);
           break;
         case 7:
-          collect_row<7>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
-                         gradients_y);
+          collect_row<7>(center, source_view, gx_view, gy_view, distances, y, sx, sy, values, gradients_x, gradients_y);
           break;
         default:
-          collect_row<4>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
-                         gradients_y);
+          collect_row<4>(center, source_view, gx_view, gy_view, distances, y, sx, sy, values, gradients_x, gradients_y);
           break;
       }
       Row batch{};
-      batch.center = source.data() + y * w;
+      batch.center = center.ptr();
       batch.count = w;
-      batch.output = processed.data() + (y % stripe_height) * w;
-      batch.grain = grain.data() + filter.offsets()[frame] + y * pitch;
+      batch.output = processed_view.row_ptr(y % stripe_height);
+      batch.grain = noise.ptr();
       if (o.sample_mode == 7) {
-        batch.gx[0] = gx.data() + y * w;
-        batch.gy[0] = gy.data() + y * w;
+        batch.gx[0] = gx_view.row_ptr(y);
+        batch.gy[0] = gy_view.row_ptr(y);
       }
       for (int j = 0; j < 4; ++j) {
         batch.refs[j] = j < references ? samples[j].data() : batch.center;
@@ -157,7 +168,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         const auto rows = y % stripe_height + 1;
         if (rows == stripe_height || y + 1 == h) {
           const FsStripe stripe{processed.data(),
-                                output.data.data() + (y + 1 - rows) * output.stride,
+                                output_view.row_ptr(y + 1 - rows),
                                 fs_boundary.data(),
                                 w,
                                 rows,
@@ -170,8 +181,8 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         }
         continue;
       }
-      pack_row({processed.data(), output.data.data() + y * output.stride, w, y, out.depth, o.dither_algo, integer,
-                out.sample == Sample::integer, plane != 0, o.keep_tv_range});
+      pack_row({processed.data(), target.ptr(), w, y, out.depth, o.dither_algo, integer, out.sample == Sample::integer,
+                plane != 0, o.keep_tv_range});
     }
     result.planes.push_back(std::move(output));
   }

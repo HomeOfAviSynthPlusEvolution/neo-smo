@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
 #include "kernels/f3kdb_scalar.hpp"
 
@@ -55,10 +56,16 @@ bool unpack_plane_target(const InputPlane& plane) {
   const hn::Rebind<float, IoD> df;
   const auto scale = hn::Set(d, std::ldexp(1.0, 16 - plane.depth));
   const std::size_t bytes = plane.depth == 8 ? 1 : plane.depth == 16 || plane.integer ? 2 : 4;
-  for (std::size_t y = 0; y < plane.height; ++y)
+  auto input = detail::plane_view(plane.input, detail::mul(plane.width, bytes), plane.height, plane.stride).cursor();
+  auto output = detail::plane_view(plane.output, plane.width, plane.height).cursor();
+  for (std::size_t y = 0; y < plane.height; ++y) {
+    if (y) {
+      ++input;
+      ++output;
+    }
     for (std::size_t x = 0; x < plane.width; x += hn::Lanes(d)) {
       const auto n = std::min(hn::Lanes(d), plane.width - x);
-      const auto* p = plane.input + y * plane.stride + x * bytes;
+      const auto* p = input.ptr() + x * bytes;
       auto value = hn::Zero(d);
       if (plane.integer) {
         const auto bits =
@@ -86,10 +93,11 @@ bool unpack_plane_target(const InputPlane& plane) {
             hn::BitCast(d, hn::Or(hn::BitCast(du64, value), hn::ShiftLeft<48>(hn::And(raw, hn::Set(du64, 0x8000)))));
       }
       if (n == hn::Lanes(d))
-        hn::StoreU(value, d, plane.output + y * plane.width + x);
+        hn::StoreU(value, d, output.ptr() + x);
       else
-        hn::StoreN(value, d, plane.output + y * plane.width + x, n);
+        hn::StoreN(value, d, output.ptr() + x, n);
     }
+  }
   return true;
 }
 
@@ -180,11 +188,19 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
   const auto zero = hn::Zero(di), last = hn::Set(di, static_cast<std::int64_t>(width - 1));
   const auto distance = hn::Set(di, 20);
   const auto twice = hn::Set(d, 2.0);
+  const auto input = detail::plane_view(source, width, height);
+  auto center_row = input.cursor();
+  auto dx = detail::plane_view(gx, width, height).cursor(), dy = detail::plane_view(gy, width, height).cursor();
   for (std::size_t y = 0; y < height; ++y) {
+    if (y) {
+      ++center_row;
+      ++dx;
+      ++dy;
+    }
     const auto ym = y < 20 ? 0 : y - 20, yp = height - 1 - y < 20 ? height - 1 : y + 20;
-    const auto* top = source + ym * width;
-    const auto* middle = source + y * width;
-    const auto* bottom = source + yp * width;
+    const auto* top = input.row_ptr(ym);
+    const auto* middle = center_row.ptr();
+    const auto* bottom = input.row_ptr(yp);
     for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
       const auto n = std::min(hn::Lanes(d), width - x);
       const auto center = hn::Min(last, hn::Iota(di, static_cast<std::int64_t>(x)));
@@ -203,8 +219,8 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
       vertical = hn::Sub(vertical, bl);
       vertical = hn::Sub(vertical, hn::Mul(twice, bc));
       vertical = hn::Sub(vertical, br);
-      hn::StoreN(horizontal, d, gx + y * width + x, n);
-      hn::StoreN(vertical, d, gy + y * width + x, n);
+      hn::StoreN(horizontal, d, dx.ptr() + x, n);
+      hn::StoreN(vertical, d, dy.ptr() + x, n);
     }
   }
 }

@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb_scalar.hpp"
 #include "algorithms/f3kdb_internal.hpp"
 #include <cstring>
@@ -169,9 +170,15 @@ void weights_scalar(const double* responses[4], double* output, std::size_t coun
 
 bool unpack_plane_scalar(const InputPlane& plane) {
   const std::size_t bytes = plane.depth == 8 ? 1 : plane.depth <= 16 ? 2 : 4;
-  for (std::size_t y = 0; y < plane.height; ++y)
+  auto input = detail::plane_view(plane.input, detail::mul(plane.width, bytes), plane.height, plane.stride).cursor();
+  auto output = detail::plane_view(plane.output, plane.width, plane.height).cursor();
+  for (std::size_t y = 0; y < plane.height; ++y) {
+    if (y) {
+      ++input;
+      ++output;
+    }
     for (std::size_t x = 0; x < plane.width; ++x) {
-      const auto* p = plane.input + y * plane.stride + x * bytes;
+      const auto* p = input.ptr() + x * bytes;
       double v = plane.integer       ? (plane.depth == 8 ? *p : load<std::uint16_t>(p))
                  : plane.depth == 16 ? decode_half(load<std::uint16_t>(p))
                                      : load<float>(p);
@@ -182,8 +189,9 @@ bool unpack_plane_scalar(const InputPlane& plane) {
           return false;
         v = std::ldexp(v, 16 - plane.depth);
       }
-      plane.output[y * plane.width + x] = v;
+      output.row()[x] = v;
     }
+  }
   return true;
 }
 
@@ -220,12 +228,12 @@ void pack_row_scalar(const OutputRow& row) {
 }
 
 namespace {
-std::array<double, 2> gradient_at(const double* source, std::size_t width, std::size_t height, std::size_t x,
-                                  std::size_t y) {
+std::array<double, 2> gradient_at(span2d::Plane<const double> source, std::size_t x, std::size_t y) {
+  const auto width = static_cast<std::size_t>(source.width()), height = static_cast<std::size_t>(source.height());
   const auto left = x < 20 ? 0 : x - 20, right = width - 1 - x < 20 ? width - 1 : x + 20;
   const auto top = y < 20 ? 0 : y - 20, bottom = height - 1 - y < 20 ? height - 1 : y + 20;
   auto at = [&](std::size_t px, std::size_t py) {
-    return source[py * width + px];
+    return source(py, px);
   };
   const double gx =
       at(right, top) + 2 * at(right, y) + at(right, bottom) - at(left, top) - 2 * at(left, y) - at(left, bottom);
@@ -236,12 +244,19 @@ std::array<double, 2> gradient_at(const double* source, std::size_t width, std::
 } // namespace
 
 void sobel_plane_scalar(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
-  for (std::size_t y = 0; y < height; ++y)
-    for (std::size_t x = 0; x < width; ++x) {
-      const auto g = gradient_at(source, width, height, x, y);
-      gx[y * width + x] = g[0];
-      gy[y * width + x] = g[1];
+  const auto input = plane_view(source, width, height);
+  auto dx = plane_view(gx, width, height).cursor(), dy = plane_view(gy, width, height).cursor();
+  for (std::size_t y = 0; y < height; ++y) {
+    if (y) {
+      ++dx;
+      ++dy;
     }
+    for (std::size_t x = 0; x < width; ++x) {
+      const auto g = gradient_at(input, x, y);
+      dx.row()[x] = g[0];
+      dy.row()[x] = g[1];
+    }
+  }
 }
 
 void diffuse_stripe_scalar(const FsStripe& stripe) {
@@ -250,9 +265,16 @@ void diffuse_stripe_scalar(const FsStripe& stripe) {
   const double scale = std::ldexp(1.0, stripe.output_depth), tvscale = std::ldexp(1.0, stripe.output_depth - 8);
   const double lo = stripe.limited ? 16 * tvscale : 0;
   const double hi = stripe.limited ? (stripe.chroma ? 240 : 235) * tvscale : scale - 1;
+  auto input = plane_view(stripe.values, w, stripe.height).cursor();
+  const std::size_t bytes = stripe.output_depth == 8 ? 1 : 2;
+  auto output = plane_view(stripe.output, mul(w, bytes), stripe.height, stripe.output_stride).cursor();
   for (std::size_t y = 0; y < stripe.height; ++y) {
+    if (y) {
+      ++input;
+      ++output;
+    }
     for (std::size_t x = 0; x < w; ++x) {
-      const double z = stripe.values[y * w + x];
+      const double z = input.row()[x];
       const double value =
           stripe.integer_input ? std::ldexp(z, stripe.output_depth - 16) : (z + (stripe.chroma ? 0.5 : 0)) * scale;
       float error = x ? current[x - 1] * (7.0f / 16) : 0;
@@ -264,7 +286,7 @@ void diffuse_stripe_scalar(const FsStripe& stripe) {
       const double v = std::clamp(fp(std::clamp(value, lo, hi) + error), lo, hi);
       const double quantized = round_even(v);
       current[x] = static_cast<float>(v - quantized);
-      auto* target = stripe.output + y * stripe.output_stride + x * (stripe.output_depth == 8 ? 1 : 2);
+      auto* target = output.ptr() + x * bytes;
       if (stripe.output_depth == 8)
         *target = static_cast<std::uint8_t>(quantized);
       else
@@ -308,14 +330,24 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
     const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
     std::vector<float> boundary(use_fs ? w : 0, 0);
     std::vector<double> processed(w);
+    const auto source_view = plane_view(static_cast<const double*>(source.data()), w, h);
     auto gradient = [&](std::size_t x, std::size_t y) {
-      return gradient_at(source.data(), w, h, x, y);
+      return gradient_at(source_view, x, y);
     };
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? grain_c_ : grain_y_;
+    auto center = source_view.cursor();
+    auto noise = plane_view(grain.data() + offsets_[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
+    const auto distances = plane_view(distances_.data(), f.width, f.height);
     for (std::size_t y = 0; y < h; ++y) {
+      if (y) {
+        ++center;
+        ++noise;
+        ++target;
+      }
       for (std::size_t x = 0; x < w; ++x) {
-        const auto distance = distances_[(y << sy) * f.width + (x << sx)];
+        const auto distance = distances(y << sy, x << sx);
         const std::size_t h1 = distance.first >> sx, v1 = distance.first >> sy, h2 = distance.second >> sx,
                           v2 = distance.second >> sy;
         std::array<std::array<std::size_t, 2>, 4> positions;
@@ -334,20 +366,20 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
           const auto px = positions[j][0], py = positions[j][1];
           if (px >= w || py >= h)
             throw std::logic_error("reference outside plane");
-          refs[j] = source[py * w + px];
+          refs[j] = source_view(py, px);
           if (o.sample_mode == 7)
             directions = directions && aligned(g, gradient(px, py), o.max_angle);
         }
-        const double d = deband(source[y * w + x], refs, o.sample_mode, params_.thresholds[plane], integer,
-                                o.blur_first, directions, o.angle_boost);
-        processed[x] = plus(d, grain[offsets_[frame] + y * pitch + x], integer);
+        const double d = deband(center.row()[x], refs, o.sample_mode, params_.thresholds[plane], integer, o.blur_first,
+                                directions, o.angle_boost);
+        processed[x] = plus(d, noise.row()[x], integer);
       }
       if (use_fs)
-        diffuse_stripe_scalar({processed.data(), output.data.data() + y * output.stride, boundary.data(), w, 1,
-                               output.stride, out.depth, integer, plane != 0, o.keep_tv_range});
+        diffuse_stripe_scalar({processed.data(), target.ptr(), boundary.data(), w, 1, output.stride, out.depth, integer,
+                               plane != 0, o.keep_tv_range});
       else
-        pack_row_scalar({processed.data(), output.data.data() + y * output.stride, w, y, out.depth, o.dither_algo,
-                         integer, out.sample == Sample::integer, plane != 0, o.keep_tv_range});
+        pack_row_scalar({processed.data(), target.ptr(), w, y, out.depth, o.dither_algo, integer,
+                         out.sample == Sample::integer, plane != 0, o.keep_tv_range});
     }
     result.planes.push_back(std::move(output));
   }

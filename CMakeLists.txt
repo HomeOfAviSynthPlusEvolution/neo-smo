@@ -16,6 +16,7 @@ set(NEO_SMO_F3KDB_SOURCES
 function(neo_smo_add_f3kdb_library target)
   add_library(${target} STATIC ${NEO_SMO_F3KDB_SOURCES})
   target_include_directories(${target} PUBLIC src)
+  target_include_directories(${target} SYSTEM PUBLIC "${dualsynth2_SOURCE_DIR}/include")
   target_compile_features(${target} PUBLIC cxx_std_17)
   target_link_libraries(${target} PUBLIC hwy)
   set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON

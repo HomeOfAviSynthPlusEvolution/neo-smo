@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "algorithms/f3kdb.hpp"
 #include "plugin/f3kdb.hpp"
 #include "plugin/f3kdb_params.hpp"
@@ -86,8 +87,17 @@ const VSFrame* VS_CC get_frame(int n, int activation, void* data, void**, VSFram
         const auto& plane = result.planes[p];
         auto* target = api->getWritePtr(dst.get(), p);
         const auto stride = api->getStride(dst.get(), p);
-        for (std::size_t y = 0; y < plane.height; ++y)
-          std::memcpy(target + y * stride, plane.data.data() + y * plane.stride, plane.stride);
+        require(stride > 0, "F3kdb: invalid output stride");
+        auto source_row = f::detail::plane_view(plane.data.data(), plane.stride, plane.height, plane.stride).cursor();
+        auto target_row =
+            f::detail::plane_view(target, plane.stride, plane.height, static_cast<std::size_t>(stride)).cursor();
+        for (std::size_t y = 0; y < plane.height; ++y) {
+          if (y) {
+            ++source_row;
+            ++target_row;
+          }
+          std::memcpy(target_row.ptr(), source_row.ptr(), plane.stride);
+        }
       }
       return dst.release();
     }

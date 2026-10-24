@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
 #include "algorithms/f3kdb.hpp"
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
@@ -35,6 +36,36 @@ T load(const void* p) {
   T value;
   std::memcpy(&value, p, sizeof(value));
   return value;
+}
+void check_plane_views() {
+  // Minimal final row: there is no padding after its last active byte.
+  std::array<std::uint8_t, 13> storage{};
+  auto rows = simd::detail::plane_view(storage.data() + 1, 5, 2, 7).cursor();
+  check(rows.ptr() == storage.data() + 1, "byte view origin");
+  ++rows;
+  rows.row()[4] = 42;
+  check(storage[12] == 42, "odd byte stride and minimal final row");
+  std::array<double, 8> values{};
+  const auto plane = simd::detail::plane_view(values.data(), 3, 2, 4 * sizeof(double));
+  auto current = plane.cursor();
+  ++current;
+  current.row()[2] = 17;
+  check(values[6] == 17 && current[-1][2] == 0, "typed element stride and backward row");
+  const auto fails = [&](std::size_t w, std::size_t h, std::size_t stride) {
+    bool rejected = false;
+    try {
+      (void)simd::detail::plane_view(values.data(), w, h, stride);
+    } catch (const std::exception&) {
+      rejected = true;
+    }
+    check(rejected, "invalid view dimensions/stride rejected before narrowing");
+  };
+  const auto too_large = static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()) + 1;
+  fails(too_large, 1, 8);
+  fails(1, too_large, 8);
+  fails(1, 1, too_large * sizeof(double));
+  fails(1, 1, 9);
+  fails(2, 1, 8);
 }
 bool identical(double a, double b) {
   return a == b && (a != 0 || std::signbit(a) == std::signbit(b));
@@ -320,6 +351,7 @@ void sobel_tests() {
 
 int main() {
   try {
+    check_plane_views();
     const auto targets = hwy::SupportedAndGeneratedTargets();
     for (auto requested : {HWY_SSE4, HWY_AVX2, HWY_AVX3})
       if (std::find(targets.begin(), targets.end(), requested) == targets.end())
@@ -340,7 +372,8 @@ int main() {
                 << " gradients=" << gradients << " gradient_differences=" << gradient_differences
                 << " gradient_max_error=" << gradient_max_error << std::endl;
     }
-    if (!checks) throw std::runtime_error("No supported F3kdb test target executed");
+    if (!checks)
+      throw std::runtime_error("No supported F3kdb test target executed");
     hwy::SetSupportedTargetsForTest(0);
   } catch (const std::exception& e) {
     std::cerr << e.what() << '\n';

@@ -1,3 +1,4 @@
+#include "algorithms/f3kdb_views.hpp"
 #include "algorithms/f3kdb.hpp"
 #include "plugin/avs_f3kdb.hpp"
 #include "plugin/f3kdb_params.hpp"
@@ -103,8 +104,11 @@ public:
       auto dst = env->NewVideoFrameP(vi, &src);
       for (int p = 0; p < vi.NumComponents(); ++p) {
         const auto& data = output.planes[p];
-        env->BitBlt(dst->GetWritePtr(plane(p)), dst->GetPitch(plane(p)), data.data.data(),
-                    static_cast<int>(data.stride), static_cast<int>(data.stride), static_cast<int>(data.height));
+        const auto source_plane = f::detail::plane_view(data.data.data(), data.stride, data.height, data.stride);
+        const auto target_plane = f::detail::plane_view(dst->GetWritePtr(plane(p)), data.stride, data.height,
+                                                        static_cast<std::size_t>(dst->GetPitch(plane(p))));
+        env->BitBlt(target_plane.data(), static_cast<int>(target_plane.stride_bytes()), source_plane.data(),
+                    static_cast<int>(source_plane.stride_bytes()), source_plane.width(), source_plane.height());
       }
       return dst;
     } catch (const AvisynthError&) {
