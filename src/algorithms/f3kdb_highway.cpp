@@ -1,5 +1,6 @@
 #include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
+#include <memory>
 
 namespace neo_smo::f3kdb {
 using namespace detail;
@@ -68,8 +69,10 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     if (!view.data || view.stride < row_bytes || view.bytes < add(mul(h - 1, view.stride), row_bytes))
       invalid("plane storage/stride");
     capacity<std::int32_t>(n);
-    std::vector<std::int32_t> source(n);
-    if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.data(), w, h, view.stride, f.depth}))
+    // Every element is written and validated before sampling; zeroing this
+    // full-plane temporary would repeat the unpacker's writes.
+    std::unique_ptr<std::int32_t[]> source(new std::int32_t[n]);
+    if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.get(), w, h, view.stride, f.depth}))
       invalid("integer pixel exceeds declared depth");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
     output.data.resize(mul(output.stride, h));
@@ -79,7 +82,7 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     std::vector<float> boundary(use_fs ? w : 0, 0);
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c_integer() : filter.grain_y_integer();
-    auto center = plane_view(static_cast<const std::int32_t*>(source.data()), w, h).cursor();
+    auto center = plane_view(static_cast<const std::int32_t*>(source.get()), w, h).cursor();
     auto distances = plane_view(filter.distances().data(), f.width, f.height).cursor();
     auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(std::int16_t))).cursor();
     auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
