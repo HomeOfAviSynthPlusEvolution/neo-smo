@@ -94,7 +94,7 @@ void weight_tests() {
   std::vector<double> actual(n);
   // Simultaneously cover endpoints, values whose product underflows, and a
   // monotone sweep. Checking the weight directly avoids hiding error in pixels.
-  for (int pattern=0;pattern<7;++pattern) {
+  for (int pattern=0;pattern<9;++pattern) {
     for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j)
       c[j][i]=pattern==0?double(i)/(n-1):pattern==1?(j==0?double(i)/(n-1):1.0):
               pattern==2?std::exp(-740.0+740.0*i/(n-1)): (i%2?1.0:0.0);
@@ -109,6 +109,17 @@ void weight_tests() {
       for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j)
         c[j][i]=i%2?1.0:(j==int(i%4)?0.0:0.375);
     if (pattern==6) c[0][n/2]=0.25; // an interior lane keeps the logarithmic path active
+    if (pattern==7 || pattern==8) {
+      // Unequal responses exercise the single-log product and the transition
+      // to the logarithmic underflow fallback, including mixed endpoint lanes.
+      std::mt19937 rng(0x57454947);
+      for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j) {
+        const double exponent = pattern==7 ? double(rng()%2000)/100 : 170+double(rng()%2000)/100;
+        c[j][i]=std::exp(-exponent);
+      }
+      c[0][0]=0;
+      for (int j=0;j<4;++j) c[j][1]=1;
+    }
     const double* ptr[4]={c[0].data(),c[1].data(),c[2].data(),c[3].data()};
     simd::weights(ptr,actual.data(),n);
     for (std::size_t i=0;i<n;++i) {

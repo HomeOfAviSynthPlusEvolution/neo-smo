@@ -801,6 +801,16 @@ HWY_INLINE V weight(D d, const V* c) {
   // Each lane can independently be an exact zero or one endpoint.
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive), all_one)))
     return hn::IfThenElseZero(all_positive, hn::Set(d, 1.0));
+  // Products of ordinary responses need only one logarithm. A normal final
+  // product guarantees normal intermediate products because every response is
+  // in [0, 1]. Preserve the logarithmic sum below for underflow/subnormal cases.
+  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
+  if (hn::AllTrue(d, hn::Or(hn::Not(all_positive),
+                           hn::Ge(product, hn::Set(d, std::numeric_limits<double>::min()))))) {
+    const auto argument = hn::IfThenElse(all_positive, product, hn::Set(d, 1.0));
+    const auto result = hn::Min(hn::Set(d, 1.0), hn::Exp(d, hn::Mul(hn::Log(d, argument), hn::Set(d, 0.1))));
+    return hn::IfThenElseZero(all_positive, result);
+  }
   auto sum = hn::Zero(d);
   auto positive = hn::Gt(c[0], hn::Zero(d));
   for (int j = 0; j < 4; ++j) {
