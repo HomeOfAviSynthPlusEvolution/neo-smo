@@ -183,6 +183,8 @@ void pack_row_target(const OutputRow& row) {
 }
 
 void sobel_plane_target(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
+  if (!width || !height)
+    return;
   const IoD d;
   const hn::Rebind<std::int64_t, IoD> di;
   const auto zero = hn::Zero(di), last = hn::Set(di, static_cast<std::int64_t>(width - 1));
@@ -190,17 +192,22 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
   const auto twice = hn::Set(d, 2.0);
   const auto input = detail::plane_view(source, width, height);
   auto center_row = input.cursor();
+  auto top_row = input.cursor();
+  auto bottom_row = input.cursor(std::min<std::size_t>(20, height - 1));
   auto dx = detail::plane_view(gx, width, height).cursor(), dy = detail::plane_view(gy, width, height).cursor();
   for (std::size_t y = 0; y < height; ++y) {
     if (y) {
       ++center_row;
       ++dx;
       ++dy;
+      if (y > 20)
+        ++top_row;
+      if (height - 1 - y >= 20)
+        ++bottom_row;
     }
-    const auto ym = y < 20 ? 0 : y - 20, yp = height - 1 - y < 20 ? height - 1 : y + 20;
-    const auto* top = input.row_ptr(ym);
+    const auto* top = top_row.ptr();
     const auto* middle = center_row.ptr();
-    const auto* bottom = input.row_ptr(yp);
+    const auto* bottom = bottom_row.ptr();
     for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
       const auto n = std::min(hn::Lanes(d), width - x);
       const auto center = hn::Min(last, hn::Iota(di, static_cast<std::int64_t>(x)));

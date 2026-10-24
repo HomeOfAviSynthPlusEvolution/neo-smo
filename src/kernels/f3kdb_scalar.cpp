@@ -228,23 +228,36 @@ void pack_row_scalar(const OutputRow& row) {
 }
 
 namespace {
-std::array<double, 2> gradient_at(span2d::Plane<const double> source, std::size_t x, std::size_t y) {
-  const auto width = static_cast<std::size_t>(source.width()), height = static_cast<std::size_t>(source.height());
+// Preserve the scalar path's independent coordinate calculation, but resolve
+// row addresses once instead of multiplying the stride for every reference.
+std::vector<const double*> row_pointers(span2d::Plane<const double> plane) {
+  std::vector<const double*> rows(static_cast<std::size_t>(plane.height()));
+  auto cursor = plane.cursor();
+  for (std::size_t y = 0; y < rows.size(); ++y) {
+    if (y)
+      ++cursor;
+    rows[y] = cursor.ptr();
+  }
+  return rows;
+}
+std::array<double, 2> gradient_at(const std::vector<const double*>& rows, std::size_t width, std::size_t x,
+                                  std::size_t y) {
+  const auto height = rows.size();
   const auto left = x < 20 ? 0 : x - 20, right = width - 1 - x < 20 ? width - 1 : x + 20;
   const auto top = y < 20 ? 0 : y - 20, bottom = height - 1 - y < 20 ? height - 1 : y + 20;
-  auto at = [&](std::size_t px, std::size_t py) {
-    return source(py, px);
-  };
-  const double gx =
-      at(right, top) + 2 * at(right, y) + at(right, bottom) - at(left, top) - 2 * at(left, y) - at(left, bottom);
-  const double gy =
-      at(left, top) + 2 * at(x, top) + at(right, top) - at(left, bottom) - 2 * at(x, bottom) - at(right, bottom);
+  const auto* t = rows[top];
+  const auto* m = rows[y];
+  const auto* b = rows[bottom];
+  const double gx = t[right] + 2 * m[right] + b[right] - t[left] - 2 * m[left] - b[left];
+  const double gy = t[left] + 2 * t[x] + t[right] - b[left] - 2 * b[x] - b[right];
   return {gx, gy};
 }
 } // namespace
 
 void sobel_plane_scalar(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
-  const auto input = plane_view(source, width, height);
+  if (!width || !height)
+    return;
+  const auto input = row_pointers(plane_view(source, width, height));
   auto dx = plane_view(gx, width, height).cursor(), dy = plane_view(gy, width, height).cursor();
   for (std::size_t y = 0; y < height; ++y) {
     if (y) {
@@ -252,7 +265,7 @@ void sobel_plane_scalar(const double* source, double* gx, double* gy, std::size_
       ++dy;
     }
     for (std::size_t x = 0; x < width; ++x) {
-      const auto g = gradient_at(input, x, y);
+      const auto g = gradient_at(input, width, x, y);
       dx.row()[x] = g[0];
       dy.row()[x] = g[1];
     }
@@ -331,23 +344,25 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
     std::vector<float> boundary(use_fs ? w : 0, 0);
     std::vector<double> processed(w);
     const auto source_view = plane_view(static_cast<const double*>(source.data()), w, h);
+    const auto source_rows = row_pointers(source_view);
     auto gradient = [&](std::size_t x, std::size_t y) {
-      return gradient_at(source_view, x, y);
+      return gradient_at(source_rows, w, x, y);
     };
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? grain_c_ : grain_y_;
     auto center = source_view.cursor();
     auto noise = plane_view(grain.data() + offsets_[frame], w, h, mul(pitch, sizeof(double))).cursor();
     auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
-    const auto distances = plane_view(distances_.data(), f.width, f.height);
+    auto distances = plane_view(distances_.data(), f.width, f.height).cursor();
     for (std::size_t y = 0; y < h; ++y) {
       if (y) {
         ++center;
         ++noise;
         ++target;
+        distances += std::size_t{1} << sy;
       }
       for (std::size_t x = 0; x < w; ++x) {
-        const auto distance = distances(y << sy, x << sx);
+        const auto distance = distances.row()[x << sx];
         const std::size_t h1 = distance.first >> sx, v1 = distance.first >> sy, h2 = distance.second >> sx,
                           v2 = distance.second >> sy;
         std::array<std::array<std::size_t, 2>, 4> positions;
@@ -366,7 +381,7 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
           const auto px = positions[j][0], py = positions[j][1];
           if (px >= w || py >= h)
             throw std::logic_error("reference outside plane");
-          refs[j] = source_view(py, px);
+          refs[j] = source_rows[py][px];
           if (o.sample_mode == 7)
             directions = directions && aligned(g, gradient(px, py), o.max_angle);
         }

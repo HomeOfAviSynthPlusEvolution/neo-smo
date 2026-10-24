@@ -62,8 +62,21 @@ void diffuse_stripe_target(const FsStripe& stripe) {
   const auto values = detail::plane_view(stripe.values, stripe.width, stripe.height);
   const auto target = detail::plane_view(stripe.output, detail::mul(stripe.width, stripe.output_depth == 8 ? 1 : 2),
                                          stripe.height, stripe.output_stride);
+  auto value_row = values.cursor();
+  auto target_row = target.cursor();
+  const double* inputs[hn::MaxLanes(d)];
+  std::uint8_t* outputs[hn::MaxLanes(d)];
   for (std::size_t y0 = 0; y0 < stripe.height; y0 += lanes) {
     const auto rows = std::min(lanes, stripe.height - y0);
+    // Each lane stays on this row throughout the wavefront's horizontal scan.
+    for (std::size_t k = 0; k < rows; ++k) {
+      if (y0 || k) {
+        ++value_row;
+        ++target_row;
+      }
+      inputs[k] = value_row.ptr();
+      outputs[k] = target_row.ptr();
+    }
     auto prev1 = zero, prev2 = zero, prev3 = zero;
     const auto end = stripe.width + 2 * (rows - 1);
     for (std::size_t t = 0; t < end; ++t) {
@@ -82,7 +95,7 @@ void diffuse_stripe_target(const FsStripe& stripe) {
 
       for (std::size_t k = 0; k < lanes; ++k) {
         const bool active = k < rows && t >= 2 * k && t - 2 * k < stripe.width;
-        source[k] = active ? values(y0 + k, t - 2 * k) : 0;
+        source[k] = active ? inputs[k][t - 2 * k] : 0;
         valid[k] = active ? 1 : 0;
       }
       const auto active = hn::Gt(hn::LoadU(d, valid), zero);
@@ -96,7 +109,7 @@ void diffuse_stripe_target(const FsStripe& stripe) {
         if (t < 2 * k || t - 2 * k >= stripe.width)
           continue;
         const auto x = t - 2 * k;
-        auto* dst = target.row_ptr(y0 + k);
+        auto* dst = outputs[k];
         if (stripe.output_depth == 8) {
           dst[x] = static_cast<std::uint8_t>(output[k]);
         } else {
