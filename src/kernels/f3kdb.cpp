@@ -212,6 +212,22 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
 HWY_INLINE V weight(D d, const V* c);
 HWY_INLINE V response(D d, V delta, V threshold);
 HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine);
+// Bounded integer Sobel components need no per-lane integrality/range checks.
+HWY_INLINE M aligned_integer(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine) {
+  const auto zero = hn::Zero(d);
+  const auto gz = hn::And(hn::Eq(gx, zero), hn::Eq(gy, zero)), hz = hn::And(hn::Eq(hx, zero), hn::Eq(hy, zero));
+  const auto bothzero = hn::And(gz, hz), nonzero = hn::Not(hn::Or(gz, hz));
+  if (angle >= 0.5)
+    return hn::Or(bothzero, nonzero);
+  const auto cross = hn::Abs(hn::Sub(hn::Mul(gx, hy), hn::Mul(gy, hx)));
+  const auto dot = hn::Abs(hn::Add(hn::Mul(gx, hx), hn::Mul(gy, hy)));
+  auto accept = hn::Eq(cross, zero);
+  if (angle == 0.25)
+    accept = hn::Le(cross, dot);
+  else if (angle != 0)
+    accept = hn::Le(hn::Mul(cross, cosine), hn::Mul(dot, sine));
+  return hn::Or(bothzero, hn::And(nonzero, accept));
+}
 template <int SX, int SY, bool Fused = false, bool Integer = false>
 std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nullptr,
                           const double* thresholds = nullptr, double angle = 0, double boost = 1) {
@@ -281,9 +297,13 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       }
       auto directions = hn::Eq(zero, zero);
       const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
-      for (int j = 0; j < 4; ++j)
-        directions = hn::And(directions, aligned(d, cgx, cgy, hn::GatherIndex(d, gx, offsets[j]),
-                                                 hn::GatherIndex(d, gy, offsets[j]), angle, cosine, sine));
+      for (int j = 0; j < 4; ++j) {
+        const auto hx = hn::GatherIndex(d, gx, offsets[j]), hy = hn::GatherIndex(d, gy, offsets[j]);
+        const auto direction = cross.bounded_integer_gradients
+                                   ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
+                                   : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
+        directions = hn::And(directions, direction);
+      }
       auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]), twice = hn::Add(s, s);
       if constexpr (!Integer) {
         vertical = fp(d, vertical);

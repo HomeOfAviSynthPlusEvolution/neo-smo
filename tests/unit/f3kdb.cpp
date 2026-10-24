@@ -227,12 +227,14 @@ void gradient_sampling_tests() {
     std::vector<std::int16_t> integer_grain(w);
     std::vector<float> grain(w);
     for (std::size_t x=0;x<w;++x) { integer_grain[x]=int(x%31)-15;grain[x]=float(int(x%31)-15)/65536; }
-    for (int pattern=0;pattern<6;++pattern) {
+    for (int pattern=0;pattern<8;++pattern) {
       const bool integer=pattern==0 || pattern>=4;
       for (std::size_t i=0;i<source.size();++i) {
         source[i]=int(rng()%65536);gx[i]=int(rng()%524281)-262140;gy[i]=int(rng()%524281)-262140;
         if (pattern==4) source[i]=i%65536;
         if (pattern==5) source[i]=(rng()%256)*256;
+        if (pattern==6) { gx[i]=(i%4)?262140:0;gy[i]=(i%5)?-262140:0; }
+        if (pattern==7) { gx[i]=0;gy[i]=0; }
         if (pattern==1) { source[i]=float((source[i]-32768)/65536);gx[i]*=1e-25;gy[i]*=1e-25; }
         if (pattern==2) { source[i]=(i%2?-1:1)*double(std::numeric_limits<float>::max());gx[i]*=1e30;gy[i]*=1e30; }
         if (pattern==3) { source[i]=std::numeric_limits<float>::denorm_min()*(1+i%3);gx[i]=0;gy[i]=0; }
@@ -261,6 +263,9 @@ void gradient_sampling_tests() {
           for (std::size_t x=count;x<=w;++x) check(v[x]==-999999,"gradient collection tail");
         simd::Row batch{};batch.center=row.sampling.center;batch.output=output.data();batch.count=w;
         batch.grain=grain.data();batch.integer_grain=integer_grain.data();
+        for (bool known : {false,true}) {
+          if (known && !integer) continue;
+          row.bounded_integer_gradients=known;
         for (double angle : {0.0,0.15,0.25,0.5}) for (double boost : {0.0,1.5,4.0}) {
           const double threshold=pattern==5?256:integer?65535:0.5;
           const std::array<double,3> t{threshold,threshold*0.75,threshold*0.5};
@@ -277,6 +282,7 @@ void gradient_sampling_tests() {
             check(std::isfinite(output[x]) && std::abs(output[x]-expected)<=tolerance,"gradient fused value");
           }
           for (std::size_t x=count;x<=w;++x) check(output[x]==-999999,"gradient fused tail");
+        }
         }
         if (count && y==0) {
           distances[0].first=255;bool rejected=false;

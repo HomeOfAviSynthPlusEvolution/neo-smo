@@ -315,7 +315,8 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
                                      gradient_y.ptr(),
                                      {gradients_x[0], gradients_x[1], gradients_x[2], gradients_x[3]},
                                      {gradients_y[0], gradients_y[1], gradients_y[2], gradients_y[3]},
-                                     y * w};
+                                     y * w,
+                                     integer};
         const auto prefix = process_cross_row(cross, batch, filter.parameters().thresholds[plane].data(), integer,
                                               o.max_angle, o.angle_boost);
         collected = prefix.collected;

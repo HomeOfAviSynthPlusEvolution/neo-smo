@@ -35,6 +35,9 @@ struct CrossSamplingRow {
   double* grad_x[4];
   double* grad_y[4];
   std::size_t row_offset;
+  // Caller-proven integral Sobel components in [-262140, 262140].
+  // Their cross/dot products are exact in double and need no normalization.
+  bool bounded_integer_gradients = false;
 };
 std::size_t collect_cross_row(const CrossSamplingRow&);
 struct SamplingResult {
