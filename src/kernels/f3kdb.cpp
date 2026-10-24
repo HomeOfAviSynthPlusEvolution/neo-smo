@@ -405,12 +405,16 @@ HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine
   auto integral = hn::And(hn::Le(gm, hn::Set(d, 262140.0)), hn::Le(hm, hn::Set(d, 262140.0)));
   integral = hn::And(integral, hn::And(hn::Eq(hn::Trunc(gx), gx), hn::Eq(hn::Trunc(gy), gy)));
   integral = hn::And(integral, hn::And(hn::Eq(hn::Trunc(hx), hx), hn::Eq(hn::Trunc(hy), hy)));
-  const auto gs = hn::IfThenElse(hn::Or(integral, hn::Eq(gm, zero)), one, gm);
-  const auto hs = hn::IfThenElse(hn::Or(integral, hn::Eq(hm, zero)), one, hm);
-  gx = hn::Div(gx, gs);
-  gy = hn::Div(gy, gs);
-  hx = hn::Div(hx, hs);
-  hy = hn::Div(hy, hs);
+  // These bounded integer products and sums are exact in double. Their
+  // normalization factors are one, so the four divisions have no effect.
+  if (!hn::AllTrue(d, integral)) {
+    const auto gs = hn::IfThenElse(hn::Or(integral, hn::Eq(gm, zero)), one, gm);
+    const auto hs = hn::IfThenElse(hn::Or(integral, hn::Eq(hm, zero)), one, hm);
+    gx = hn::Div(gx, gs);
+    gy = hn::Div(gy, gs);
+    hx = hn::Div(hx, hs);
+    hy = hn::Div(hy, hs);
+  }
   const auto cross = hn::Abs(hn::Sub(hn::Mul(gx, hy), hn::Mul(gy, hx)));
   const auto dot = hn::Abs(hn::Add(hn::Mul(gx, hx), hn::Mul(gy, hy)));
   auto accept = hn::Eq(cross, zero);
