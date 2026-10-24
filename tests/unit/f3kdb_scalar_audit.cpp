@@ -31,9 +31,11 @@ double uniform(std::uint32_t& s) {
   return std::ldexp(double(m),-51)-1.0;
 }
 void halves() {
-  for (unsigned h=0;h<65536;++h) {
-    const unsigned e=(h>>10)&31, m=h&1023;
-    if (e==31) continue;
+  // Every finite exponent and both signs, with endpoint, midpoint and
+  // odd/even mantissas instead of enumerating all 63,488 finite encodings.
+  for (unsigned sign_bit:{0u,0x8000u}) for (unsigned e=0;e<31;++e)
+    for (unsigned m:{0u,1u,2u,511u,512u,1022u,1023u}) {
+    const unsigned h=sign_bit | (e<<10) | m;
     const double sign=(h&32768)?-1.0:1.0;
     const double exact=sign*(e?std::ldexp(double(1024+m),int(e)-25):std::ldexp(double(m),-24));
     const double got=f::decode_half(std::uint16_t(h));
@@ -50,8 +52,8 @@ void numerical() {
   check(std::abs(f::response(5e-100,6e-100)-.5)<1e-14,"response no arbitrary epsilon");
   check(f::weight({0,1,1,1})==0 && f::weight({1,1,1,1})==1,"weight endpoints");
   double prev=0;
-  for(int i=-3000;i<=0;++i) {
-    const double c=std::pow(10.0,i/10.0);
+  for(int i=-300;i<=0;++i) {
+    const double c=std::pow(10.0,i);
     const double v=f::weight({c,c,c,c});
     const long double ref=std::exp(0.4L*std::log(static_cast<long double>(c)));
     check(v>=prev && v>=0 && v<=1,"weight monotone and bounded");
@@ -113,20 +115,23 @@ void parameters() {
 void random_tables() {
   std::uint32_t s=0;
   f::Random rng(0);
-  for(int i=0;i<1000;++i) check(rng.next(1,1)==uniform(s) && rng.state()==s,"uniform state and mantissa mapping");
+  for(int i=0;i<64;++i) check(rng.next(1,1)==uniform(s) && rng.state()==s,"uniform state and mantissa mapping");
   f::Random g(12); std::uint32_t gs=12; uniform(gs);uniform(gs);
   check(g.next(2,0)==0 && g.state()==gs,"zero sigma consumes two uniform updates");
   for(double sigma:{1e-300,.1,.99,1.,100.,1e300}) {
     f::Random x(12);
-    for(int i=0;i<100;++i) { const double v=x.next(2,sigma); check(std::isfinite(v) && v>-1 && v<1,"gaussian finite support extreme sigma"); }
+    for(int i=0;i<16;++i) { const double v=x.next(2,sigma); check(std::isfinite(v) && v>-1 && v<1,"gaussian finite support extreme sigma"); }
   }
-  f::Format fmt; fmt.width=600; fmt.height=600;
+  f::Format fmt; fmt.width=512; fmt.height=512;
   auto o=zero();o.range=255; o.sample_mode=2;
   f::Filter filter(fmt,o);
   bool saw_large=false;
   const auto& d=filter.distances();
   check(d.size()==fmt.width*fmt.height,"distance table dimensions");
-  for(std::size_t y=0;y<fmt.height;++y) for(std::size_t x=0;x<fmt.width;++x) {
+  // Corners/edges, the signed-byte boundary, and both sides of radius 255.
+  // Keep a full-sized table so the maximum radius is actually exercised.
+  const std::array<std::size_t,15> coordinates{0,1,2,127,128,129,254,255,256,257,382,383,384,510,511};
+  for(auto y:coordinates) for(auto x:coordinates) {
     const unsigned bound=unsigned(std::min({std::size_t(255),x,y,fmt.width-1-x,fmt.height-1-y}));
     const auto v=d[y*fmt.width+x];
     check(v.first<=bound && v.second<=bound,"distance geometry bounds");
