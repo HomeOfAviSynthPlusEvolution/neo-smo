@@ -16,6 +16,12 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+std::size_t collect_cross_target(const CrossSamplingRow&) {
+  return 0;
+}
+SamplingResult cross_sampled_target(const CrossSamplingRow&, const Row&, const double*, bool, double, double) {
+  return {0, 0};
+}
 std::size_t collect_simple_target(const SamplingRow&, int) {
   return 0;
 }
@@ -202,6 +208,117 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
       break;
   }
   return {count, count};
+}
+HWY_INLINE V weight(D d, const V* c);
+HWY_INLINE V response(D d, V delta, V threshold);
+HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine);
+template <int SX, int SY, bool Fused = false, bool Integer = false>
+std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nullptr,
+                          const double* thresholds = nullptr, double angle = 0, double boost = 1) {
+  const auto& row = cross.sampling;
+  const D d;
+  const hn::Rebind<std::int64_t, D> di;
+  const hn::Rebind<std::int32_t, D> d32;
+  const hn::Rebind<std::uint8_t, D> db;
+  const auto lanes = hn::Lanes(d), full = row.width / lanes * lanes;
+  const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
+  const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int64_t(row.width - 1));
+  const auto vlimit = hn::Set(di, std::int64_t(row.vertical_limit)), pitch = hn::Set(di, std::int64_t(row.width));
+  const auto* source = row.center - cross.row_offset;
+  const auto* gx = cross.gx - cross.row_offset;
+  const auto* gy = cross.gy - cross.row_offset;
+  constexpr double pi = 3.1415926535897932384626433832795;
+  const bool trig = Fused && angle != 0 && angle != 0.25 && angle < 0.5;
+  const auto cosine = hn::Set(d, trig ? std::cos(pi * angle) : 0), sine = hn::Set(d, trig ? std::sin(pi * angle) : 0);
+
+  for (std::size_t x = 0; x < full; x += lanes, distances += 2 * (std::size_t{1} << SX) * lanes) {
+    hn::VFromD<decltype(db)> first, second;
+    if constexpr (SX == 0)
+      hn::LoadInterleaved2(db, distances, first, second);
+    else {
+      hn::VFromD<decltype(db)> skip1, skip2;
+      hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
+    }
+    const auto distance = hn::PromoteTo(di, hn::PromoteTo(d32, first));
+    const auto h = hn::ShiftRightSame(distance, SX), v = hn::ShiftRightSame(distance, SY);
+    const auto position = hn::Add(index, hn::Set(di, std::int64_t(x))),
+               hlimit = hn::Min(position, hn::Sub(last, position));
+    if (!hn::AllTrue(di, hn::And(hn::Le(h, hlimit), hn::Le(v, vlimit))))
+      throw std::logic_error("reference outside plane");
+    const auto absolute = hn::Add(position, hn::Set(di, std::int64_t(cross.row_offset)));
+    const auto vertical = hn::Mul(v, pitch);
+    const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(absolute, vertical), hn::Sub(absolute, vertical),
+                                                 hn::Add(absolute, h), hn::Sub(absolute, h)};
+    V r[4];
+    auto directions = hn::Eq(hn::Zero(d), hn::Zero(d));
+    const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
+    for (int j = 0; j < 4; ++j) {
+      r[j] = hn::GatherIndex(d, source, offsets[j]);
+      const auto rx = hn::GatherIndex(d, gx, offsets[j]), ry = hn::GatherIndex(d, gy, offsets[j]);
+      if constexpr (Fused)
+        directions = hn::And(directions, aligned(d, cgx, cgy, rx, ry, angle, cosine, sine));
+      else {
+        hn::StoreU(r[j], d, row.samples[j] + x);
+        hn::StoreU(rx, d, cross.grad_x[j] + x);
+        hn::StoreU(ry, d, cross.grad_y[j] + x);
+      }
+    }
+    if constexpr (Fused) {
+      const auto s = hn::LoadU(d, row.center + x), zero = hn::Zero(d), one = hn::Set(d, 1.0);
+      const auto average =
+          Integer ? hn::Mul(hn::Add(hn::Add(r[0], r[1]), hn::Add(r[2], r[3])), hn::Set(d, 0.25)) : mean(d, r, 4, false);
+      const auto da = hn::Abs(diff(d, average, s, Integer));
+      auto maximum = zero;
+      for (int j = 0; j < 4; ++j)
+        maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, Integer)));
+      auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]), twice = hn::Add(s, s);
+      if constexpr (!Integer) {
+        vertical = fp(d, vertical);
+        horizontal = fp(d, horizontal);
+        twice = fp(d, twice);
+      }
+      const auto qv = hn::Abs(diff(d, vertical, twice, Integer)), qh = hn::Abs(diff(d, horizontal, twice, Integer));
+      const auto k = hn::IfThenElse(directions, hn::Set(d, boost), one);
+      const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
+                      response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))),
+                      response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))),
+                      response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])))};
+      const auto f = weight(d, c);
+      const auto blend = Integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5)))
+                                 : fp(d, hn::Add(s, fp(d, hn::Mul(diff(d, average, s, false), f))));
+      auto result = hn::IfThenElse(hn::Eq(f, zero), s, blend);
+      if constexpr (Integer)
+        result = hn::Add(result, load_integer_grain(d, output->integer_grain + x, lanes));
+      else
+        result = fp(d, hn::Add(result, load_grain(d, output->grain + x, lanes)));
+      hn::StoreU(result, d, output->output + x);
+    }
+  }
+  return full;
+}
+std::size_t collect_cross_target(const CrossSamplingRow& row) {
+  if (row.sampling.sub_x > 1 || row.sampling.sub_y > 1 || row.sampling.width == 0)
+    return 0;
+  if (row.sampling.sub_x == 0)
+    return row.sampling.sub_y == 0 ? collect_cross<0, 0>(row) : collect_cross<0, 1>(row);
+  return row.sampling.sub_y == 0 ? collect_cross<1, 0>(row) : collect_cross<1, 1>(row);
+}
+template <bool Integer>
+std::size_t cross_dispatch(const CrossSamplingRow& row, const Row& output, const double* t, double angle,
+                           double boost) {
+  if (row.sampling.sub_x > 1 || row.sampling.sub_y > 1 || row.sampling.width == 0)
+    return 0;
+  if (row.sampling.sub_x == 0)
+    return row.sampling.sub_y == 0 ? collect_cross<0, 0, true, Integer>(row, &output, t, angle, boost)
+                                   : collect_cross<0, 1, true, Integer>(row, &output, t, angle, boost);
+  return row.sampling.sub_y == 0 ? collect_cross<1, 0, true, Integer>(row, &output, t, angle, boost)
+                                 : collect_cross<1, 1, true, Integer>(row, &output, t, angle, boost);
+}
+SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& output, const double* t, bool integer,
+                                    double angle, double boost) {
+  const auto n = integer ? cross_dispatch<true>(row, output, t, angle, boost)
+                         : cross_dispatch<false>(row, output, t, angle, boost);
+  return {n, n};
 }
 HWY_INLINE V weight(D d, const V* c);
 HWY_INLINE V response(D d, V delta, V threshold);
@@ -620,6 +737,15 @@ namespace neo_smo::f3kdb {
 HWY_EXPORT(frame_target);
 Frame process_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return HWY_DYNAMIC_DISPATCH(frame_target)(filter, frame, input);
+}
+HWY_EXPORT(cross_sampled_target);
+SamplingResult process_cross_row(const CrossSamplingRow& row, const Row& output, const double* t, bool integer,
+                                 double angle, double boost) {
+  return HWY_DYNAMIC_DISPATCH(cross_sampled_target)(row, output, t, integer, angle, boost);
+}
+HWY_EXPORT(collect_cross_target);
+std::size_t collect_cross_row(const CrossSamplingRow& row) {
+  return HWY_DYNAMIC_DISPATCH(collect_cross_target)(row);
 }
 HWY_EXPORT(integer_target);
 std::size_t process_integer_row(const IntegerRow& row, int mode, const double* thresholds, bool blur) {

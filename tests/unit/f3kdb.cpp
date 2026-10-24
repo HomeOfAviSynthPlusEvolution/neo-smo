@@ -214,6 +214,80 @@ void sampling_tests() {
     }
   }
 }
+void gradient_sampling_tests() {
+  std::mt19937 rng(0x675ad);
+  for (const auto shape : {std::array<std::size_t,2>{1,3},{3,7},{17,37},{519,515}}) {
+    const auto w=shape[0],h=shape[1];
+    std::vector<double> source(w*h),gx(w*h),gy(w*h);
+    std::vector<std::int64_t> vertical(256);
+    for (std::size_t y=0;y<256;++y) vertical[y]=std::int64_t(y*w);
+    std::array<std::vector<double>,4> values,rx,ry;
+    for (auto* array : {&values,&rx,&ry}) for (auto& v:*array) v.resize(w+1);
+    std::vector<double> output(w+1);
+    std::vector<std::int16_t> integer_grain(w);
+    std::vector<float> grain(w);
+    for (std::size_t x=0;x<w;++x) { integer_grain[x]=int(x%31)-15;grain[x]=float(int(x%31)-15)/65536; }
+    for (int pattern=0;pattern<4;++pattern) {
+      const bool integer=pattern==0;
+      for (std::size_t i=0;i<source.size();++i) {
+        source[i]=int(rng()%65536);gx[i]=int(rng()%524281)-262140;gy[i]=int(rng()%524281)-262140;
+        if (pattern==1) { source[i]=float((source[i]-32768)/65536);gx[i]*=1e-25;gy[i]*=1e-25; }
+        if (pattern==2) { source[i]=(i%2?-1:1)*double(std::numeric_limits<float>::max());gx[i]*=1e30;gy[i]*=1e30; }
+        if (pattern==3) { source[i]=std::numeric_limits<float>::denorm_min()*(1+i%3);gx[i]=0;gy[i]=0; }
+      }
+      for (int sx : {0,1,2}) for (int sy : {0,1}) for (std::size_t y : {std::size_t{0},h/2,h-1}) {
+        std::vector<ref::Distance> distances(w<<sx);
+        const auto vlimit=std::min(y,h-1-y);
+        for (std::size_t x=0;x<w;++x)
+          distances[x<<sx]={std::uint8_t(std::min({std::size_t{255},vlimit<<sy,std::min(x,w-1-x)<<sx})),255};
+        for (auto* array : {&values,&rx,&ry}) for (auto& v:*array) std::fill(v.begin(),v.end(),-999999);
+        simd::CrossSamplingRow row{{source.data()+y*w,distances.data(),vertical.data(),
+                                   {values[0].data(),values[1].data(),values[2].data(),values[3].data()},w,vlimit,sx,sy},
+                                  gx.data()+y*w,gy.data()+y*w,{rx[0].data(),rx[1].data(),rx[2].data(),rx[3].data()},
+                                  {ry[0].data(),ry[1].data(),ry[2].data(),ry[3].data()},y*w};
+        const auto count=simd::collect_cross_row(row);
+        check(count<=w && (sx<2 || count==0),"gradient prefix extent");
+        for (std::size_t x=0;x<count;++x) {
+          const auto dist=distances[x<<sx].first;const std::size_t dx=dist>>sx,dy=dist>>sy;
+          const std::size_t indices[4]={(y+dy)*w+x,(y-dy)*w+x,y*w+x+dx,y*w+x-dx};
+          for (int j=0;j<4;++j) {
+            check(values[j][x]==source[indices[j]],"gradient sample coordinate");
+            check(rx[j][x]==gx[indices[j]] && ry[j][x]==gy[indices[j]],"gradient coordinate");
+          }
+        }
+        for (auto* array : {&values,&rx,&ry}) for (auto& v:*array)
+          for (std::size_t x=count;x<=w;++x) check(v[x]==-999999,"gradient collection tail");
+        simd::Row batch{};batch.center=row.sampling.center;batch.output=output.data();batch.count=w;
+        batch.grain=grain.data();batch.integer_grain=integer_grain.data();
+        for (double angle : {0.0,0.15,0.25,0.5}) for (double boost : {0.0,1.5,4.0}) {
+          const double threshold=integer?65535:0.5;
+          const std::array<double,3> t{threshold,threshold*0.75,threshold*0.5};
+          std::fill(output.begin(),output.end(),-999999);
+          const auto prefix=simd::process_cross_row(row,batch,t.data(),integer,angle,boost);
+          check(prefix.collected==count && prefix.processed==count,"gradient fused extent");
+          for (std::size_t x=0;x<count;++x) {
+            bool aligned=true;
+            for (int j=0;j<4;++j) aligned=aligned && ref::aligned({row.gx[x],row.gy[x]},{rx[j][x],ry[j][x]},angle);
+            const std::array<double,4> refs{values[0][x],values[1][x],values[2][x],values[3][x]};
+            double expected=ref::deband(batch.center[x],refs,7,t,integer,true,aligned,boost);
+            expected=integer?expected+integer_grain[x]:double(float(expected+grain[x]));
+            const double tolerance=integer?1:8*std::numeric_limits<float>::epsilon()*std::max(std::abs(expected),std::abs(batch.center[x]))+8*std::numeric_limits<float>::denorm_min();
+            check(std::isfinite(output[x]) && std::abs(output[x]-expected)<=tolerance,"gradient fused value");
+          }
+          for (std::size_t x=count;x<=w;++x) check(output[x]==-999999,"gradient fused tail");
+        }
+        if (count && y==0) {
+          distances[0].first=255;bool rejected=false;
+          try { simd::collect_cross_row(row); } catch(const std::logic_error&) { rejected=true; }
+          check(rejected,"gradient bounds checked");
+          rejected=false;const std::array<double,3> t{1,1,1};
+          try { simd::process_cross_row(row,batch,t.data(),integer,0.15,1.5); } catch(const std::logic_error&) { rejected=true; }
+          check(rejected,"gradient fused bounds checked");
+        }
+      }
+    }
+  }
+}
 void integer_cross_tests() {
   // Four distinct neighbours, full-range codes, 255-pixel distances and a
   // partial vector expose pair ordering and both stages of mode 4 rounding.
@@ -460,6 +534,16 @@ void frame_tests() {
       compare(oracle.process(2,in.views),filter.process(2,in.views),o);
     }
   }
+  // Every luma and chroma row has a scalar tail after fused gradients.
+  for (int depth : {16,32,-16}) for (double angle : {0.0,0.15,0.25}) {
+    ref::Format f;f.width=38;f.height=46;f.frames=3;f.depth=std::abs(depth);
+    f.sample=depth==16?ref::Sample::integer:ref::Sample::floating;
+    f.color=ref::Color::yuv;f.sub_x=1;f.sub_y=1;
+    ref::Options o;o.sample_mode=7;o.scale=true;o.threshold.fill(65535);o.max_angle=angle;o.angle_boost=2.5;
+    o.grain_y=3.25;o.grain_c=2.5;o.dynamic_grain=true;o.dither_algo=1;o.range=255;
+    const auto in=input(f,0);
+    compare(ScalarFilter(f,o).process(2,in.views),simd::Filter(f,o).process(2,in.views),o);
+  }
   // Range 255 must actually reach beyond signed-byte distances.
   ref::Options o; o.sample_mode=7; o.range=255; o.grain_y=0;
   for (bool vertical:{false,true}) {
@@ -500,7 +584,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); integer_cross_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
+      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

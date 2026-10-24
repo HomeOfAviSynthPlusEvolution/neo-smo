@@ -28,9 +28,20 @@ struct SamplingRow {
   std::size_t vertical_limit;
   int sub_x, sub_y;
 };
+struct CrossSamplingRow {
+  SamplingRow sampling;
+  const double* gx;
+  const double* gy;
+  double* grad_x[4];
+  double* grad_y[4];
+  std::size_t row_offset;
+};
+std::size_t collect_cross_row(const CrossSamplingRow&);
 struct SamplingResult {
   std::size_t collected, processed;
 };
+SamplingResult process_cross_row(const CrossSamplingRow&, const Row&, const double*, bool integer, double angle,
+                                 double boost);
 // Fuse integer sampling/deband where profitable; otherwise collect references.
 // The processed prefix leaves sample buffers untouched.
 SamplingResult process_sampled_row(const SamplingRow&, const Row&, int mode, double threshold, bool integer, bool blur);

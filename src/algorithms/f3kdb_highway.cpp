@@ -15,6 +15,10 @@ void collect_row(const double* center, const double* gx, const double* gy, const
   const auto vertical_limit = std::min(y, h - 1 - y);
   const auto step = std::size_t{1} << sx;
   center += start;
+  if constexpr (Mode == 7) {
+    gx += start;
+    gy += start;
+  }
   distances += start * step;
   for (std::size_t x = start; x < w; ++x, distances += step, ++center) {
     const std::size_t h1 = distances->first >> sx, v1 = distances->first >> sy;
@@ -298,6 +302,25 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         collected = prefix.collected;
         processed_prefix = prefix.processed;
       }
+      if (o.sample_mode == 7) {
+        const CrossSamplingRow cross{{center.ptr(),
+                                      distances,
+                                      vertical_offsets.data(),
+                                      {values[0], values[1], values[2], values[3]},
+                                      w,
+                                      std::min(y, h - 1 - y),
+                                      sx,
+                                      sy},
+                                     gradient_x.ptr(),
+                                     gradient_y.ptr(),
+                                     {gradients_x[0], gradients_x[1], gradients_x[2], gradients_x[3]},
+                                     {gradients_y[0], gradients_y[1], gradients_y[2], gradients_y[3]},
+                                     y * w};
+        const auto prefix = process_cross_row(cross, batch, filter.parameters().thresholds[plane].data(), integer,
+                                              o.max_angle, o.angle_boost);
+        collected = prefix.collected;
+        processed_prefix = prefix.processed;
+      }
       // Keep the full scalar loop starting at a compile-time zero. A variable
       // start here inhibits optimization on targets that do not use gather.
       if (collected == 0) {
@@ -325,6 +348,10 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         }
       } else if (collected < w) {
         switch (o.sample_mode) {
+          case 7:
+            collect_row<7>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y, collected);
+            break;
           case 1:
             collect_row<1>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
                            vertical_offsets, values, gradients_x, gradients_y, collected);
@@ -350,6 +377,12 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         batch.gy[j + 1] = grad_y[j].data();
       }
       if (processed_prefix) {
+        if (o.sample_mode == 7) {
+          for (auto& grad : batch.gx)
+            grad += processed_prefix;
+          for (auto& grad : batch.gy)
+            grad += processed_prefix;
+        }
         batch.center += processed_prefix;
         batch.output += processed_prefix;
         if (integer)
