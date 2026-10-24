@@ -387,6 +387,40 @@ void compare(const ref::Frame& a,const ref::Frame& b,const ref::Options& o) {
     }
   }
 }
+void identity_frame_tests() {
+  // Test the exact input-code boundary in processing units. Wider-than-vector
+  // rows exercise the ordinary scalar tail beside the identity SIMD prefix.
+  int variant=0;
+  for (int depth=8;depth<=16;++depth) for (int mode : {5,6}) {
+    const double step=std::ldexp(1.0,16-depth);
+    for (double threshold : {0.0,std::nextafter(step,0.0),step,std::nextafter(step,step*2),step*3})
+      for (int dither : {1,2,3}) {
+        ref::Format f; f.width=34; f.height=6; f.frames=3; f.depth=depth;
+        f.color=ref::Color::yuv; f.sub_x=1; f.sub_y=1;
+        auto in=input(f,0);
+        // Adjacent codes produce both equal and one-step-different references,
+        // rather than only large deltas rejected on either side of the boundary.
+        for (std::size_t p=0;p<in.views.size();++p) {
+          auto* data=in.bytes[p].data()+1;
+          const auto w=f.width>>(p?1:0), h=f.height>>(p?1:0);
+          const std::size_t bytes=depth==8?1:2;
+          for (std::size_t y=0;y<h;++y) for (std::size_t x=0;x<w;++x) {
+            const auto code=std::uint16_t((1<<(depth-1))+(x+3*y)%3);
+            auto* out=data+y*in.views[p].stride+x*bytes;
+            if (bytes==1) *out=static_cast<std::uint8_t>(code); else write(out,code);
+          }
+        }
+        ref::Options o; o.sample_mode=mode; o.scale=true; o.threshold.fill(65535);
+        o.threshold1.fill(threshold); o.threshold2.fill(65535); o.range=255;
+        o.grain_y=3.75; o.grain_c=2.5; o.dynamic_grain=true; o.dither_algo=dither;
+        o.blur_first=(variant&1)!=0; o.keep_tv_range=(variant&2)!=0;
+        o.output_sample_type=(variant&4)?ref::OutputSample::floating:ref::OutputSample::integer;
+        o.output_depth=(variant&4)?((variant&1)?16:32):((variant&1)?8:16);
+        ++variant;
+        compare(ScalarFilter(f,o).process(2,in.views),simd::Filter(f,o).process(2,in.views),o);
+      }
+  }
+}
 void frame_tests() {
   // Integer-output FS must be exercised explicitly; floating output bypasses
   // dithering even when dither_algo=3. These frames also cross the 32-row buffer.
@@ -466,7 +500,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); integer_cross_tests(); integer_pack_tests(); row_tests(); fs_tests(); frame_tests();
+      weight_tests(); sampling_tests(); integer_cross_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

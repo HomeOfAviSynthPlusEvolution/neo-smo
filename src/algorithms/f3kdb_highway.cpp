@@ -81,6 +81,11 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     const auto stripe_height = use_fs ? std::min<std::size_t>(32, h) : 1;
     std::vector<double> processed(mul(w, stripe_height));
     std::vector<float> boundary(use_fs ? w : 0, 0);
+    // Distinct integer codes differ by at least one input code step. If the
+    // maximum-neighbour threshold cannot admit that step, all accepted
+    // neighbours equal the center and debanding is exactly the identity.
+    const bool identity =
+        (o.sample_mode == 5 || o.sample_mode == 6) && params.thresholds[plane][1] <= std::ldexp(1.0, 16 - f.depth);
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c_integer() : filter.grain_y_integer();
     auto center = plane_view(static_cast<const std::int32_t*>(source.get()), w, h).cursor();
@@ -110,7 +115,8 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         row.chroma = plane != 0;
         row.limited = o.keep_tv_range;
       }
-      const auto count = process_integer_row(row, o.sample_mode, params.thresholds[plane].data(), o.blur_first);
+      const auto count =
+          process_integer_row(row, identity ? 0 : o.sample_mode, params.thresholds[plane].data(), o.blur_first);
       for (std::size_t x = count; x < w; ++x) {
         const auto d = distances.ptr()[x << sx];
         const auto h1 = std::size_t(d.first >> sx), v1 = std::size_t(d.first >> sy);

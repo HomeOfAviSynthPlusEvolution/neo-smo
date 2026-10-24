@@ -249,88 +249,91 @@ std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
-    hn::VFromD<decltype(db)> first, second;
-    if (SX == 0)
-      hn::LoadInterleaved2(db, distances, first, second);
-    else {
-      hn::VFromD<decltype(db)> skip1, skip2;
-      hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
-    }
-    const auto distance1 = hn::PromoteTo(di, first), h1 = hn::ShiftRightSame(distance1, SX),
-               v1 = hn::ShiftRightSame(distance1, SY);
-    const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x))), hlimit = hn::Min(pos, hn::Sub(last, pos));
-    auto valid = hn::Eq(index, index);
-    if constexpr (Mode != 3)
-      valid = hn::And(valid, hn::Le(v1, vlimit));
-    if constexpr (Mode != 1)
-      valid = hn::And(valid, hn::Le(h1, hlimit));
-    if (!hn::AllTrue(di, valid))
-      throw std::logic_error("reference outside plane");
-    const auto* center = row.center + x;
-    const auto* source = row.center - row.row_offset;
-    const auto absolute = hn::Add(pos, hn::Set(di, std::int32_t(row.row_offset)));
-    constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
-    hn::VFromD<decltype(d)> refs[N];
-    if constexpr (Mode == 1 || Mode == 3) {
-      const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
-      refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
-      refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
-    } else if constexpr (Mode == 2) {
-      const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
-                 v2 = hn::ShiftRightSame(distance2, SY);
-      if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
-        throw std::logic_error("reference outside plane");
-      const auto a = hn::Add(hn::Mul(v2, pitch), h1), b = hn::Sub(h2, hn::Mul(v1, pitch));
-      refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, a));
-      refs[1] = hn::GatherIndex(d, source, hn::Add(absolute, b));
-      refs[2] = hn::GatherIndex(d, source, hn::Sub(absolute, a));
-      refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, b));
-    }
-    if constexpr (Mode >= 4) {
-      const auto vertical = hn::Mul(v1, pitch);
-      refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, vertical));
-      refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, vertical));
-      refs[2] = hn::GatherIndex(d, source, hn::Add(absolute, h1));
-      refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, h1));
-    }
-    auto sum = hn::Zero(d);
-    for (int j = 0; j < N; ++j)
-      sum = hn::Add(sum, refs[j]);
-    auto mean = hn::ShiftRight<(N == 4 ? 2 : 1)>(hn::Add(sum, hn::Set(d, N / 2)));
-    const auto value = hn::LoadU(d, center);
-    auto accept = hn::Lt(hn::Abs(hn::Sub(mean, value)), limit);
-    if constexpr (!Blur && Mode <= 3) {
-      accept = hn::Eq(value, value);
-      for (int j = 0; j < N; ++j)
-        accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit));
-    }
-    if constexpr (Mode == 4) {
-      hn::VFromD<decltype(d)> results[2];
-      for (int j : {0, 2}) {
-        const auto average = hn::ShiftRight<1>(hn::Add(hn::Add(refs[j], refs[j + 1]), hn::Set(d, 1)));
-        auto accepted = hn::Lt(hn::Abs(hn::Sub(average, value)), limit);
-        if constexpr (!Blur)
-          accepted = hn::And(hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit),
-                             hn::Lt(hn::Abs(hn::Sub(refs[j + 1], value)), limit));
-        results[j / 2] = hn::IfThenElse(accepted, average, value);
+    const auto value = hn::LoadU(d, row.center + x);
+    auto debanded = value;
+    if constexpr (Mode != 0) {
+      hn::VFromD<decltype(db)> first, second;
+      if (SX == 0)
+        hn::LoadInterleaved2(db, distances, first, second);
+      else {
+        hn::VFromD<decltype(db)> skip1, skip2;
+        hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
       }
-      mean = hn::ShiftRight<1>(hn::Add(hn::Add(results[0], results[1]), hn::Set(d, 1)));
-      accept = hn::Eq(value, value);
-    } else if constexpr (Mode == 5) {
-      const auto maximum_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[1])));
-      for (int j = 0; j < 4; ++j)
-        accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), maximum_limit));
-      const auto pair_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[2])));
-      const auto twice = hn::Add(value, value);
-      for (int j : {0, 2})
-        accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
-    }
-    if constexpr (Mode == 6) {
-      mean = weighted_integer(d, value, refs, thresholds);
-      accept = hn::Eq(value, value);
+      const auto distance1 = hn::PromoteTo(di, first), h1 = hn::ShiftRightSame(distance1, SX),
+                 v1 = hn::ShiftRightSame(distance1, SY);
+      const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x))), hlimit = hn::Min(pos, hn::Sub(last, pos));
+      auto valid = hn::Eq(index, index);
+      if constexpr (Mode != 3)
+        valid = hn::And(valid, hn::Le(v1, vlimit));
+      if constexpr (Mode != 1)
+        valid = hn::And(valid, hn::Le(h1, hlimit));
+      if (!hn::AllTrue(di, valid))
+        throw std::logic_error("reference outside plane");
+      const auto* source = row.center - row.row_offset;
+      const auto absolute = hn::Add(pos, hn::Set(di, std::int32_t(row.row_offset)));
+      constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
+      hn::VFromD<decltype(d)> refs[N];
+      if constexpr (Mode == 1 || Mode == 3) {
+        const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
+        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
+        refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
+      } else if constexpr (Mode == 2) {
+        const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
+                   v2 = hn::ShiftRightSame(distance2, SY);
+        if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
+          throw std::logic_error("reference outside plane");
+        const auto a = hn::Add(hn::Mul(v2, pitch), h1), b = hn::Sub(h2, hn::Mul(v1, pitch));
+        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, a));
+        refs[1] = hn::GatherIndex(d, source, hn::Add(absolute, b));
+        refs[2] = hn::GatherIndex(d, source, hn::Sub(absolute, a));
+        refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, b));
+      }
+      if constexpr (Mode >= 4) {
+        const auto vertical = hn::Mul(v1, pitch);
+        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, vertical));
+        refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, vertical));
+        refs[2] = hn::GatherIndex(d, source, hn::Add(absolute, h1));
+        refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, h1));
+      }
+      auto sum = hn::Zero(d);
+      for (int j = 0; j < N; ++j)
+        sum = hn::Add(sum, refs[j]);
+      auto mean = hn::ShiftRight<(N == 4 ? 2 : 1)>(hn::Add(sum, hn::Set(d, N / 2)));
+      auto accept = hn::Lt(hn::Abs(hn::Sub(mean, value)), limit);
+      if constexpr (!Blur && Mode <= 3) {
+        accept = hn::Eq(value, value);
+        for (int j = 0; j < N; ++j)
+          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit));
+      }
+      if constexpr (Mode == 4) {
+        hn::VFromD<decltype(d)> results[2];
+        for (int j : {0, 2}) {
+          const auto average = hn::ShiftRight<1>(hn::Add(hn::Add(refs[j], refs[j + 1]), hn::Set(d, 1)));
+          auto accepted = hn::Lt(hn::Abs(hn::Sub(average, value)), limit);
+          if constexpr (!Blur)
+            accepted = hn::And(hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit),
+                               hn::Lt(hn::Abs(hn::Sub(refs[j + 1], value)), limit));
+          results[j / 2] = hn::IfThenElse(accepted, average, value);
+        }
+        mean = hn::ShiftRight<1>(hn::Add(hn::Add(results[0], results[1]), hn::Set(d, 1)));
+        accept = hn::Eq(value, value);
+      } else if constexpr (Mode == 5) {
+        const auto maximum_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[1])));
+        for (int j = 0; j < 4; ++j)
+          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), maximum_limit));
+        const auto pair_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[2])));
+        const auto twice = hn::Add(value, value);
+        for (int j : {0, 2})
+          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
+      }
+      if constexpr (Mode == 6) {
+        mean = weighted_integer(d, value, refs, thresholds);
+        accept = hn::Eq(value, value);
+      }
+      debanded = hn::IfThenElse(accept, mean, value);
     }
     const hn::Rebind<std::int16_t, decltype(d)> dg;
-    const auto result = hn::Add(hn::IfThenElse(accept, mean, value), hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
+    const auto result = hn::Add(debanded, hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
     if (row.packed_output) {
       const int shift = 16 - row.output_depth;
       auto code = result;
@@ -370,6 +373,8 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
   if (row.sub_x > 1 || row.width == 0)
     return 0;
   switch (mode) {
+    case 0:
+      return integer_samples<0, true, SX, SY>(row, thresholds);
     case 1:
       return blur ? integer_samples<1, true, SX, SY>(row, thresholds)
                   : integer_samples<1, false, SX, SY>(row, thresholds);
