@@ -404,9 +404,25 @@ std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
       hn::VFromD<decltype(d)> refs[N];
       if constexpr (Mode == 1 || Mode == 3) {
-        const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
-        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
-        refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
+        bool tabled = false;
+        if constexpr (Mode == 3) {
+          // Two adjacent vectors cover each side when every distance fits one
+          // vector. Loads stay inside this row, including at image borders.
+          if (lanes >= 16 && x >= lanes && row.width - x >= 2 * lanes &&
+              hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
+            const auto* center = row.center + x;
+            const auto left = hn::LoadU(d, center - lanes), right = hn::LoadU(d, center + lanes);
+            refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
+            refs[1] = hn::TwoTablesLookupLanes(
+                left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
+            tabled = true;
+          }
+        }
+        if (!tabled) {
+          const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
+          refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
+          refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
+        }
       } else if constexpr (Mode == 2) {
         const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
                    v2 = hn::ShiftRightSame(distance2, SY);

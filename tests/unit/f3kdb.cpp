@@ -323,6 +323,32 @@ void integer_cross_tests() {
       }
     }
 }
+void horizontal_table_tests() {
+  std::mt19937 rng(0x7ab1e);
+  for (std::size_t w : {31,32,47,48,49,63,64,65,519}) {
+    std::vector<std::int32_t> source(w);
+    for (auto& v:source) v=rng()%65536;
+    std::vector<std::int16_t> grain(w);
+    for(std::size_t x=0;x<w;++x) grain[x]=int(x%32769)-16384;
+    std::vector<double> output(w+1);
+    for (int sx : {0,1}) for (std::size_t range : {15,16,17,127}) {
+      std::vector<ref::Distance> distances(w<<sx);
+      for(std::size_t x=0;x<w;++x) distances[x<<sx]={std::uint8_t(std::min({range,x,w-1-x})<<sx),0};
+      simd::IntegerRow row{source.data(),distances.data(),grain.data(),output.data(),w,0,0,sx,0};
+      for(bool blur : {false,true}) for(double threshold : {0.0,0.5,100.25,65535.0}) {
+        const std::array<double,3> t{threshold,threshold,threshold};
+        std::fill(output.begin(),output.end(),-999999);
+        const auto count=simd::process_integer_row(row,3,t.data(),blur);
+        for(std::size_t x=0;x<count;++x) {
+          const auto dx=distances[x<<sx].first>>sx;
+          const std::array<double,4> refs{double(source[x+dx]),double(source[x-dx]),0,0};
+          check(output[x]==ref::deband(source[x],refs,3,t,true,blur)+grain[x],"horizontal table distance/lane boundary");
+        }
+        for(std::size_t x=count;x<=w;++x) check(output[x]==-999999,"horizontal table tail");
+      }
+    }
+  }
+}
 void integer_pack_tests() {
   // Exhaust the processing range including negative grain, half-way ties,
   // saturation and every output depth. An odd output address checks word stores.
@@ -586,7 +612,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
+      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
