@@ -245,9 +245,13 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
   const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
   const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int64_t(row.width - 1));
   const auto vlimit = hn::Set(di, std::int64_t(row.vertical_limit)), pitch = hn::Set(di, std::int64_t(row.width));
-  const auto* source = row.center - cross.row_offset;
-  const auto* gx = cross.gx - cross.row_offset;
-  const auto* gy = cross.gy - cross.row_offset;
+  const auto* source = cross.compact_source ? nullptr : row.center - cross.row_offset;
+  const auto* gx = cross.compact_gx ? nullptr : cross.gx - cross.row_offset;
+  const auto* gy = cross.compact_gy ? nullptr : cross.gy - cross.row_offset;
+  const auto gather = [&](const double* wide, const std::int32_t* compact, auto index) {
+    return compact ? hn::PromoteTo(d, hn::GatherIndex(d32, compact, hn::DemoteTo(d32, index)))
+                   : hn::GatherIndex(d, wide, index);
+  };
   constexpr double pi = 3.1415926535897932384626433832795;
   const bool trig = Fused && angle != 0 && angle != 0.25 && angle < 0.5;
   const auto cosine = hn::Set(d, trig ? std::cos(pi * angle) : 0), sine = hn::Set(d, trig ? std::sin(pi * angle) : 0);
@@ -272,11 +276,11 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
                                                  hn::Add(absolute, h), hn::Sub(absolute, h)};
     V r[4];
     for (int j = 0; j < 4; ++j) {
-      r[j] = hn::GatherIndex(d, source, offsets[j]);
+      r[j] = gather(source, cross.compact_source, offsets[j]);
       if constexpr (!Fused) {
         hn::StoreU(r[j], d, row.samples[j] + x);
-        hn::StoreU(hn::GatherIndex(d, gx, offsets[j]), d, cross.grad_x[j] + x);
-        hn::StoreU(hn::GatherIndex(d, gy, offsets[j]), d, cross.grad_y[j] + x);
+        hn::StoreU(gather(gx, cross.compact_gx, offsets[j]), d, cross.grad_x[j] + x);
+        hn::StoreU(gather(gy, cross.compact_gy, offsets[j]), d, cross.grad_y[j] + x);
       }
     }
     if constexpr (Fused) {
@@ -303,7 +307,7 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       auto directions = hn::Eq(zero, zero);
       const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
       for (int j = 0; j < 4; ++j) {
-        const auto hx = hn::GatherIndex(d, gx, offsets[j]), hy = hn::GatherIndex(d, gy, offsets[j]);
+        const auto hx = gather(gx, cross.compact_gx, offsets[j]), hy = gather(gy, cross.compact_gy, offsets[j]);
         const auto direction = cross.bounded_integer_gradients
                                    ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
                                    : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);

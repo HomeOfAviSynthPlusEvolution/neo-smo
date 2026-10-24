@@ -627,7 +627,7 @@ void byte_minimum_extent_tests() {
 void native_integer_frame_tests() {
   // Exact allocation extent, unaligned base and odd stride exercise the final
   // four-byte gather without granting readable padding beyond the last pixel.
-  for (int mode=1;mode<=6;++mode) for (int depth : {8,10,16})
+  for (int mode=1;mode<=7;++mode) for (int depth : {8,10,16})
     for (std::size_t w : {1,2,3,17,33}) for (int dither : {1,2,3}) {
       const std::size_t h=35, bytes=depth==8?1:2, stride=w*bytes+3, extent=(h-1)*stride+w*bytes;
       ref::Format f;f.width=w;f.height=h;f.depth=depth;

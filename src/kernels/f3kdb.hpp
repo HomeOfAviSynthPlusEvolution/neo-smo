@@ -42,6 +42,11 @@ struct CrossSamplingRow {
   // Caller-proven integral Sobel components in [-262140, 262140].
   // Their cross/dot products are exact in double and need no normalization.
   bool bounded_integer_gradients = false;
+  // Optional exact integer planes, indexed from the plane origin. The fused
+  // kernel promotes gathered values; row.center/gx/gy remain widened row views.
+  const std::int32_t* compact_source = nullptr;
+  const std::int32_t* compact_gx = nullptr;
+  const std::int32_t* compact_gy = nullptr;
 };
 std::size_t collect_cross_row(const CrossSamplingRow&);
 struct SamplingResult {
@@ -126,6 +131,8 @@ struct InputPlane {
 // False means an out-of-depth integer or a nonfinite float was encountered.
 bool unpack_plane(const InputPlane&);
 void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height);
+void sobel_plane(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy, std::size_t width,
+                 std::size_t height);
 struct OutputRow {
   const double* input;
   std::uint8_t* output;

@@ -308,7 +308,7 @@ void sobel_tests() {
                            {2, 40},
                            {41, 41},
                            {65, 1}})
-    for (int pattern = 0; pattern < 4; ++pattern) {
+    for (int pattern = 0; pattern < 6; ++pattern) {
       const auto width = shape.first, height = shape.second;
       const auto count = width * height;
       std::vector<double> source(count + 1), gx(count + 2, 12345.5), gy(count + 2, 12345.5);
@@ -321,10 +321,20 @@ void sobel_tests() {
           data[i] = load<float>(&bits);
         } else if (pattern == 2)
           data[i] = (i % 2 ? -1.0 : 1.0) * std::numeric_limits<float>::max();
-        else
+        else if (pattern == 3)
           data[i] = (i % 3 - 1.0) * std::numeric_limits<float>::denorm_min();
+        else
+          data[i] = (pattern == 4 ? i % width >= width / 2 : i / width >= height / 2) ? 65535 : 0;
       }
       simd::sobel_plane(data, gx.data() + 1, gy.data() + 1, width, height);
+      if (pattern == 0 || pattern >= 4) {
+        std::vector<std::int32_t> compact(data, data + count), cx(count + 2, -999999), cy(count + 2, -999999);
+        simd::sobel_plane(compact.data(), cx.data() + 1, cy.data() + 1, width, height);
+        for (std::size_t i = 0; i < count; ++i)
+          check(cx[i + 1] == gx[i + 1] && cy[i + 1] == gy[i + 1], "compact integer Sobel exact");
+        check(cx.front() == -999999 && cx.back() == -999999 && cy.front() == -999999 && cy.back() == -999999,
+              "compact integer Sobel guards");
+      }
       for (std::size_t y = 0; y < height; ++y)
         for (std::size_t x = 0; x < width; ++x) {
           auto at = [&](int dx, int dy) {
@@ -347,7 +357,7 @@ void sobel_tests() {
             gradient_max_error = std::max(gradient_max_error, error);
             // Five rounded additions/subtractions; scaling F32 inputs by two is
             // exact in F64. Allow a conservative bound for permitted reassociation.
-            const double limit = pattern == 0 ? 0 : 8 * std::numeric_limits<double>::epsilon() * magnitude[axis];
+            const double limit = (pattern == 0 || pattern >= 4) ? 0 : 8 * std::numeric_limits<double>::epsilon() * magnitude[axis];
             check(std::isfinite(actual[axis]) && error <= limit,
                   "Sobel w=" + std::to_string(width) + " h=" + std::to_string(height));
           }

@@ -2,14 +2,15 @@
 #include "kernels/f3kdb.hpp"
 #include <memory>
 #include <cstring>
+#include <type_traits>
 
 namespace neo_smo::f3kdb {
 using namespace detail;
 namespace {
 // Select the sampling layout once per row, not once per pixel/reference.
 // Modes 1/3 only use two neighbours; their other references are the center.
-template <int Mode>
-void collect_row(const double* center, const double* gx, const double* gy, const Distance* distances, std::size_t w,
+template <int Mode, class T>
+void collect_row(const T* center, const T* gx, const T* gy, const Distance* distances, std::size_t w,
                  std::size_t h, std::size_t y, int sx, int sy, const std::array<std::int64_t, 256>& vertical_offsets,
                  const std::array<double*, 4>& samples, const std::array<double*, 4>& grad_x,
                  const std::array<double*, 4>& grad_y, std::size_t start = 0) {
@@ -351,7 +352,8 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
 }
 } // namespace
 
-Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+template <class T>
+Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
                            const std::vector<MutablePlaneView>* external) {
   const auto& f = filter.parameters().input;
   const auto& out = filter.parameters().output;
@@ -377,10 +379,13 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
     const auto& view = input[plane];
     if (!view.data || view.stride < row || view.bytes < add(mul(h - 1, view.stride), row))
       invalid("plane storage/stride");
-    capacity<double>(n);
-    std::vector<double> source(n);
+    capacity<T>(n);
+    std::vector<T> source(n);
     const auto* data = static_cast<const std::uint8_t*>(view.data);
-    if (!unpack_plane({data, source.data(), w, h, view.stride, f.depth, integer}))
+    if constexpr (std::is_same_v<T, std::int32_t>) {
+      if (!unpack_integer_plane({data, source.data(), w, h, view.stride, f.depth}))
+        invalid("integer pixel exceeds declared depth");
+    } else if (!unpack_plane({data, source.data(), w, h, view.stride, f.depth, integer}))
       invalid(integer ? "integer pixel exceeds declared depth" : "nonfinite input pixel");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
     std::uint8_t* output_data;
@@ -399,7 +404,7 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c() : filter.grain_y();
     const auto& grain_integer = plane ? filter.grain_c_integer() : filter.grain_y_integer();
-    std::vector<double> gx, gy;
+    std::vector<T> gx, gy;
     if (o.sample_mode == 7) {
       gx.resize(n);
       gy.resize(n);
@@ -415,11 +420,17 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       }
     }
     std::vector<double> processed(mul(w, stripe_height));
-    const auto source_view = plane_view(static_cast<const double*>(source.data()), w, h);
+    std::vector<double> wide_center, wide_gx, wide_gy;
+    if constexpr (std::is_same_v<T, std::int32_t>) {
+      wide_center.resize(w);
+      wide_gx.resize(w);
+      wide_gy.resize(w);
+    }
+    const auto source_view = plane_view(static_cast<const T*>(source.data()), w, h);
     const auto gx_view =
-        o.sample_mode == 7 ? plane_view(static_cast<const double*>(gx.data()), w, h) : span2d::Plane<const double>{};
+        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gx.data()), w, h) : span2d::Plane<const T>{};
     const auto gy_view =
-        o.sample_mode == 7 ? plane_view(static_cast<const double*>(gy.data()), w, h) : span2d::Plane<const double>{};
+        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gy.data()), w, h) : span2d::Plane<const T>{};
     const auto distance_view = plane_view(filter.distances().data(), f.width, f.height);
     const auto processed_view = plane_view(processed.data(), w, stripe_height);
     const auto output_view = plane_view(output_data, output.stride, h, output.stride);
@@ -430,8 +441,8 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       vertical_offsets[i] = vertical_offsets[i - 1] + source_view.stride();
     auto center = source_view.cursor();
     auto distance_row = distance_view.cursor();
-    auto gradient_x = o.sample_mode == 7 ? gx_view.cursor() : span2d::RowCursor<const double>{};
-    auto gradient_y = o.sample_mode == 7 ? gy_view.cursor() : span2d::RowCursor<const double>{};
+    auto gradient_x = o.sample_mode == 7 ? gx_view.cursor() : span2d::RowCursor<const T>{};
+    auto gradient_y = o.sample_mode == 7 ? gy_view.cursor() : span2d::RowCursor<const T>{};
     auto processed_row = processed_view.cursor();
     std::size_t stripe_rows = 0;
     auto* stripe_output = output_data;
@@ -470,8 +481,23 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       const std::array<double*, 4> gradients_y = {grad_y[0].data(), grad_y[1].data(), grad_y[2].data(),
                                                   grad_y[3].data()};
       const auto* distances = distance_row.ptr();
+      const double* center_values;
+      const double* gradient_values_x;
+      const double* gradient_values_y;
+      if constexpr (std::is_same_v<T, std::int32_t>) {
+        std::copy_n(center.ptr(), w, wide_center.data());
+        std::copy_n(gradient_x.ptr(), w, wide_gx.data());
+        std::copy_n(gradient_y.ptr(), w, wide_gy.data());
+        center_values = wide_center.data();
+        gradient_values_x = wide_gx.data();
+        gradient_values_y = wide_gy.data();
+      } else {
+        center_values = center.ptr();
+        gradient_values_x = gradient_x.ptr();
+        gradient_values_y = gradient_y.ptr();
+      }
       Row batch{};
-      batch.center = center.ptr();
+      batch.center = center_values;
       batch.count = w;
       batch.output = processed_row.ptr();
       batch.grain = noise.ptr();
@@ -479,7 +505,7 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       std::size_t collected = 0;
       std::size_t processed_prefix = 0;
       if (o.sample_mode <= 3) {
-        const SamplingRow sampling{center.ptr(),
+        const SamplingRow sampling{center_values,
                                    distances,
                                    vertical_offsets.data(),
                                    {values[0], values[1], values[2], values[3]},
@@ -493,7 +519,7 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
         processed_prefix = prefix.processed;
       }
       if (o.sample_mode == 7) {
-        const CrossSamplingRow cross{{center.ptr(),
+        CrossSamplingRow cross{{center_values,
                                       distances,
                                       vertical_offsets.data(),
                                       {values[0], values[1], values[2], values[3]},
@@ -501,12 +527,17 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
                                       std::min(y, h - 1 - y),
                                       sx,
                                       sy},
-                                     gradient_x.ptr(),
-                                     gradient_y.ptr(),
+                                     gradient_values_x,
+                                     gradient_values_y,
                                      {gradients_x[0], gradients_x[1], gradients_x[2], gradients_x[3]},
                                      {gradients_y[0], gradients_y[1], gradients_y[2], gradients_y[3]},
                                      y * w,
                                      integer};
+        if constexpr (std::is_same_v<T, std::int32_t>) {
+          cross.compact_source = source.data();
+          cross.compact_gx = gx.data();
+          cross.compact_gy = gy.data();
+        }
         const auto prefix = process_cross_row(cross, batch, filter.parameters().thresholds[plane].data(), integer,
                                               o.max_angle, o.angle_boost);
         collected = prefix.collected;
@@ -559,8 +590,8 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       }
 
       if (o.sample_mode == 7) {
-        batch.gx[0] = gradient_x.ptr();
-        batch.gy[0] = gradient_y.ptr();
+        batch.gx[0] = gradient_values_x;
+        batch.gy[0] = gradient_values_y;
       }
       for (int j = 0; j < 4; ++j) {
         batch.refs[j] = j < references ? samples[j].data() : batch.center;
@@ -604,6 +635,17 @@ Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::v
       result.planes.push_back(std::move(output));
   }
   return result;
+}
+Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                           const std::vector<MutablePlaneView>* external) {
+  const auto& p = filter.parameters();
+  // Integer Sobel components are bounded by 4*65535, so their full planes
+  // need only signed 32-bit storage. Direction products still use double.
+  if (p.input.sample == Sample::integer && p.options.sample_mode == 7 &&
+      p.input.sub_x <= 1 && p.input.sub_y <= 1 &&
+      mul(p.input.width, p.input.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
+    return process_highway_typed<std::int32_t>(filter, frame, input, external);
+  return process_highway_typed<double>(filter, frame, input, external);
 }
 Frame process_highway(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return process_highway_impl(filter, frame, input, nullptr);

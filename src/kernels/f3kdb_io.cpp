@@ -18,6 +18,7 @@
 HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
+namespace hn = hwy::HWY_NAMESPACE;
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
 bool unpack_plane_target(const InputPlane& plane) {
   return unpack_plane_scalar(plane);
@@ -41,7 +42,6 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
   sobel_plane_scalar(source, gx, gy, width, height);
 }
 #else
-namespace hn = hwy::HWY_NAMESPACE;
 using IoD = hn::ScalableTag<double>;
 
 // Byte loads/stores are also valid for odd addresses/strides on fallback targets.
@@ -225,14 +225,17 @@ void pack_row_target(const OutputRow& row) {
   }
 }
 
-void sobel_plane_target(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
+#endif
+
+template <class T>
+void sobel_typed(const T* source, T* gx, T* gy, std::size_t width, std::size_t height) {
   if (!width || !height)
     return;
-  const IoD d;
-  const hn::Rebind<std::int64_t, IoD> di;
-  const auto zero = hn::Zero(di), last = hn::Set(di, static_cast<std::int64_t>(width - 1));
+  const hn::ScalableTag<T> d;
+  const hn::RebindToSigned<decltype(d)> di;
+  const auto zero = hn::Zero(di), last = hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(width - 1));
   const auto distance = hn::Set(di, 20);
-  const auto twice = hn::Set(d, 2.0);
+  const auto twice = hn::Set(d, T{2});
   const auto input = detail::plane_view(source, width, height);
   auto center_row = input.cursor();
   auto top_row = input.cursor();
@@ -253,8 +256,10 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
     const auto* bottom = bottom_row.ptr();
     for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
       const auto n = std::min(hn::Lanes(d), width - x);
-      const auto center = hn::Min(last, hn::Iota(di, static_cast<std::int64_t>(x)));
-      const auto left = hn::Max(zero, hn::Sub(center, distance)), right = hn::Min(last, hn::Add(center, distance));
+      const auto center = hn::Min(last, hn::Iota(di, static_cast<hn::TFromD<decltype(di)>>(x)));
+      const auto left = hn::Max(zero, hn::Sub(center, distance));
+      // Bound the increment before adding, including near INT32_MAX columns.
+      const auto right = hn::Add(center, hn::Min(distance, hn::Sub(last, center)));
       const auto tl = hn::GatherIndex(d, top, left), tr = hn::GatherIndex(d, top, right);
       const auto ml = hn::GatherIndex(d, middle, left), mr = hn::GatherIndex(d, middle, right);
       const auto bl = hn::GatherIndex(d, bottom, left), br = hn::GatherIndex(d, bottom, right);
@@ -274,7 +279,16 @@ void sobel_plane_target(const double* source, double* gx, double* gy, std::size_
     }
   }
 }
+#if HWY_TARGET != HWY_SCALAR && HWY_TARGET != HWY_EMU128
+void sobel_plane_target(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
+  sobel_typed(source, gx, gy, width, height);
+}
 #endif
+void sobel_integer_target(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy, std::size_t width,
+                           std::size_t height) {
+  sobel_typed(source, gx, gy, width, height);
+}
+
 } // namespace HWY_NAMESPACE
 } // namespace neo_smo::f3kdb
 HWY_AFTER_NAMESPACE();
@@ -288,11 +302,15 @@ bool unpack_integer_plane(const IntegerInputPlane& plane) {
 HWY_EXPORT(unpack_plane_target);
 HWY_EXPORT(pack_row_target);
 HWY_EXPORT(sobel_plane_target);
+HWY_EXPORT(sobel_integer_target);
 bool unpack_plane(const InputPlane& plane) {
   return HWY_DYNAMIC_DISPATCH(unpack_plane_target)(plane);
 }
 void pack_row(const OutputRow& row) {
   HWY_DYNAMIC_DISPATCH(pack_row_target)(row);
+}
+void sobel_plane(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy, std::size_t width, std::size_t height) {
+  HWY_DYNAMIC_DISPATCH(sobel_integer_target)(source, gx, gy, width, height);
 }
 void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
   HWY_DYNAMIC_DISPATCH(sobel_plane_target)(source, gx, gy, width, height);
