@@ -81,7 +81,7 @@ HWY_INLINE V response(D d, V delta, V threshold) {
   return hn::IfThenElse(iszero, hn::IfThenElse(hn::Eq(delta, zero), one, zero),
                         hn::Max(zero, hn::Min(one, hn::Mul(hn::Set(d, 3.0), hn::Sub(one, ratio)))));
 }
-HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle) {
+HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine) {
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
   const auto gm = hn::Max(hn::Abs(gx), hn::Abs(gy)), hm = hn::Max(hn::Abs(hx), hn::Abs(hy));
   const auto bothzero = hn::And(hn::Eq(gm, zero), hn::Eq(hm, zero));
@@ -103,8 +103,7 @@ HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle) {
   if (angle == 0.25)
     accept = hn::Le(cross, dot);
   else if (angle != 0) {
-    constexpr double pi = 3.1415926535897932384626433832795;
-    accept = hn::Le(hn::Mul(cross, hn::Set(d, std::cos(pi * angle))), hn::Mul(dot, hn::Set(d, std::sin(pi * angle))));
+    accept = hn::Le(hn::Mul(cross, cosine), hn::Mul(dot, sine));
   }
   return hn::Or(bothzero, hn::And(nonzero, accept));
 }
@@ -160,6 +159,11 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
   }
   const D d;
   const auto zero = hn::Zero(d), half = hn::Set(d, 0.5), one = hn::Set(d, 1.0);
+  // The direction limit is uniform across the row and all four neighbours.
+  constexpr double pi = 3.1415926535897932384626433832795;
+  const bool trig = mode == 7 && angle != 0 && angle != 0.25 && angle < 0.5;
+  const auto cosine = hn::Set(d, trig ? std::cos(pi * angle) : 0);
+  const auto sine = hn::Set(d, trig ? std::sin(pi * angle) : 0);
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto count = std::min(hn::Lanes(d), row.count - x);
     const auto s = load_row(d, row.center + x, count);
@@ -207,7 +211,7 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
           const auto gx = load_row(d, row.gx[0] + x, count), gy = load_row(d, row.gy[0] + x, count);
           for (int j = 1; j < 5; ++j)
             directions = hn::And(directions, aligned(d, gx, gy, load_row(d, row.gx[j] + x, count),
-                                                     load_row(d, row.gy[j] + x, count), angle));
+                                                     load_row(d, row.gy[j] + x, count), angle, cosine, sine));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
         const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
