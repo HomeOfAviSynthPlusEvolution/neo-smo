@@ -624,6 +624,34 @@ void byte_minimum_extent_tests() {
       compare(ScalarFilter(f,o).process(0,views),simd::Filter(f,o).process(0,views),o);
     }
 }
+void native_integer_frame_tests() {
+  // Exact allocation extent, unaligned base and odd stride exercise the final
+  // four-byte gather without granting readable padding beyond the last pixel.
+  for (int mode=1;mode<=6;++mode) for (int depth : {8,10,16})
+    for (std::size_t w : {1,2,3,17,33}) for (int dither : {1,2,3}) {
+      const std::size_t h=35, bytes=depth==8?1:2, stride=w*bytes+3, extent=(h-1)*stride+w*bytes;
+      ref::Format f;f.width=w;f.height=h;f.depth=depth;
+      ref::Options o;o.sample_mode=mode;o.dither_algo=dither;o.range=255;o.scale=true;
+      o.threshold.fill(2048.5);o.threshold1.fill(4096);o.threshold2.fill(8192);o.grain_y=3.75;
+      o.blur_first=(w%2)!=0;o.keep_tv_range=dither==2;
+      o.output_sample_type=dither==2?ref::OutputSample::floating:ref::OutputSample::integer;
+      o.output_depth=dither==2?32:depth==8?16:8;
+      std::vector<std::uint8_t> data(extent+1,0xa5);
+      for (std::size_t y=0;y<h;++y) for (std::size_t x=0;x<w;++x) {
+        const auto code=std::uint16_t((x*73+y*101)&((1u<<depth)-1));
+        auto* p=data.data()+1+y*stride+x*bytes;
+        if(bytes==1) *p=std::uint8_t(code);else write(p,code);
+      }
+      const std::vector<ref::PlaneView> views{{data.data()+1,extent,stride}};
+      compare(ScalarFilter(f,o).process(0,views),simd::Filter(f,o).process(0,views),o);
+      if(depth==10) {
+        write(data.data()+data.size()-2,std::uint16_t(1024));
+        bool rejected=false;
+        try {simd::Filter(f,o).process(0,views);} catch(const std::invalid_argument&) {rejected=true;}
+        check(rejected,"native input validates last out-of-depth code");
+      }
+    }
+}
 void byte_frame_tests() {
   // Full byte vectors, odd tails, chroma layouts, large offsets, fractional
   // thresholds, signed grain saturation, and limited-range packing.
@@ -750,7 +778,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

@@ -616,11 +616,33 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   const auto step = std::size_t{1} << SX;
   const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int32_t(row.width - 1)),
              vlimit = hn::Set(di, std::int32_t(row.vertical_limit));
-  const auto pitch = hn::Set(di, std::int32_t(row.width));
+  const auto bytes = row.native ? (row.input_depth == 8 ? 1 : 2) : 1;
+  const auto pitch = hn::Set(di, std::int32_t(row.native ? row.native_stride : row.width));
+  const auto gather = [&](auto position) {
+    if (!row.native)
+      return hn::GatherIndex(d, row.center - row.row_offset, position);
+    const hn::Rebind<std::uint32_t, decltype(d)> du;
+    const auto start = hn::Min(position, hn::Set(di, std::int32_t(row.native_extent - 4)));
+    const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(position, start)));
+    const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
+    const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
+    const auto code = hn::And(hn::Shr(bits, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
+    return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
+  };
+  const auto load_center = [&](std::size_t x) {
+    if (!row.native)
+      return hn::LoadU(d, row.center + x);
+    const auto* source = row.native + row.row_offset + x * bytes;
+    const hn::Rebind<std::uint16_t, decltype(d)> dw;
+    const hn::Repartition<std::uint8_t, decltype(dw)> dwb;
+    const auto code = bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source))
+                                : hn::PromoteTo(d, hn::BitCast(dw, hn::LoadU(dwb, source)));
+    return hn::ShiftLeftSame(code, 16 - row.input_depth);
+  };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
-    const auto value = hn::LoadU(d, row.center + x);
+    const auto value = load_center(x);
     auto debanded = value;
     if constexpr (Mode != 0) {
       hn::VFromD<decltype(db)> first, second;
@@ -640,8 +662,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
         valid = hn::And(valid, hn::Le(h1, hlimit));
       if (!hn::AllTrue(di, valid))
         throw std::logic_error("reference outside plane");
-      const auto* source = row.center - row.row_offset;
-      const auto absolute = hn::Add(pos, hn::Set(di, std::int32_t(row.row_offset)));
+      const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
       hn::VFromD<decltype(d)> refs[N];
       if constexpr (Mode == 1 || Mode == 3) {
@@ -651,8 +672,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           // vector. Loads stay inside this row, including at image borders.
           if (lanes >= 16 && x >= lanes && row.width - x >= 2 * lanes &&
               hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
-            const auto* center = row.center + x;
-            const auto left = hn::LoadU(d, center - lanes), right = hn::LoadU(d, center + lanes);
+            const auto left = load_center(x - lanes), right = load_center(x + lanes);
             refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
             refs[1] = hn::TwoTablesLookupLanes(
                 left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
@@ -660,27 +680,28 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           }
         }
         if (!tabled) {
-          const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
-          refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
-          refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
+          const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
+          refs[0] = gather(hn::Add(absolute, off));
+          refs[1] = gather(hn::Sub(absolute, off));
         }
       } else if constexpr (Mode == 2) {
         const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
                    v2 = hn::ShiftRightSame(distance2, SY);
         if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
           throw std::logic_error("reference outside plane");
-        const auto a = hn::Add(hn::Mul(v2, pitch), h1), b = hn::Sub(h2, hn::Mul(v1, pitch));
-        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, a));
-        refs[1] = hn::GatherIndex(d, source, hn::Add(absolute, b));
-        refs[2] = hn::GatherIndex(d, source, hn::Sub(absolute, a));
-        refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, b));
+        const auto a = hn::Add(hn::Mul(v2, pitch), hn::Mul(h1, hn::Set(di, bytes))),
+                   b = hn::Sub(hn::Mul(h2, hn::Set(di, bytes)), hn::Mul(v1, pitch));
+        refs[0] = gather(hn::Add(absolute, a));
+        refs[1] = gather(hn::Add(absolute, b));
+        refs[2] = gather(hn::Sub(absolute, a));
+        refs[3] = gather(hn::Sub(absolute, b));
       }
       if constexpr (Mode >= 4) {
         const auto vertical = hn::Mul(v1, pitch);
-        refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, vertical));
-        refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, vertical));
-        refs[2] = hn::GatherIndex(d, source, hn::Add(absolute, h1));
-        refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, h1));
+        refs[0] = gather(hn::Add(absolute, vertical));
+        refs[1] = gather(hn::Sub(absolute, vertical));
+        refs[2] = gather(hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))));
+        refs[3] = gather(hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))));
       }
       auto sum = hn::Zero(d);
       for (int j = 0; j < N; ++j)

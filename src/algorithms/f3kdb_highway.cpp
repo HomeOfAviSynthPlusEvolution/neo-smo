@@ -1,6 +1,7 @@
 #include "algorithms/f3kdb_views.hpp"
 #include "kernels/f3kdb.hpp"
 #include <memory>
+#include <cstring>
 
 namespace neo_smo::f3kdb {
 using namespace detail;
@@ -197,7 +198,7 @@ Frame process_byte_frame(const Filter& filter, std::size_t frame, const std::vec
   return result;
 }
 
-// Modes 1-6 keep source samples in exact 32-bit integer lanes.
+// Modes 1-6 widen borrowed source samples into exact 32-bit integer lanes.
 // Weighted mode 6 promotes its local references for double-precision weights.
 Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
                             const std::vector<MutablePlaneView>* external) {
@@ -214,11 +215,22 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     const auto& view = input[plane];
     if (!view.data || view.stride < row_bytes || view.bytes < add(mul(h - 1, view.stride), row_bytes))
       invalid("plane storage/stride");
-    capacity<std::int32_t>(n);
-    // Every element is written and validated before sampling; zeroing this
-    // full-plane temporary would repeat the unpacker's writes.
-    std::unique_ptr<std::int32_t[]> source(new std::int32_t[n]);
-    if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.get(), w, h, view.stride, f.depth}))
+    const auto extent = add(mul(h - 1, view.stride), row_bytes);
+    const bool native = row_bytes >= 4 && view.stride <= std::size_t(std::numeric_limits<std::int32_t>::max()) &&
+                        extent <= std::size_t(std::numeric_limits<std::int32_t>::max());
+    const auto stored = native ? w : n;
+    capacity<std::int32_t>(stored);
+    std::unique_ptr<std::int32_t[]> source(new std::int32_t[stored]);
+    if (native) {
+      // Eight/sixteen-bit storage cannot contain out-of-depth codes. Other
+      // depths are validated with bounded row scratch, before writing output.
+      if (f.depth != 8 && f.depth != 16)
+        for (std::size_t y = 0; y < h; ++y)
+          if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data) + y * view.stride,
+                                     source.get(), w, 1, view.stride, f.depth}))
+            invalid("integer pixel exceeds declared depth");
+    } else if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.get(), w, h,
+                                      view.stride, f.depth}))
       invalid("integer pixel exceeds declared depth");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
     std::uint8_t* output_data;
@@ -240,7 +252,7 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         (o.sample_mode == 5 || o.sample_mode == 6) && params.thresholds[plane][1] <= std::ldexp(1.0, 16 - f.depth);
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c_integer() : filter.grain_y_integer();
-    auto center = plane_view(static_cast<const std::int32_t*>(source.get()), w, h).cursor();
+    auto center = plane_view(static_cast<const std::int32_t*>(source.get()), w, native ? 1 : h).cursor();
     auto distances = plane_view(filter.distances().data(), f.width, f.height).cursor();
     auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(std::int16_t))).cursor();
     auto target = plane_view(output_data, output.stride, h, output.stride).cursor();
@@ -249,7 +261,8 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     auto* processed_row = processed.data();
     for (std::size_t y = 0; y < h; ++y) {
       if (y) {
-        ++center;
+        if (!native)
+          ++center;
         ++noise;
         ++target;
         distances += std::size_t{1} << sy;
@@ -260,6 +273,13 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
       }
       const auto vlimit = std::min(y, h - 1 - y);
       IntegerRow row{center.ptr(), distances.ptr(), noise.ptr(), processed_row, w, vlimit, y * w, sx, sy};
+      if (native) {
+        row.native = static_cast<const std::uint8_t*>(view.data);
+        row.native_stride = view.stride;
+        row.native_extent = extent;
+        row.input_depth = f.depth;
+        row.row_offset = y * view.stride;
+      }
       const bool direct = out.sample == Sample::integer && o.dither_algo == 1;
       if (direct) {
         row.packed_output = target.ptr();
@@ -275,28 +295,38 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         const auto hlimit = std::min(x, w - 1 - x);
         if ((o.sample_mode != 3 && v1 > vlimit) || (o.sample_mode != 1 && h1 > hlimit))
           throw std::logic_error("reference outside plane");
-        const auto* pixel = center.ptr() + x;
+        const auto pixel = [&](std::ptrdiff_t offset) -> double {
+          if (!native)
+            return center.ptr()[std::ptrdiff_t(x) + offset];
+          const auto* p = static_cast<const std::uint8_t*>(view.data) + y * view.stride + x * bytes_per_sample(f) + offset;
+          std::uint16_t code = *p;
+          if (f.depth != 8)
+            std::memcpy(&code, p, sizeof(code));
+          return std::int32_t(code) << (16 - f.depth);
+        };
+        const auto stride = native ? view.stride : w;
+        const auto step = native ? bytes_per_sample(f) : 1;
         std::array<double, 4> refs{};
         if (o.sample_mode == 1 || o.sample_mode == 3) {
-          const auto offset = static_cast<std::ptrdiff_t>(o.sample_mode == 1 ? v1 * w : h1);
-          refs[0] = pixel[offset];
-          refs[1] = pixel[-offset];
+          const auto offset = static_cast<std::ptrdiff_t>(o.sample_mode == 1 ? v1 * stride : h1 * step);
+          refs[0] = pixel(offset);
+          refs[1] = pixel(-offset);
         } else if (o.sample_mode == 2) {
           const auto h2 = std::size_t(d.second >> sx), v2 = std::size_t(d.second >> sy);
           if (h2 > hlimit || v2 > vlimit)
             throw std::logic_error("reference outside plane");
-          const auto a = static_cast<std::ptrdiff_t>(v2 * w + h1);
-          const auto b = static_cast<std::ptrdiff_t>(h2) - static_cast<std::ptrdiff_t>(v1 * w);
-          refs = {double(pixel[a]), double(pixel[b]), double(pixel[-a]), double(pixel[-b])};
+          const auto a = static_cast<std::ptrdiff_t>(v2 * stride + h1 * step);
+          const auto b = static_cast<std::ptrdiff_t>(h2 * step) - static_cast<std::ptrdiff_t>(v1 * stride);
+          refs = {double(pixel(a)), double(pixel(b)), double(pixel(-a)), double(pixel(-b))};
         }
         if (o.sample_mode >= 4) {
-          const auto vertical = static_cast<std::ptrdiff_t>(v1 * w);
-          const auto horizontal = static_cast<std::ptrdiff_t>(h1);
-          refs = {double(pixel[vertical]), double(pixel[-vertical]), double(pixel[horizontal]),
-                  double(pixel[-horizontal])};
+          const auto vertical = static_cast<std::ptrdiff_t>(v1 * stride);
+          const auto horizontal = static_cast<std::ptrdiff_t>(h1 * step);
+          refs = {double(pixel(vertical)), double(pixel(-vertical)), double(pixel(horizontal)),
+                  double(pixel(-horizontal))};
         }
         processed_row[x] =
-            deband(*pixel, refs, o.sample_mode, params.thresholds[plane], true, o.blur_first) + noise.ptr()[x];
+            deband(pixel(0), refs, o.sample_mode, params.thresholds[plane], true, o.blur_first) + noise.ptr()[x];
       }
       ++stripe_rows;
       if (use_fs) {

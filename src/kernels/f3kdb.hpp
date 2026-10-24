@@ -82,6 +82,11 @@ struct IntegerRow {
   std::uint8_t* packed_output = nullptr;
   int output_depth = 8;
   bool chroma = false, limited = false;
+  // Optional borrowed native plane. Four-byte gathers stay inside extent;
+  // source codes are widened only in vector registers.
+  const std::uint8_t* native = nullptr;
+  std::size_t native_stride = 0, native_extent = 0;
+  int input_depth = 16;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
 struct IntegerInputPlane {
