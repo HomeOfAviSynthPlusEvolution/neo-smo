@@ -163,6 +163,20 @@ void sampling_tests() {
         for (int j = 0; j < 4; ++j)
           for (std::size_t x = j >= (mode == 2 ? 4 : 2) ? 0 : count; x <= width; ++x)
             check(samples[j][x] == -1, "sampling tail and unused outputs");
+        for (bool blur : {false, true}) for (double threshold : {0.0, 0.5, 1.0, 255.25, 65535.0}) {
+          std::vector<double> output(width + 1, -999), grain(width);
+          for (std::size_t x = 0; x < width; ++x) grain[x] = double(int(x % 31) - 15);
+          simd::Row batch{}; batch.center = row.center; batch.grain = grain.data(); batch.output = output.data(); batch.count = width;
+          const auto processed = simd::process_sampled_row(row, batch, mode, threshold, true, blur).processed;
+          check(processed <= count, "fused sampling extent");
+          for (std::size_t x = 0; x < processed; ++x) {
+            std::array<double, 4> refs{samples[0][x], samples[1][x], mode == 2 ? samples[2][x] : row.center[x], mode == 2 ? samples[3][x] : row.center[x]};
+            const auto expected = ref::deband(row.center[x], refs, mode, {threshold, threshold, threshold}, true, blur) + grain[x];
+            check(output[x] == expected, "fused sampling value");
+          }
+          for (std::size_t x = processed; x <= width; ++x) check(output[x] == -999, "fused sampling tail");
+          check(simd::process_sampled_row(row, batch, mode, threshold, false, blur).processed == 0, "fused floating fallback");
+        }
         if (count && y == 0) {
           distances[0].first = 255;
           bool rejected = false;

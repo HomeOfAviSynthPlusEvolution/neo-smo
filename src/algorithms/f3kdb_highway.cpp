@@ -149,7 +149,13 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       const std::array<double*, 4> gradients_y = {grad_y[0].data(), grad_y[1].data(), grad_y[2].data(),
                                                   grad_y[3].data()};
       const auto* distances = distance_row.ptr();
+      Row batch{};
+      batch.center = center.ptr();
+      batch.count = w;
+      batch.output = processed_row.ptr();
+      batch.grain = noise.ptr();
       std::size_t collected = 0;
+      std::size_t processed_prefix = 0;
       if (o.sample_mode <= 3) {
         const SamplingRow sampling{center.ptr(),
                                    distances,
@@ -159,7 +165,10 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
                                    std::min(y, h - 1 - y),
                                    sx,
                                    sy};
-        collected = collect_simple_row(sampling, o.sample_mode);
+        const auto prefix = process_sampled_row(sampling, batch, o.sample_mode, filter.parameters().thresholds[plane][0],
+                                               integer, o.blur_first);
+        collected = prefix.collected;
+        processed_prefix = prefix.processed;
       }
       // Keep the full scalar loop starting at a compile-time zero. A variable
       // start here inhibits optimization on targets that do not use gather.
@@ -202,11 +211,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
             break;
         }
       }
-      Row batch{};
-      batch.center = center.ptr();
-      batch.count = w;
-      batch.output = processed_row.ptr();
-      batch.grain = noise.ptr();
+
       if (o.sample_mode == 7) {
         batch.gx[0] = gradient_x.ptr();
         batch.gy[0] = gradient_y.ptr();
@@ -216,8 +221,17 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         batch.gx[j + 1] = grad_x[j].data();
         batch.gy[j + 1] = grad_y[j].data();
       }
-      process_row(batch, o.sample_mode, filter.parameters().thresholds[plane].data(), integer, o.blur_first,
-                  o.max_angle, o.angle_boost);
+      if (processed_prefix) {
+        batch.center += processed_prefix;
+        batch.output += processed_prefix;
+        batch.grain += processed_prefix;
+        batch.count -= processed_prefix;
+        for (auto& ref : batch.refs)
+          ref += processed_prefix;
+      }
+      if (batch.count)
+        process_row(batch, o.sample_mode, filter.parameters().thresholds[plane].data(), integer, o.blur_first,
+                    o.max_angle, o.angle_boost);
       ++stripe_rows;
       if (use_fs) {
         const auto rows = stripe_rows;

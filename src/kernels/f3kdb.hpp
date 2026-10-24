@@ -27,6 +27,10 @@ struct SamplingRow {
   std::size_t vertical_limit;
   int sub_x, sub_y;
 };
+struct SamplingResult { std::size_t collected, processed; };
+// Fuse integer sampling/deband where profitable; otherwise collect references.
+// The processed prefix leaves sample buffers untouched.
+SamplingResult process_sampled_row(const SamplingRow&, const Row&, int mode, double threshold, bool integer, bool blur);
 std::size_t collect_simple_row(const SamplingRow&, int mode);
 void process_row(const Row&, int mode, const double* thresholds, bool integer, bool blur, double angle, double boost);
 // Exposed internally so tests can check the continuous weight before quantization.

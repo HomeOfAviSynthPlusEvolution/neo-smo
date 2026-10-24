@@ -19,6 +19,9 @@ namespace HWY_NAMESPACE {
 std::size_t collect_simple_target(const SamplingRow&, int) {
   return 0;
 }
+SamplingResult sampled_target(const SamplingRow&, const Row&, int, double, bool, bool) {
+  return {0, 0};
+}
 void row_target(const Row& row, int mode, const double* t, bool integer, bool blur, double angle, double boost) {
   process_row_scalar(row, mode, t, integer, blur, angle, boost);
 }
@@ -30,10 +33,12 @@ namespace hn = hwy::HWY_NAMESPACE;
 using D = hn::ScalableTag<double>;
 using V = hn::VFromD<D>;
 using M = hn::MFromD<D>;
+template <int N, bool Blur>
+HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold);
 // Read the interleaved distance bytes directly. Chroma subsampling by two
 // skips every other pair; wider subsampling uses the existing scalar collector.
-template <int Mode>
-std::size_t collect_simple(const SamplingRow& row) {
+template <int Mode, bool Fused = false, bool Blur = true>
+std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, double threshold = 0) {
   const D d;
   const hn::Rebind<std::int64_t, D> di;
   const hn::Rebind<std::uint8_t, D> db;
@@ -66,10 +71,13 @@ std::size_t collect_simple(const SamplingRow& row) {
     if (!hn::AllTrue(di, valid))
       throw std::logic_error("reference outside plane");
     const auto* center = row.center + x;
+    V refs[Mode == 2 ? 4 : 2];
     if constexpr (Mode == 1 || Mode == 3) {
       const auto offset = Mode == 1 ? hn::GatherIndex(di, row.vertical_offsets, v1) : h1;
-      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, offset)), d, row.samples[0] + x);
-      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, offset)), d, row.samples[1] + x);
+      refs[0] = hn::GatherIndex(d, center, hn::Add(index, offset));
+      if constexpr (!Fused) hn::StoreU(refs[0], d, row.samples[0] + x);
+      refs[1] = hn::GatherIndex(d, center, hn::Sub(index, offset));
+      if constexpr (!Fused) hn::StoreU(refs[1], d, row.samples[1] + x);
     } else {
       const auto distance2 = hn::PromoteTo(di, second);
       const auto h2 = hn::ShiftRightSame(distance2, row.sub_x);
@@ -79,10 +87,19 @@ std::size_t collect_simple(const SamplingRow& row) {
         throw std::logic_error("reference outside plane");
       const auto a = hn::Add(hn::GatherIndex(di, row.vertical_offsets, v2), h1);
       const auto b = hn::Sub(h2, hn::GatherIndex(di, row.vertical_offsets, v1));
-      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, a)), d, row.samples[0] + x);
-      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, b)), d, row.samples[1] + x);
-      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, a)), d, row.samples[2] + x);
-      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, b)), d, row.samples[3] + x);
+      refs[0] = hn::GatherIndex(d, center, hn::Add(index, a));
+      if constexpr (!Fused) hn::StoreU(refs[0], d, row.samples[0] + x);
+      refs[1] = hn::GatherIndex(d, center, hn::Add(index, b));
+      if constexpr (!Fused) hn::StoreU(refs[1], d, row.samples[1] + x);
+      refs[2] = hn::GatherIndex(d, center, hn::Sub(index, a));
+      if constexpr (!Fused) hn::StoreU(refs[2], d, row.samples[2] + x);
+      refs[3] = hn::GatherIndex(d, center, hn::Sub(index, b));
+      if constexpr (!Fused) hn::StoreU(refs[3], d, row.samples[3] + x);
+    }
+    if constexpr (Fused) {
+      auto result = sampled_value<Mode == 2 ? 4 : 2, Blur>(d, hn::LoadU(d, center), refs, threshold);
+      result = hn::Add(result, hn::LoadU(d, output->grain + x));
+      hn::StoreU(result, d, output->output + x);
     }
   }
   return full;
@@ -131,6 +148,42 @@ HWY_INLINE V mean(D d, const V* r, int n, bool integer) {
   for (int j = 0; j < n; ++j)
     sum = hn::Add(sum, integer ? r[j] : hn::Mul(r[j], inverse));
   return integer ? hn::Floor(hn::Mul(hn::Add(sum, hn::Set(d, n / 2.0)), inverse)) : fp(d, sum);
+}
+template <int N, bool Blur>
+HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold) {
+  const auto average = mean(d, refs, N, true);
+  const auto limit = hn::Set(d, threshold);
+  auto accept = hn::Lt(hn::Abs(diff(d, average, center, true)), limit);
+  if constexpr (!Blur) {
+    accept = hn::Eq(center, center);
+    for (int j = 0; j < N; ++j)
+      accept = hn::And(accept, hn::Lt(hn::Abs(diff(d, refs[j], center, true)), limit));
+  }
+  return hn::IfThenElse(accept, average, center);
+}
+SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,
+                           bool blur) {
+  // Four-reference fusion is slower than collection on four-double-lane targets.
+  if (!integer || hn::Lanes(D{}) < 4 || sampling.sub_x > 1 || sampling.width == 0 || (hn::Lanes(D{}) == 4 && mode == 2))
+    return {collect_simple_target(sampling, mode), 0};
+  std::size_t count = 0;
+  switch (mode) {
+    case 1:
+      count = blur ? collect_simple<1, true, true>(sampling, &row, threshold)
+                  : collect_simple<1, true, false>(sampling, &row, threshold);
+      break;
+    case 2:
+      count = blur ? collect_simple<2, true, true>(sampling, &row, threshold)
+                   : collect_simple<2, true, false>(sampling, &row, threshold);
+      break;
+    case 3:
+      count = blur ? collect_simple<3, true, true>(sampling, &row, threshold)
+                   : collect_simple<3, true, false>(sampling, &row, threshold);
+      break;
+    default:
+      break;
+  }
+  return {count, count};
 }
 HWY_INLINE V weight(D d, const V* c) {
   auto sum = hn::Zero(d);
@@ -332,6 +385,11 @@ namespace neo_smo::f3kdb {
 HWY_EXPORT(frame_target);
 Frame process_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return HWY_DYNAMIC_DISPATCH(frame_target)(filter, frame, input);
+}
+HWY_EXPORT(sampled_target);
+SamplingResult process_sampled_row(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,
+                                bool blur) {
+  return HWY_DYNAMIC_DISPATCH(sampled_target)(sampling, row, mode, threshold, integer, blur);
 }
 HWY_EXPORT(collect_simple_target);
 std::size_t collect_simple_row(const SamplingRow& row, int mode) {
