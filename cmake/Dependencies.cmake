@@ -15,7 +15,7 @@ endif()
 
 FetchContent_Declare(dualsynth2
   GIT_REPOSITORY https://github.com/HomeOfAviSynthPlusEvolution/dualsynth2.git
-  GIT_TAG 627127332a7a360f8cbf644be545115bc16585cd
+  GIT_TAG 6ea854fe82d50d47fbca594dbfcec717a3095a23
   SOURCE_SUBDIR "${_neo_smo_ds_subdir}")
 FetchContent_MakeAvailable(dualsynth2)
 unset(_neo_smo_ds_subdir)
