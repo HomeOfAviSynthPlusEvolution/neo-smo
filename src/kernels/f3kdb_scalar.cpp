@@ -147,6 +147,134 @@ double deband(double s, const std::array<double, 4>& r, int mode, const std::arr
   return integer ? std::floor(result + 0.5) : result;
 }
 
+void process_row_scalar(const Row& row, int mode, const double* thresholds, bool integer, bool blur, double angle,
+                        double boost) {
+  const std::array<double, 3> t{thresholds[0], thresholds[1], thresholds[2]};
+  for (std::size_t x = 0; x < row.count; ++x) {
+    std::array<double, 4> refs{};
+    bool directions = true;
+    for (std::size_t j = 0; j < 4; ++j) {
+      refs[j] = row.refs[j][x];
+      if (mode == 7)
+        directions = directions && aligned({row.gx[0][x], row.gy[0][x]}, {row.gx[j + 1][x], row.gy[j + 1][x]}, angle);
+    }
+    row.output[x] = plus(deband(row.center[x], refs, mode, t, integer, blur, directions, boost), row.grain[x], integer);
+  }
+}
+
+void weights_scalar(const double* responses[4], double* output, std::size_t count) {
+  for (std::size_t x = 0; x < count; ++x)
+    output[x] = weight({responses[0][x], responses[1][x], responses[2][x], responses[3][x]});
+}
+
+bool unpack_plane_scalar(const InputPlane& plane) {
+  const std::size_t bytes = plane.depth == 8 ? 1 : plane.depth <= 16 ? 2 : 4;
+  for (std::size_t y = 0; y < plane.height; ++y)
+    for (std::size_t x = 0; x < plane.width; ++x) {
+      const auto* p = plane.input + y * plane.stride + x * bytes;
+      double v = plane.integer       ? (plane.depth == 8 ? *p : load<std::uint16_t>(p))
+                 : plane.depth == 16 ? decode_half(load<std::uint16_t>(p))
+                                     : load<float>(p);
+      if (!std::isfinite(v))
+        return false;
+      if (plane.integer) {
+        if (v >= std::ldexp(1.0, plane.depth))
+          return false;
+        v = std::ldexp(v, 16 - plane.depth);
+      }
+      plane.output[y * plane.width + x] = v;
+    }
+  return true;
+}
+
+void pack_row_scalar(const OutputRow& row) {
+  const std::size_t bytes = row.depth == 8 ? 1 : row.depth <= 16 ? 2 : 4;
+  const double offset = row.chroma ? 0.5 : 0;
+  for (std::size_t x = 0; x < row.count; ++x) {
+    const double z = row.input[x];
+    auto* target = row.output + x * bytes;
+    if (!row.integer_output) {
+      double v = row.integer_input ? z / 65536 - offset : z;
+      if (row.limited)
+        v = std::clamp(v, 16.0 / 256 - offset, (row.chroma ? 240.0 : 235.0) / 256 - offset);
+      if (row.depth == 16)
+        store(target, encode_half(v));
+      else
+        store(target, static_cast<float>(std::clamp(v, -static_cast<double>(std::numeric_limits<float>::max()),
+                                                    static_cast<double>(std::numeric_limits<float>::max()))));
+    } else {
+      const double scale = std::ldexp(1.0, row.depth), tvscale = std::ldexp(1.0, row.depth - 8);
+      const double lo = row.limited ? 16 * tvscale : 0;
+      const double hi = row.limited ? (row.chroma ? 240 : 235) * tvscale : scale - 1;
+      const double value = row.integer_input ? std::ldexp(z, row.depth - 16) : (z + offset) * scale;
+      const double quantized = row.dither == 1
+                                   ? round_even(std::clamp(value, lo - 1, hi + 1))
+                                   : std::floor(std::clamp(value, lo - 1, hi + 1) + (bayer16(row.y, x) + 0.5) / 256);
+      const double code = std::clamp(quantized, lo, hi);
+      if (row.depth == 8)
+        *target = static_cast<std::uint8_t>(code);
+      else
+        store(target, static_cast<std::uint16_t>(code));
+    }
+  }
+}
+
+namespace {
+std::array<double, 2> gradient_at(const double* source, std::size_t width, std::size_t height, std::size_t x,
+                                  std::size_t y) {
+  const auto left = x < 20 ? 0 : x - 20, right = width - 1 - x < 20 ? width - 1 : x + 20;
+  const auto top = y < 20 ? 0 : y - 20, bottom = height - 1 - y < 20 ? height - 1 : y + 20;
+  auto at = [&](std::size_t px, std::size_t py) {
+    return source[py * width + px];
+  };
+  const double gx =
+      at(right, top) + 2 * at(right, y) + at(right, bottom) - at(left, top) - 2 * at(left, y) - at(left, bottom);
+  const double gy =
+      at(left, top) + 2 * at(x, top) + at(right, top) - at(left, bottom) - 2 * at(x, bottom) - at(right, bottom);
+  return {gx, gy};
+}
+} // namespace
+
+void sobel_plane_scalar(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
+  for (std::size_t y = 0; y < height; ++y)
+    for (std::size_t x = 0; x < width; ++x) {
+      const auto g = gradient_at(source, width, height, x, y);
+      gx[y * width + x] = g[0];
+      gy[y * width + x] = g[1];
+    }
+}
+
+void diffuse_stripe_scalar(const FsStripe& stripe) {
+  const auto w = stripe.width;
+  std::vector<float> previous(stripe.boundary, stripe.boundary + w), current(w);
+  const double scale = std::ldexp(1.0, stripe.output_depth), tvscale = std::ldexp(1.0, stripe.output_depth - 8);
+  const double lo = stripe.limited ? 16 * tvscale : 0;
+  const double hi = stripe.limited ? (stripe.chroma ? 240 : 235) * tvscale : scale - 1;
+  for (std::size_t y = 0; y < stripe.height; ++y) {
+    for (std::size_t x = 0; x < w; ++x) {
+      const double z = stripe.values[y * w + x];
+      const double value =
+          stripe.integer_input ? std::ldexp(z, stripe.output_depth - 16) : (z + (stripe.chroma ? 0.5 : 0)) * scale;
+      float error = x ? current[x - 1] * (7.0f / 16) : 0;
+      if (x)
+        error += previous[x - 1] * (1.0f / 16);
+      error += previous[x] * (5.0f / 16);
+      if (x + 1 < w)
+        error += previous[x + 1] * (3.0f / 16);
+      const double v = std::clamp(fp(std::clamp(value, lo, hi) + error), lo, hi);
+      const double quantized = round_even(v);
+      current[x] = static_cast<float>(v - quantized);
+      auto* target = stripe.output + y * stripe.output_stride + x * (stripe.output_depth == 8 ? 1 : 2);
+      if (stripe.output_depth == 8)
+        *target = static_cast<std::uint8_t>(quantized);
+      else
+        store(target, static_cast<std::uint16_t>(quantized));
+    }
+    previous.swap(current);
+  }
+  std::copy(previous.begin(), previous.end(), stripe.boundary);
+}
+
 Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   const auto& params_ = filter.parameters();
   const auto& distances_ = filter.distances();
@@ -173,45 +301,19 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
     capacity<double>(n);
     std::vector<double> source(n);
     const auto* data = static_cast<const std::uint8_t*>(view.data);
-    for (std::size_t y = 0; y < h; ++y)
-      for (std::size_t x = 0; x < w; ++x) {
-        const auto* ptr = data + y * view.stride + x * bytes_per_sample(f);
-        double v = integer         ? (f.depth == 8 ? *ptr : load<std::uint16_t>(ptr))
-                   : f.depth == 16 ? decode_half(load<std::uint16_t>(ptr))
-                                   : load<float>(ptr);
-        if (!std::isfinite(v))
-          invalid("nonfinite input pixel");
-        if (integer) {
-          if (v >= std::ldexp(1.0, f.depth))
-            invalid("integer pixel exceeds declared depth");
-          v = std::ldexp(v, 16 - f.depth);
-        }
-        source[y * w + x] = v;
-      }
+    if (!unpack_plane_scalar({data, source.data(), w, h, view.stride, f.depth, integer}))
+      invalid(integer ? "integer pixel exceeds declared depth" : "nonfinite input pixel");
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
     output.data.resize(mul(output.stride, h));
-    // Store outgoing residuals; assemble incoming contributions in the contract's
-    // fixed order (left, left-up, up, right-up), independent of scheduling.
-    std::vector<float> previous(w, 0), current(w, 0);
-    auto coordinate = [](std::size_t c, std::size_t extent, int offset) {
-      if (offset < 0)
-        return c < static_cast<std::size_t>(-offset) ? std::size_t{0} : c - static_cast<std::size_t>(-offset);
-      return extent - 1 - c < static_cast<std::size_t>(offset) ? extent - 1 : c + static_cast<std::size_t>(offset);
-    };
+    const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
+    std::vector<float> boundary(use_fs ? w : 0, 0);
+    std::vector<double> processed(w);
     auto gradient = [&](std::size_t x, std::size_t y) {
-      auto at = [&](int dx, int dy) {
-        return source[coordinate(y, h, dy) * w + coordinate(x, w, dx)];
-      };
-      // Compute exact F64 fallback from original samples if F32 arithmetic
-      // overflows. Integer Sobel gradients remain exactly representable.
-      const double gx = at(20, -20) + 2 * at(20, 0) + at(20, 20) - at(-20, -20) - 2 * at(-20, 0) - at(-20, 20);
-      const double gy = at(-20, -20) + 2 * at(0, -20) + at(20, -20) - at(-20, 20) - 2 * at(0, 20) - at(20, 20);
-      return std::array<double, 2>{gx, gy};
+      return gradient_at(source.data(), w, h, x, y);
     };
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? grain_c_ : grain_y_;
     for (std::size_t y = 0; y < h; ++y) {
-      std::fill(current.begin(), current.end(), 0);
       for (std::size_t x = 0; x < w; ++x) {
         const auto distance = distances_[(y << sy) * f.width + (x << sx)];
         const std::size_t h1 = distance.first >> sx, v1 = distance.first >> sy, h2 = distance.second >> sx,
@@ -238,48 +340,14 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
         }
         const double d = deband(source[y * w + x], refs, o.sample_mode, params_.thresholds[plane], integer,
                                 o.blur_first, directions, o.angle_boost);
-        const double z = plus(d, grain[offsets_[frame] + y * pitch + x], integer);
-        auto* target = output.data.data() + y * output.stride + x * bytes_per_sample(out);
-        if (out.sample == Sample::floating) {
-          double v = integer ? z / 65536 - (plane ? 0.5 : 0) : z;
-          if (o.keep_tv_range)
-            v = std::clamp(v, 16.0 / 256 - (plane ? 0.5 : 0), (plane ? 240.0 : 235.0) / 256 - (plane ? 0.5 : 0));
-          if (out.depth == 16)
-            store(target, encode_half(v));
-          else
-            store(target, static_cast<float>(std::clamp(v, -static_cast<double>(std::numeric_limits<float>::max()),
-                                                        static_cast<double>(std::numeric_limits<float>::max()))));
-        } else {
-          const double scale = std::ldexp(1.0, out.depth), tvscale = std::ldexp(1.0, out.depth - 8);
-          const double lo = o.keep_tv_range ? 16 * tvscale : 0,
-                       hi = o.keep_tv_range ? (plane ? 240 : 235) * tvscale : scale - 1;
-          const double value = integer ? std::ldexp(z, out.depth - 16) : (z + (plane ? 0.5 : 0)) * scale;
-          double quantized;
-          if (o.dither_algo == 1)
-            quantized = round_even(std::clamp(value, lo - 1, hi + 1));
-          else if (o.dither_algo == 2)
-            quantized = std::floor(std::clamp(value, lo - 1, hi + 1) + (bayer16(y, x) + 0.5) / 256);
-          else {
-            float error = x ? current[x - 1] * (7.0f / 16) : 0;
-            if (y) {
-              if (x)
-                error += previous[x - 1] * (1.0f / 16);
-              error += previous[x] * (5.0f / 16);
-              if (x + 1 < w)
-                error += previous[x + 1] * (3.0f / 16);
-            }
-            const double v = std::clamp(fp(std::clamp(value, lo, hi) + error), lo, hi);
-            quantized = round_even(v);
-            current[x] = static_cast<float>(v - quantized);
-          }
-          quantized = std::clamp(quantized, lo, hi);
-          if (out.depth == 8)
-            *target = static_cast<std::uint8_t>(quantized);
-          else
-            store(target, static_cast<std::uint16_t>(quantized));
-        }
+        processed[x] = plus(d, grain[offsets_[frame] + y * pitch + x], integer);
       }
-      previous.swap(current);
+      if (use_fs)
+        diffuse_stripe_scalar({processed.data(), output.data.data() + y * output.stride, boundary.data(), w, 1,
+                               output.stride, out.depth, integer, plane != 0, o.keep_tv_range});
+      else
+        pack_row_scalar({processed.data(), output.data.data() + y * output.stride, w, y, out.depth, o.dither_algo,
+                         integer, out.sample == Sample::integer, plane != 0, o.keep_tv_range});
     }
     result.planes.push_back(std::move(output));
   }

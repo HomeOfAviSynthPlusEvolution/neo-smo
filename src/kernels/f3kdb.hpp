@@ -1,0 +1,63 @@
+#pragma once
+#include "algorithms/f3kdb.hpp"
+#include <cstddef>
+#include <cstdint>
+namespace neo_smo::f3kdb {
+Frame process_frame(const Filter&, std::size_t frame, const std::vector<PlaneView>& input);
+// Hardware targets use this pipeline; software targets call process_scalar.
+Frame process_highway(const Filter&, std::size_t frame, const std::vector<PlaneView>& input);
+// Full active row, unpacked to processing units. Gradients only used by mode 7.
+struct Row {
+  const double* center;
+  const double* refs[4];
+  const double* gx[5];
+  const double* gy[5];
+  const double* grain;
+  double* output;
+  std::size_t count;
+};
+void process_row(const Row&, int mode, const double* thresholds, bool integer, bool blur, double angle, double boost);
+// Exposed internally so tests can check the continuous weight before quantization.
+void weights(const double* responses[4], double* output, std::size_t count);
+// Contiguous rows of post-grain processing values. boundary contains raw F32
+// residuals from the preceding row and is replaced with the last output row's
+// residuals. Initialize it to zero once per plane, not once per stripe.
+struct FsStripe {
+  const double* values;
+  std::uint8_t* output;
+  float* boundary;
+  std::size_t width;
+  std::size_t height;
+  std::size_t output_stride;
+  int output_depth;
+  bool integer_input;
+  bool chroma;
+  bool limited;
+};
+void diffuse_stripe(const FsStripe&);
+struct InputPlane {
+  const std::uint8_t* input;
+  double* output;
+  std::size_t width;
+  std::size_t height;
+  std::size_t stride;
+  int depth;
+  bool integer;
+};
+// False means an out-of-depth integer or a nonfinite float was encountered.
+bool unpack_plane(const InputPlane&);
+void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height);
+struct OutputRow {
+  const double* input;
+  std::uint8_t* output;
+  std::size_t count;
+  std::size_t y;
+  int depth;
+  int dither; // 1: ties-to-even; 2: Bayer. Floating outputs ignore dithering.
+  bool integer_input;
+  bool integer_output;
+  bool chroma;
+  bool limited;
+};
+void pack_row(const OutputRow&);
+} // namespace neo_smo::f3kdb

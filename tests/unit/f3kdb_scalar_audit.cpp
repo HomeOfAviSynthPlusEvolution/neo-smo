@@ -1,3 +1,4 @@
+#include "f3kdb_scalar_filter.hpp"
 #include "algorithms/f3kdb.hpp"
 #include <algorithm>
 #include <array>
@@ -124,7 +125,7 @@ void random_tables() {
   }
   f::Format fmt; fmt.width=512; fmt.height=512;
   auto o=zero();o.range=255; o.sample_mode=2;
-  f::Filter filter(fmt,o);
+  ScalarFilter filter(fmt,o);
   bool saw_large=false;
   const auto& d=filter.distances();
   check(d.size()==fmt.width*fmt.height,"distance table dimensions");
@@ -143,15 +144,15 @@ void frames() {
   f::Format fmt;fmt.sample=f::Sample::floating;fmt.depth=32;fmt.width=2;
   auto o=zero();o.output_sample_type=f::OutputSample::integer;o.output_depth=8;o.dither_algo=3;
   const std::array<float,2> src{.75f/256,.75f/256};
-  f::Filter fs(fmt,o);
+  ScalarFilter fs(fmt,o);
   auto out=fs.process(0,{{src.data(),sizeof(src),sizeof(src)}});
   check(pixel<std::uint8_t>(out.planes[0],0)==1 && pixel<std::uint8_t>(out.planes[0],1)==1,"signed FS golden row");
   fmt.width=1;
   const float outside=1.25f;
-  o=zero();f::Filter full(fmt,o);
+  o=zero();ScalarFilter full(fmt,o);
   out=full.process(0,{{&outside,4,4}});
   check(pixel<float>(out.planes[0],0)==outside,"float overshoot not clipped");
-  o.keep_tv_range=true;f::Filter tv(fmt,o);
+  o.keep_tv_range=true;ScalarFilter tv(fmt,o);
   out=tv.process(0,{{&outside,4,4}});
   check(pixel<float>(out.planes[0],0)==235.f/256,"TV applies on identity");
   for(float bad:{std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
@@ -162,14 +163,14 @@ void frames() {
 
   fmt.color=f::Color::yuv;fmt.width=2;fmt.height=2;fmt.sub_x=1;fmt.sub_y=1;
   o=zero();o.output_sample_type=f::OutputSample::integer;o.output_depth=8;o.dither_algo=1;
-  f::Filter yuv(fmt,o);
+  ScalarFilter yuv(fmt,o);
   const std::array<float,4> yy{.5f,.5f,.5f,.5f}; const float cc=0;
   out=yuv.process(0,{{yy.data(),sizeof(yy),8},{&cc,4,4},{&cc,4,4}});
   check(pixel<std::uint8_t>(out.planes[0],0)==128 && pixel<std::uint8_t>(out.planes[1],0)==128,"float chroma offset only at integer output");
 
   fmt={};fmt.width=9;fmt.height=7;fmt.frames=3;
   o=zero();o.grain_y=8;o.dynamic_grain=true;o.dither_algo=1;
-  f::Filter dynamic(fmt,o);
+  ScalarFilter dynamic(fmt,o);
   std::vector<std::uint8_t> a(fmt.width*fmt.height,128);
   const std::vector<f::PlaneView> views{{a.data(),a.size(),fmt.width}};
   const auto first=dynamic.process(2,views).planes[0].data;

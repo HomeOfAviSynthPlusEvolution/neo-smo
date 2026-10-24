@@ -1,5 +1,5 @@
 #include "algorithms/f3kdb_internal.hpp"
-#include "kernels/f3kdb_scalar.hpp"
+#include "kernels/f3kdb.hpp"
 
 namespace neo_smo::f3kdb {
 using namespace detail;
@@ -207,6 +207,6 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
 }
 
 Frame Filter::process(std::size_t frame, const std::vector<PlaneView>& input) const {
-  return process_scalar(*this, frame, input);
+  return process_frame(*this, frame, input);
 }
 } // namespace neo_smo::f3kdb

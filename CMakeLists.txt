@@ -9,16 +9,42 @@ option(NEO_SMO_BUILD_VAPOURSYNTH "Build the VapourSynth v4 plugin" ON)
 
 include(cmake/Dependencies.cmake)
 
-add_library(neo_smo_f3kdb STATIC src/algorithms/f3kdb.cpp src/kernels/f3kdb_scalar.cpp)
-target_include_directories(neo_smo_f3kdb PUBLIC src)
-target_compile_features(neo_smo_f3kdb PUBLIC cxx_std_17)
-set_target_properties(neo_smo_f3kdb PROPERTIES POSITION_INDEPENDENT_CODE ON
-  CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
-if(MSVC)
-  target_compile_options(neo_smo_f3kdb PRIVATE /W4 /fp:precise)
-else()
-  target_compile_options(neo_smo_f3kdb PRIVATE -Wall -Wextra -Wpedantic -fno-fast-math)
+set(NEO_SMO_F3KDB_SOURCES
+  src/algorithms/f3kdb.cpp src/algorithms/f3kdb_highway.cpp
+  src/kernels/f3kdb_scalar.cpp src/kernels/f3kdb.cpp
+  src/kernels/f3kdb_io.cpp src/kernels/f3kdb_fs.cpp)
+function(neo_smo_add_f3kdb_library target)
+  add_library(${target} STATIC ${NEO_SMO_F3KDB_SOURCES})
+  target_include_directories(${target} PUBLIC src)
+  target_compile_features(${target} PUBLIC cxx_std_17)
+  target_link_libraries(${target} PUBLIC hwy)
+  set_target_properties(${target} PROPERTIES POSITION_INDEPENDENT_CODE ON
+    CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /fp:precise)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -fno-fast-math)
+  endif()
+endfunction()
+neo_smo_add_f3kdb_library(neo_smo_f3kdb)
+
+# Preserve order-sensitive Highway conversions while permitting FMA. Native
+# MSVC retains its existing fast mode; clang-cl needs the Clang option spelling.
+set(NEO_SMO_F3KDB_NO_REASSOC_OPTIONS)
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+  if(MSVC)
+    set(NEO_SMO_F3KDB_NO_REASSOC_OPTIONS /clang:-fno-associative-math)
+  else()
+    set(NEO_SMO_F3KDB_NO_REASSOC_OPTIONS -fno-associative-math)
+  endif()
 endif()
+if(MSVC)
+  set(NEO_SMO_F3KDB_SIMD_OPTIONS /fp:fast)
+else()
+  set(NEO_SMO_F3KDB_SIMD_OPTIONS -ffp-contract=fast)
+endif()
+set_source_files_properties(src/kernels/f3kdb.cpp src/kernels/f3kdb_io.cpp src/kernels/f3kdb_fs.cpp
+  PROPERTIES COMPILE_OPTIONS "${NEO_SMO_F3KDB_SIMD_OPTIONS};${NEO_SMO_F3KDB_NO_REASSOC_OPTIONS}")
 
 add_library(neo_smo_core STATIC
   src/algorithms/mini_deen.cpp
@@ -130,6 +156,27 @@ if(BUILD_TESTING)
     target_link_libraries(neo_smo_f3kdb_${test}_tests PRIVATE neo_smo_f3kdb)
     add_test(NAME core.f3kdb.${test} COMMAND "$<TARGET_FILE:neo_smo_f3kdb_${test}_tests>")
     set_tests_properties(core.f3kdb.${test} PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 180)
+  endforeach()
+  # Dedicated builds guarantee both software targets use the production C++
+  # backend, including the fallback omitted by the normal target policy.
+  foreach(fallback scalar emu128)
+    string(TOUPPER "${fallback}" fallback_upper)
+    neo_smo_add_f3kdb_library(neo_smo_f3kdb_${fallback}_test_core)
+    target_compile_definitions(neo_smo_f3kdb_${fallback}_test_core PUBLIC HWY_COMPILE_ONLY_${fallback_upper})
+  endforeach()
+  foreach(backend simd scalar emu128)
+    if(backend STREQUAL "simd")
+      set(f3kdb_test_library neo_smo_f3kdb)
+    else()
+      set(f3kdb_test_library neo_smo_f3kdb_${backend}_test_core)
+    endif()
+    foreach(test f3kdb f3kdb_io)
+      add_executable(neo_smo_${test}_${backend}_differential_tests tests/unit/${test}.cpp)
+      target_link_libraries(neo_smo_${test}_${backend}_differential_tests PRIVATE ${f3kdb_test_library})
+      add_test(NAME core.${test}.${backend}.differential COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_${test}_${backend}_differential_tests>")
+      set_tests_properties(core.${test}.${backend}.differential PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 180)
+    endforeach()
   endforeach()
   foreach(test boundaries fp16 float_accuracy phase3 phase4 phase5 dct deen mini_deen)
     add_executable(neo_smo_${test}_tests tests/unit/${test}.cpp)

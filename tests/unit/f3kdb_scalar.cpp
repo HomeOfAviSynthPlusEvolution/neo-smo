@@ -1,3 +1,4 @@
+#include "f3kdb_scalar_filter.hpp"
 #include "algorithms/f3kdb.hpp"
 #include <algorithm>
 #include <cmath>
@@ -53,11 +54,11 @@ void parameters() {
   }
   o=identity(); o.dither_algo=4; rejects([&]{f::normalize(fmt,o);},"invalid float dither");
   fmt={}; fmt.width=std::numeric_limits<std::size_t>::max(); fmt.height=2;
-  rejects([&]{f::Filter filter(fmt);},"size multiplication overflow before allocation");
-  fmt.height=1; rejects([&]{f::Filter filter(fmt);},"sequence alignment overflow before allocation");
+  rejects([&]{ScalarFilter filter(fmt);},"size multiplication overflow before allocation");
+  fmt.height=1; rejects([&]{ScalarFilter filter(fmt);},"sequence alignment overflow before allocation");
   fmt={}; fmt.color=f::Color::yuv; fmt.sub_x=1;
-  rejects([&]{f::Filter filter(fmt);},"nonintegral chroma dimensions");
-  fmt={}; fmt.color=static_cast<f::Color>(2); rejects([&]{f::Filter filter(fmt);},"RGB rejected");
+  rejects([&]{ScalarFilter filter(fmt);},"nonintegral chroma dimensions");
+  fmt={}; fmt.color=static_cast<f::Color>(2); rejects([&]{ScalarFilter filter(fmt);},"RGB rejected");
 }
 void mathematics() {
   const std::array<double,3> high{100,100,100};
@@ -129,7 +130,7 @@ void random_tables() {
   rejects([&]{gaussian.next(2,-1);},"negative sigma");
   f::Format fmt; fmt.width=8;fmt.height=6;fmt.frames=3;
   f::Options o; o.dynamic_grain=true; o.range=255; o.sample_mode=2;
-  f::Filter filter(fmt,o), repeat(fmt,o);
+  ScalarFilter filter(fmt,o), repeat(fmt,o);
   check(filter.grain_y()==repeat.grain_y() && filter.offsets()==repeat.offsets(),"deterministic tables");
   const std::size_t length=128*((fmt.width+255)/128)*fmt.height;
   check(filter.grain_y().size()==3*length,"dynamic sequence capacity");
@@ -149,48 +150,48 @@ void random_tables() {
 void output_cases() {
   f::Format fmt;fmt.width=3; auto o=identity();o.output_sample_type=f::OutputSample::floating;
   std::vector<std::uint8_t> bytes{128,255,0};
-  auto result=f::Filter(fmt,o).process(0,{view(bytes,3)});
+  auto result=ScalarFilter(fmt,o).process(0,{view(bytes,3)});
   check(values<float>(result.planes[0])==std::vector<float>{0.5f,255.0f/256,0},"integer to float exact scale");
   fmt.color=f::Color::yuv; std::vector<std::uint8_t> chroma{128,129,127};
-  result=f::Filter(fmt,o).process(0,{view(bytes,3),view(chroma,3),view(chroma,3)});
+  result=ScalarFilter(fmt,o).process(0,{view(bytes,3),view(chroma,3),view(chroma,3)});
   check(values<float>(result.planes[1])==std::vector<float>{0,1.0f/256,-1.0f/256},"zero centered chroma");
   fmt={};fmt.sample=f::Sample::floating;fmt.depth=32;fmt.width=3;
   std::vector<float> floats{1,1.25f,-0.25f}; o=identity();
-  result=f::Filter(fmt,o).process(0,{view(floats,3)}); check(values<float>(result.planes[0])==floats,"float superrange identity");
-  o.keep_tv_range=true; result=f::Filter(fmt,o).process(0,{view(floats,3)});
+  result=ScalarFilter(fmt,o).process(0,{view(floats,3)}); check(values<float>(result.planes[0])==floats,"float superrange identity");
+  o.keep_tv_range=true; result=ScalarFilter(fmt,o).process(0,{view(floats,3)});
   check(values<float>(result.planes[0])==std::vector<float>{235.0f/256,235.0f/256,16.0f/256},"float TV clip");
   o.keep_tv_range=false; o.output_sample_type=f::OutputSample::integer; o.output_depth=8;
-  result=f::Filter(fmt,o).process(0,{view(floats,3)});check(values<std::uint8_t>(result.planes[0])==std::vector<std::uint8_t>{255,255,0},"float integer saturation");
-  floats={0.5f/256,1.5f/256,2.5f/256}; result=f::Filter(fmt,o).process(0,{view(floats,3)});
+  result=ScalarFilter(fmt,o).process(0,{view(floats,3)});check(values<std::uint8_t>(result.planes[0])==std::vector<std::uint8_t>{255,255,0},"float integer saturation");
+  floats={0.5f/256,1.5f/256,2.5f/256}; result=ScalarFilter(fmt,o).process(0,{view(floats,3)});
   check(values<std::uint8_t>(result.planes[0])==std::vector<std::uint8_t>{0,2,2},"output round even");
   fmt.width=16;fmt.height=16;floats.assign(256,0.5f/256);o.dither_algo=2;
-  result=f::Filter(fmt,o).process(0,{view(floats,16)});auto v=values<std::uint8_t>(result.planes[0]);
+  result=ScalarFilter(fmt,o).process(0,{view(floats,16)});auto v=values<std::uint8_t>(result.planes[0]);
   check(std::count(v.begin(),v.end(),0)==128 && std::count(v.begin(),v.end(),1)==128,"centered Bayer balance");
   fmt.width=2;fmt.height=1;floats={0.75f/256,0.75f/256};o.dither_algo=3;
-  result=f::Filter(fmt,o).process(0,{view(floats,2)});check(values<std::uint8_t>(result.planes[0])==std::vector<std::uint8_t>{1,1},"signed FS residual");
+  result=ScalarFilter(fmt,o).process(0,{view(floats,2)});check(values<std::uint8_t>(result.planes[0])==std::vector<std::uint8_t>{1,1},"signed FS residual");
   // F32 -> U16 still requires dither.
   fmt.width=16;fmt.height=16;floats.assign(256,0.5f/65536);o.output_depth=16;o.dither_algo=2;
-  result=f::Filter(fmt,o).process(0,{view(floats,16)});auto words=values<std::uint16_t>(result.planes[0]);
+  result=ScalarFilter(fmt,o).process(0,{view(floats,16)});auto words=values<std::uint16_t>(result.planes[0]);
   check(std::count(words.begin(),words.end(),1)==128,"16-bit float quantization remains active");
   fmt={};bytes={0};o=identity();o.keep_tv_range=true;
-  result=f::Filter(fmt,o).process(0,{view(bytes,1)});check(result.planes[0].data[0]==16,"zero strength does not bypass TV");
+  result=ScalarFilter(fmt,o).process(0,{view(bytes,1)});check(result.planes[0].data[0]==16,"zero strength does not bypass TV");
   fmt.sample=f::Sample::floating;fmt.depth=32;floats={std::numeric_limits<float>::infinity()};o=identity();
-  rejects([&]{f::Filter(fmt,o).process(0,{view(floats,1)});},"identity validates infinity");
-  floats[0]=std::numeric_limits<float>::quiet_NaN();rejects([&]{f::Filter(fmt,o).process(0,{view(floats,1)});},"identity validates NaN");
+  rejects([&]{ScalarFilter(fmt,o).process(0,{view(floats,1)});},"identity validates infinity");
+  floats[0]=std::numeric_limits<float>::quiet_NaN();rejects([&]{ScalarFilter(fmt,o).process(0,{view(floats,1)});},"identity validates NaN");
   floats[0]=std::numeric_limits<float>::max();o.output_depth=16;
-  result=f::Filter(fmt,o).process(0,{view(floats,1)});check(values<std::uint16_t>(result.planes[0])[0]==0x7bff,"float output finite half saturation");
+  result=ScalarFilter(fmt,o).process(0,{view(floats,1)});check(values<std::uint16_t>(result.planes[0])[0]==0x7bff,"float output finite half saturation");
   // Finite extremes must not produce a nonfinite intermediate comparison or
   // output; 20-pixel gradient replication also traverses both signs here.
   fmt.width=3;fmt.height=3;floats={-std::numeric_limits<float>::max(),0,std::numeric_limits<float>::max(),0,0,0,std::numeric_limits<float>::max(),0,-std::numeric_limits<float>::max()};
   o={};o.grain_y=0;o.output_depth=32;
-  for(int mode=1;mode<=7;++mode) { o.sample_mode=mode;result=f::Filter(fmt,o).process(0,{view(floats,3)});for(float pixel:values<float>(result.planes[0]))check(std::isfinite(pixel),"finite F32 extremes stay finite"); }
+  for(int mode=1;mode<=7;++mode) { o.sample_mode=mode;result=ScalarFilter(fmt,o).process(0,{view(floats,3)});for(float pixel:values<float>(result.planes[0]))check(std::isfinite(pixel),"finite F32 extremes stay finite"); }
   // Independent full-image residual transport oracle. Carefully chosen dyadic
   // input values and coefficients make the first rows exactly representable;
   // later rows explicitly reproduce F32 storage and prescribed incoming order.
   fmt.width=37;fmt.height=9;floats.resize(fmt.width*fmt.height);
   for(std::size_t i=0;i<floats.size();++i) floats[i]=static_cast<float>((i*19)%97+0.375)/256;
   o=identity();o.output_sample_type=f::OutputSample::integer;o.output_depth=8;o.dither_algo=3;
-  result=f::Filter(fmt,o).process(0,{view(floats,fmt.width)});
+  result=ScalarFilter(fmt,o).process(0,{view(floats,fmt.width)});
   std::vector<float> residual(floats.size());std::vector<std::uint8_t> expected(floats.size());
   for(std::size_t y=0;y<fmt.height;++y)for(std::size_t x=0;x<fmt.width;++x){
     const auto i=y*fmt.width+x;float error=x?residual[i-1]*0.4375f:0;
@@ -225,28 +226,28 @@ void integration_matrix() {
       }
       views.push_back({buffer.data(),buffer.size(),stride});
     }
-    const auto untouched=buffers;f::Filter filter(fmt,o);
+    const auto untouched=buffers;ScalarFilter filter(fmt,o);
     auto frame2=filter.process(2,views);filter.process(0,views);auto again=filter.process(2,views);
     for(std::size_t p=0;p<again.planes.size();++p) check(frame2.planes[p].data==again.planes[p].data,"out-of-order determinism matrix");
     check(buffers==untouched,"input immutable including padded rows");
     // Cross-type output cannot change the random/deband processing domain.
     o.output_sample_type=fmt.sample==f::Sample::integer?f::OutputSample::floating:f::OutputSample::integer;
-    auto cross=f::Filter(fmt,o).process(1,views);check(cross.planes.size()==frame2.planes.size(),"cross type matrix");
+    auto cross=ScalarFilter(fmt,o).process(1,views);check(cross.planes.size()==frame2.planes.size(),"cross type matrix");
   }
   for(int mode=1;mode<=7;++mode) {
     f::Format fmt;f::Options o=identity();o.sample_mode=mode;
-    std::vector<std::uint8_t> single{103};f::Filter filter(fmt,o);
+    std::vector<std::uint8_t> single{103};ScalarFilter filter(fmt,o);
     check(filter.process(0,{view(single,1)}).planes[0].data==single,"1x1 all modes");
     rejects([&]{filter.process(1,{view(single,1)});},"frame out of range");
     rejects([&]{filter.process(0,{{single.data(),0,1}});},"capacity rejected");
   }
   f::Format fmt;fmt.width=32;fmt.height=24;fmt.frames=4;f::Options o;o.dynamic_grain=true;
-  std::vector<std::uint8_t> bytes(fmt.width*fmt.height,128);f::Filter filter(fmt,o);
+  std::vector<std::uint8_t> bytes(fmt.width*fmt.height,128);ScalarFilter filter(fmt,o);
   auto serial=filter.process(3,{view(bytes,32)});
   auto task=std::async(std::launch::async,[&]{return filter.process(3,{view(bytes,32)});});
   auto other=filter.process(1,{view(bytes,32)});(void)other;
   check(task.get().planes[0].data==serial.planes[0].data,"concurrent request determinism");
-  o.mt=false;check(f::Filter(fmt,o).process(3,{view(bytes,32)}).planes[0].data==serial.planes[0].data,"mt does not alter results");
+  o.mt=false;check(ScalarFilter(fmt,o).process(3,{view(bytes,32)}).planes[0].data==serial.planes[0].data,"mt does not alter results");
 }
 } // namespace
 int main() {
