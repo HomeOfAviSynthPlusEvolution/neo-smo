@@ -337,6 +337,15 @@ std::size_t integer_target(const IntegerRow& row, int mode, const double* thresh
                         : integer_dispatch<1, 1>(row, mode, thresholds, blur);
 }
 HWY_INLINE V weight(D d, const V* c) {
+  auto all_positive = hn::Gt(c[0], hn::Zero(d));
+  auto all_one = hn::Eq(c[0], hn::Set(d, 1.0));
+  for (int j = 1; j < 4; ++j) {
+    all_positive = hn::And(all_positive, hn::Gt(c[j], hn::Zero(d)));
+    all_one = hn::And(all_one, hn::Eq(c[j], hn::Set(d, 1.0)));
+  }
+  // Each lane can independently be an exact zero or one endpoint.
+  if (hn::AllTrue(d, hn::Or(hn::Not(all_positive), all_one)))
+    return hn::IfThenElseZero(all_positive, hn::Set(d, 1.0));
   auto sum = hn::Zero(d);
   auto positive = hn::Gt(c[0], hn::Zero(d));
   for (int j = 0; j < 4; ++j) {

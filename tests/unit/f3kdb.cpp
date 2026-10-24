@@ -94,7 +94,7 @@ void weight_tests() {
   std::vector<double> actual(n);
   // Simultaneously cover endpoints, values whose product underflows, and a
   // monotone sweep. Checking the weight directly avoids hiding error in pixels.
-  for (int pattern=0;pattern<5;++pattern) {
+  for (int pattern=0;pattern<7;++pattern) {
     for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j)
       c[j][i]=pattern==0?double(i)/(n-1):pattern==1?(j==0?double(i)/(n-1):1.0):
               pattern==2?std::exp(-740.0+740.0*i/(n-1)): (i%2?1.0:0.0);
@@ -105,6 +105,10 @@ void weight_tests() {
         std::nextafter(0x1p-12, 0.0), 0.5, std::nextafter(1.0, 0.0), 1};
       for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j) c[j][i]=edges[i%9];
     }
+    if (pattern>=5)
+      for (std::size_t i=0;i<n;++i) for (int j=0;j<4;++j)
+        c[j][i]=i%2?1.0:(j==int(i%4)?0.0:0.375);
+    if (pattern==6) c[0][n/2]=0.25; // an interior lane keeps the logarithmic path active
     const double* ptr[4]={c[0].data(),c[1].data(),c[2].data(),c[3].data()};
     simd::weights(ptr,actual.data(),n);
     for (std::size_t i=0;i<n;++i) {
