@@ -26,6 +26,17 @@ namespace hn = hwy::HWY_NAMESPACE;
 using D = hn::ScalableTag<double>;
 using V = hn::VFromD<D>;
 using M = hn::MFromD<D>;
+// Full vectors use ordinary unaligned accesses. Only the last partial vector
+// needs bounded loads/stores (notably important on pre-AVX-512 targets).
+HWY_INLINE V load_row(D d, const double* p, std::size_t n) {
+  return n == hn::Lanes(d) ? hn::LoadU(d, p) : hn::LoadN(d, p, n);
+}
+HWY_INLINE void store_row(D d, V v, double* p, std::size_t n) {
+  if (n == hn::Lanes(d))
+    hn::StoreU(v, d, p);
+  else
+    hn::StoreN(v, d, p, n);
+}
 // F32 operations with a widened overflow fallback. Widening before arithmetic
 // also preserves subnormals in weighted means and tiny gradient products.
 HWY_INLINE V fp(D d, V v) {
@@ -97,16 +108,64 @@ HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle) {
   }
   return hn::Or(bothzero, hn::And(nonzero, accept));
 }
+// Modes 1/3 use two references and mode 2 uses four. Resolve these uniform
+// choices before the pixel loop so the common path has fixed arithmetic and
+// only loads references that participate in the mean.
+template <int N, bool Integer, bool Blur>
+void simple_row(const Row& row, double threshold) {
+  const D d;
+  const auto limit = hn::Set(d, threshold);
+  const auto zero = hn::Zero(d);
+  for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
+    const auto n = std::min(hn::Lanes(d), row.count - x);
+    const auto center = load_row(d, row.center + x, n);
+    V refs[N];
+    for (int j = 0; j < N; ++j)
+      refs[j] = load_row(d, row.refs[j] + x, n);
+    const auto average = mean(d, refs, N, Integer);
+    auto accepted = hn::Lt(hn::Abs(diff(d, average, center, Integer)), limit);
+    if constexpr (!Blur) {
+      accepted = hn::Eq(zero, zero);
+      for (int j = 0; j < N; ++j)
+        accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, refs[j], center, Integer)), limit));
+    }
+    auto result = hn::Add(hn::IfThenElse(accepted, average, center), load_row(d, row.grain + x, n));
+    if constexpr (!Integer)
+      result = fp(d, result);
+    store_row(d, result, row.output + x, n);
+  }
+}
+template <int N>
+void simple_row_dispatch(const Row& row, double threshold, bool integer, bool blur) {
+  if (integer) {
+    if (blur)
+      simple_row<N, true, true>(row, threshold);
+    else
+      simple_row<N, true, false>(row, threshold);
+  } else {
+    if (blur)
+      simple_row<N, false, true>(row, threshold);
+    else
+      simple_row<N, false, false>(row, threshold);
+  }
+}
 void row_target(const Row& row, int mode, const double* thresholds, bool integer, bool blur, double angle,
                 double boost) {
+  if (mode <= 3) {
+    if (mode == 2)
+      simple_row_dispatch<4>(row, thresholds[0], integer, blur);
+    else
+      simple_row_dispatch<2>(row, thresholds[0], integer, blur);
+    return;
+  }
   const D d;
   const auto zero = hn::Zero(d), half = hn::Set(d, 0.5), one = hn::Set(d, 1.0);
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto count = std::min(hn::Lanes(d), row.count - x);
-    const auto s = hn::LoadN(d, row.center + x, count);
+    const auto s = load_row(d, row.center + x, count);
     V r[4];
     for (int j = 0; j < 4; ++j)
-      r[j] = hn::LoadN(d, row.refs[j] + x, count);
+      r[j] = load_row(d, row.refs[j] + x, count);
     auto pass = [&](const V* values, int n) {
       const auto a = mean(d, values, n, integer);
       auto accepted = hn::Lt(hn::Abs(diff(d, a, s, integer)), hn::Set(d, thresholds[0]));
@@ -118,9 +177,7 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
       return hn::IfThenElse(accepted, a, s);
     };
     auto result = s;
-    if (mode <= 3)
-      result = pass(r, mode == 2 ? 4 : 2);
-    else if (mode == 4) {
+    if (mode == 4) {
       const V results[2] = {pass(r, 2), pass(r + 2, 2)};
       result = mean(d, results, 2, integer);
     } else {
@@ -147,10 +204,10 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
         auto k = one;
         if (mode == 7) {
           auto directions = hn::Eq(zero, zero);
-          const auto gx = hn::LoadN(d, row.gx[0] + x, count), gy = hn::LoadN(d, row.gy[0] + x, count);
+          const auto gx = load_row(d, row.gx[0] + x, count), gy = load_row(d, row.gy[0] + x, count);
           for (int j = 1; j < 5; ++j)
-            directions = hn::And(directions, aligned(d, gx, gy, hn::LoadN(d, row.gx[j] + x, count),
-                                                     hn::LoadN(d, row.gy[j] + x, count), angle));
+            directions = hn::And(directions, aligned(d, gx, gy, load_row(d, row.gx[j] + x, count),
+                                                     load_row(d, row.gy[j] + x, count), angle));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
         const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
@@ -164,19 +221,19 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
         result = hn::IfThenElse(hn::Eq(f, zero), s, blend);
       }
     }
-    result = hn::Add(result, hn::LoadN(d, row.grain + x, count));
+    result = hn::Add(result, load_row(d, row.grain + x, count));
     if (!integer)
       result = fp(d, result);
-    hn::StoreN(result, d, row.output + x, count);
+    store_row(d, result, row.output + x, count);
   }
 }
 void weights_target(const double* c[4], double* output, std::size_t count) {
   const D d;
   for (std::size_t x = 0; x < count; x += hn::Lanes(d)) {
     const auto n = std::min(hn::Lanes(d), count - x);
-    const V values[4] = {hn::LoadN(d, c[0] + x, n), hn::LoadN(d, c[1] + x, n), hn::LoadN(d, c[2] + x, n),
-                         hn::LoadN(d, c[3] + x, n)};
-    hn::StoreN(weight(d, values), d, output + x, n);
+    const V values[4] = {load_row(d, c[0] + x, n), load_row(d, c[1] + x, n), load_row(d, c[2] + x, n),
+                         load_row(d, c[3] + x, n)};
+    store_row(d, weight(d, values), output + x, n);
   }
 }
 #endif

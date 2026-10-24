@@ -3,6 +3,42 @@
 
 namespace neo_smo::f3kdb {
 using namespace detail;
+namespace {
+// Select the sampling layout once per row, not once per pixel/reference.
+// Modes 1/3 only use two neighbours; their other references are the center.
+template <int Mode>
+void collect_row(const double* source, const double* gx, const double* gy, const Distance* distances, std::size_t w,
+                 std::size_t h, std::size_t y, int sx, int sy, const std::array<double*, 4>& samples,
+                 const std::array<double*, 4>& grad_x, const std::array<double*, 4>& grad_y) {
+  constexpr int count = Mode == 1 || Mode == 3 ? 2 : 4;
+  for (std::size_t x = 0; x < w; ++x) {
+    const auto distance = distances[x << sx];
+    const std::size_t h1 = distance.first >> sx, v1 = distance.first >> sy;
+    std::array<std::array<std::size_t, 2>, count> positions;
+    if constexpr (Mode == 1)
+      positions = {{{x, y + v1}, {x, y - v1}}};
+    else if constexpr (Mode == 3)
+      positions = {{{x + h1, y}, {x - h1, y}}};
+    else if constexpr (Mode == 2) {
+      const std::size_t h2 = distance.second >> sx, v2 = distance.second >> sy;
+      positions = {{{x + h1, y + v2}, {x + h2, y - v1}, {x - h1, y - v2}, {x - h2, y + v1}}};
+    } else
+      positions = {{{x, y + v1}, {x, y - v1}, {x + h1, y}, {x - h1, y}}};
+    for (int j = 0; j < count; ++j) {
+      const auto px = positions[j][0], py = positions[j][1];
+      if (px >= w || py >= h)
+        throw std::logic_error("reference outside plane");
+      const auto index = py * w + px;
+      samples[j][x] = source[index];
+      if constexpr (Mode == 7) {
+        grad_x[j][x] = gx[index];
+        grad_y[j][x] = gy[index];
+      }
+    }
+  }
+}
+} // namespace
+
 Frame process_highway(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   const auto& f = filter.parameters().input;
   const auto& out = filter.parameters().output;
@@ -42,7 +78,8 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       sobel_plane(source.data(), gx.data(), gy.data(), w, h);
     }
     std::array<std::vector<double>, 4> samples, grad_x, grad_y;
-    for (int j = 0; j < 4; ++j) {
+    const int references = o.sample_mode == 1 || o.sample_mode == 3 ? 2 : 4;
+    for (int j = 0; j < references; ++j) {
       samples[j].resize(w);
       if (o.sample_mode == 7) {
         grad_x[j].resize(w);
@@ -51,29 +88,34 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     }
     std::vector<double> processed(mul(w, stripe_height));
     for (std::size_t y = 0; y < h; ++y) {
-      for (std::size_t x = 0; x < w; ++x) {
-        const auto distance = filter.distances()[(y << sy) * f.width + (x << sx)];
-        const std::size_t h1 = distance.first >> sx, v1 = distance.first >> sy, h2 = distance.second >> sx,
-                          v2 = distance.second >> sy;
-        std::array<std::array<std::size_t, 2>, 4> positions;
-        if (o.sample_mode == 1)
-          positions = {{{x, y + v1}, {x, y - v1}, {x, y}, {x, y}}};
-        else if (o.sample_mode == 3)
-          positions = {{{x + h1, y}, {x - h1, y}, {x, y}, {x, y}}};
-        else if (o.sample_mode == 2)
-          positions = {{{x + h1, y + v2}, {x + h2, y - v1}, {x - h1, y - v2}, {x - h2, y + v1}}};
-        else
-          positions = {{{x, y + v1}, {x, y - v1}, {x + h1, y}, {x - h1, y}}};
-        for (std::size_t j = 0; j < 4; ++j) {
-          const auto px = positions[j][0], py = positions[j][1];
-          if (px >= w || py >= h)
-            throw std::logic_error("reference outside plane");
-          samples[j][x] = source[py * w + px];
-          if (o.sample_mode == 7) {
-            grad_x[j][x] = gx[py * w + px];
-            grad_y[j][x] = gy[py * w + px];
-          }
-        }
+      const std::array<double*, 4> values = {samples[0].data(), samples[1].data(), samples[2].data(),
+                                             samples[3].data()};
+      const std::array<double*, 4> gradients_x = {grad_x[0].data(), grad_x[1].data(), grad_x[2].data(),
+                                                  grad_x[3].data()};
+      const std::array<double*, 4> gradients_y = {grad_y[0].data(), grad_y[1].data(), grad_y[2].data(),
+                                                  grad_y[3].data()};
+      const auto* distances = filter.distances().data() + (y << sy) * f.width;
+      switch (o.sample_mode) {
+        case 1:
+          collect_row<1>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
+                         gradients_y);
+          break;
+        case 2:
+          collect_row<2>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
+                         gradients_y);
+          break;
+        case 3:
+          collect_row<3>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
+                         gradients_y);
+          break;
+        case 7:
+          collect_row<7>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
+                         gradients_y);
+          break;
+        default:
+          collect_row<4>(source.data(), gx.data(), gy.data(), distances, w, h, y, sx, sy, values, gradients_x,
+                         gradients_y);
+          break;
       }
       Row batch{};
       batch.center = source.data() + y * w;
@@ -85,7 +127,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
         batch.gy[0] = gy.data() + y * w;
       }
       for (int j = 0; j < 4; ++j) {
-        batch.refs[j] = samples[j].data();
+        batch.refs[j] = j < references ? samples[j].data() : batch.center;
         batch.gx[j + 1] = grad_x[j].data();
         batch.gy[j + 1] = grad_y[j].data();
       }

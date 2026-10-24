@@ -35,12 +35,15 @@ using IoD = hn::ScalableTag<double>;
 template <class D>
 HWY_INLINE auto load_bytes(D d, const std::uint8_t* p, std::size_t n) {
   const hn::Repartition<std::uint8_t, D> bytes;
-  return hn::BitCast(d, hn::LoadN(bytes, p, n * sizeof(hn::TFromD<D>)));
+  return hn::BitCast(d, n == hn::Lanes(d) ? hn::LoadU(bytes, p) : hn::LoadN(bytes, p, n * sizeof(hn::TFromD<D>)));
 }
 template <class D>
-HWY_INLINE void store_bytes(D, hn::VFromD<D> v, std::uint8_t* p, std::size_t n) {
+HWY_INLINE void store_bytes(D d, hn::VFromD<D> v, std::uint8_t* p, std::size_t n) {
   const hn::Repartition<std::uint8_t, D> bytes;
-  hn::StoreN(hn::BitCast(bytes, v), bytes, p, n * sizeof(hn::TFromD<D>));
+  if (n == hn::Lanes(d))
+    hn::StoreU(hn::BitCast(bytes, v), bytes, p);
+  else
+    hn::StoreN(hn::BitCast(bytes, v), bytes, p, n * sizeof(hn::TFromD<D>));
 }
 
 bool unpack_plane_target(const InputPlane& plane) {
@@ -82,7 +85,10 @@ bool unpack_plane_target(const InputPlane& plane) {
         value =
             hn::BitCast(d, hn::Or(hn::BitCast(du64, value), hn::ShiftLeft<48>(hn::And(raw, hn::Set(du64, 0x8000)))));
       }
-      hn::StoreN(value, d, plane.output + y * plane.width + x, n);
+      if (n == hn::Lanes(d))
+        hn::StoreU(value, d, plane.output + y * plane.width + x);
+      else
+        hn::StoreN(value, d, plane.output + y * plane.width + x, n);
     }
   return true;
 }
@@ -116,11 +122,12 @@ void pack_row_target(const OutputRow& row) {
   const double offset = row.chroma ? 0.5 : 0;
   const std::size_t bytes = row.depth == 8 ? 1 : row.depth <= 16 ? 2 : 4;
   const double scale = std::ldexp(1.0, row.depth), tvscale = std::ldexp(1.0, row.depth - 8);
+  const auto integer_scale = hn::Set(d, std::ldexp(1.0, row.depth - 16));
   const double lo = row.limited ? 16 * tvscale : 0;
   const double hi = row.limited ? (row.chroma ? 240 : 235) * tvscale : scale - 1;
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto n = std::min(hn::Lanes(d), row.count - x);
-    auto value = hn::LoadN(d, row.input + x, n);
+    auto value = n == hn::Lanes(d) ? hn::LoadU(d, row.input + x) : hn::LoadN(d, row.input + x, n);
     auto* p = row.output + x * bytes;
     if (!row.integer_output) {
       if (row.integer_input)
@@ -137,7 +144,7 @@ void pack_row_target(const OutputRow& row) {
       }
     } else {
       if (row.integer_input)
-        value = hn::Mul(value, hn::Set(d, std::ldexp(1.0, row.depth - 16)));
+        value = hn::Mul(value, integer_scale);
       else
         value = hn::Mul(hn::Add(value, hn::Set(d, offset)), hn::Set(d, scale));
       value = hn::Min(hn::Set(d, hi + 1), hn::Max(hn::Set(d, lo - 1), value));
