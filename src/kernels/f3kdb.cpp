@@ -22,7 +22,9 @@ std::size_t collect_simple_target(const SamplingRow&, int) {
 SamplingResult sampled_target(const SamplingRow&, const Row&, int, double, bool, bool) {
   return {0, 0};
 }
-std::size_t integer_target(const IntegerRow&, int, const double*, bool) { return 0; }
+std::size_t integer_target(const IntegerRow&, int, const double*, bool) {
+  return 0;
+}
 void row_target(const Row& row, int mode, const double* t, bool integer, bool blur, double angle, double boost) {
   process_row_scalar(row, mode, t, integer, blur, angle, boost);
 }
@@ -34,6 +36,15 @@ namespace hn = hwy::HWY_NAMESPACE;
 using D = hn::ScalableTag<double>;
 using V = hn::VFromD<D>;
 using M = hn::MFromD<D>;
+HWY_INLINE V load_integer_grain(D d, const std::int16_t* p, std::size_t n) {
+  const hn::Rebind<std::int16_t, D> di16;
+  const hn::Rebind<std::int32_t, D> di32;
+  return hn::PromoteTo(d, hn::PromoteTo(di32, n == hn::Lanes(d) ? hn::LoadU(di16, p) : hn::LoadN(di16, p, n)));
+}
+HWY_INLINE V load_grain(D d, const float* p, std::size_t n) {
+  const hn::Rebind<float, D> df;
+  return hn::PromoteTo(d, n == hn::Lanes(d) ? hn::LoadU(df, p) : hn::LoadN(df, p, n));
+}
 template <int N, bool Blur>
 HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold);
 // Read the interleaved distance bytes directly. Chroma subsampling by two
@@ -76,9 +87,11 @@ std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, 
     if constexpr (Mode == 1 || Mode == 3) {
       const auto offset = Mode == 1 ? hn::GatherIndex(di, row.vertical_offsets, v1) : h1;
       refs[0] = hn::GatherIndex(d, center, hn::Add(index, offset));
-      if constexpr (!Fused) hn::StoreU(refs[0], d, row.samples[0] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[0], d, row.samples[0] + x);
       refs[1] = hn::GatherIndex(d, center, hn::Sub(index, offset));
-      if constexpr (!Fused) hn::StoreU(refs[1], d, row.samples[1] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[1], d, row.samples[1] + x);
     } else {
       const auto distance2 = hn::PromoteTo(di, second);
       const auto h2 = hn::ShiftRightSame(distance2, row.sub_x);
@@ -89,17 +102,21 @@ std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, 
       const auto a = hn::Add(hn::GatherIndex(di, row.vertical_offsets, v2), h1);
       const auto b = hn::Sub(h2, hn::GatherIndex(di, row.vertical_offsets, v1));
       refs[0] = hn::GatherIndex(d, center, hn::Add(index, a));
-      if constexpr (!Fused) hn::StoreU(refs[0], d, row.samples[0] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[0], d, row.samples[0] + x);
       refs[1] = hn::GatherIndex(d, center, hn::Add(index, b));
-      if constexpr (!Fused) hn::StoreU(refs[1], d, row.samples[1] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[1], d, row.samples[1] + x);
       refs[2] = hn::GatherIndex(d, center, hn::Sub(index, a));
-      if constexpr (!Fused) hn::StoreU(refs[2], d, row.samples[2] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[2], d, row.samples[2] + x);
       refs[3] = hn::GatherIndex(d, center, hn::Sub(index, b));
-      if constexpr (!Fused) hn::StoreU(refs[3], d, row.samples[3] + x);
+      if constexpr (!Fused)
+        hn::StoreU(refs[3], d, row.samples[3] + x);
     }
     if constexpr (Fused) {
       auto result = sampled_value<Mode == 2 ? 4 : 2, Blur>(d, hn::LoadU(d, center), refs, threshold);
-      result = hn::Add(result, hn::LoadU(d, output->grain + x));
+      result = hn::Add(result, load_integer_grain(d, output->integer_grain + x, hn::Lanes(d)));
       hn::StoreU(result, d, output->output + x);
     }
   }
@@ -163,7 +180,7 @@ HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold) {
   return hn::IfThenElse(accept, average, center);
 }
 SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,
-                           bool blur) {
+                              bool blur) {
   // Four-reference fusion is slower than collection on four-double-lane targets.
   if (!integer || hn::Lanes(D{}) < 4 || sampling.sub_x > 1 || sampling.width == 0 || (hn::Lanes(D{}) == 4 && mode == 2))
     return {collect_simple_target(sampling, mode), 0};
@@ -171,7 +188,7 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
   switch (mode) {
     case 1:
       count = blur ? collect_simple<1, true, true>(sampling, &row, threshold)
-                  : collect_simple<1, true, false>(sampling, &row, threshold);
+                   : collect_simple<1, true, false>(sampling, &row, threshold);
       break;
     case 2:
       count = blur ? collect_simple<2, true, true>(sampling, &row, threshold)
@@ -248,12 +265,12 @@ std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
       for (int j = 0; j < N; ++j)
         accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit));
     }
-    const auto result = hn::IfThenElse(accept, mean, value);
+    const hn::Rebind<std::int16_t, decltype(d)> dg;
+    const auto result = hn::Add(hn::IfThenElse(accept, mean, value), hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
     const hn::ScalableTag<double> dd;
     const hn::Half<decltype(d)> half;
-    const auto low = hn::Add(hn::PromoteTo(dd, hn::LowerHalf(half, result)), hn::LoadU(dd, row.grain + x));
-    const auto high =
-        hn::Add(hn::PromoteTo(dd, hn::UpperHalf(half, result)), hn::LoadU(dd, row.grain + x + hn::Lanes(dd)));
+    const auto low = hn::PromoteTo(dd, hn::LowerHalf(half, result));
+    const auto high = hn::PromoteTo(dd, hn::UpperHalf(half, result));
     hn::StoreU(low, dd, row.output + x);
     hn::StoreU(high, dd, row.output + x + hn::Lanes(dd));
   }
@@ -358,7 +375,9 @@ void simple_row(const Row& row, double threshold) {
       for (int j = 0; j < N; ++j)
         accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, refs[j], center, Integer)), limit));
     }
-    auto result = hn::Add(hn::IfThenElse(accepted, average, center), load_row(d, row.grain + x, n));
+    auto result =
+        hn::Add(hn::IfThenElse(accepted, average, center),
+                (Integer ? load_integer_grain(d, row.integer_grain + x, n) : load_grain(d, row.grain + x, n)));
     if constexpr (!Integer)
       result = fp(d, result);
     store_row(d, result, row.output + x, n);
@@ -455,7 +474,8 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
         result = hn::IfThenElse(hn::Eq(f, zero), s, blend);
       }
     }
-    result = hn::Add(result, load_row(d, row.grain + x, count));
+    result = hn::Add(
+        result, (integer ? load_integer_grain(d, row.integer_grain + x, count) : load_grain(d, row.grain + x, count)));
     if (!integer)
       result = fp(d, result);
     store_row(d, result, row.output + x, count);
@@ -492,8 +512,8 @@ std::size_t process_integer_row(const IntegerRow& row, int mode, const double* t
   return HWY_DYNAMIC_DISPATCH(integer_target)(row, mode, thresholds, blur);
 }
 HWY_EXPORT(sampled_target);
-SamplingResult process_sampled_row(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,
-                                bool blur) {
+SamplingResult process_sampled_row(const SamplingRow& sampling, const Row& row, int mode, double threshold,
+                                   bool integer, bool blur) {
   return HWY_DYNAMIC_DISPATCH(sampled_target)(sampling, row, mode, threshold, integer, blur);
 }
 HWY_EXPORT(collect_simple_target);

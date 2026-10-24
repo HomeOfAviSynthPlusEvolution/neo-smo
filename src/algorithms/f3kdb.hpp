@@ -88,14 +88,19 @@ public:
   const Parameters& parameters() const { return params_; }
   const std::vector<Distance>& distances() const { return distances_; }
   const std::vector<std::size_t>& offsets() const { return offsets_; }
-  const std::vector<double>& grain_y() const { return grain_y_; }
-  const std::vector<double>& grain_c() const { return grain_c_; }
+  const std::vector<float>& grain_y() const { return grain_y_; }
+  const std::vector<float>& grain_c() const { return grain_c_; }
+  const std::vector<std::int16_t>& grain_y_integer() const { return grain_y_integer_; }
+  const std::vector<std::int16_t>& grain_c_integer() const { return grain_c_integer_; }
   Frame process(std::size_t frame, const std::vector<PlaneView>& input) const;
 
 private:
   Parameters params_;
   std::vector<Distance> distances_;
-  std::vector<double> grain_y_, grain_c_;
+  // Only the input format's representation is populated. Integer noise is
+  // rounded and bounded by +/-16384; floating noise is already rounded to F32.
+  std::vector<float> grain_y_, grain_c_;
+  std::vector<std::int16_t> grain_y_integer_, grain_c_integer_;
   std::vector<std::size_t> offsets_;
 };
 } // namespace neo_smo::f3kdb

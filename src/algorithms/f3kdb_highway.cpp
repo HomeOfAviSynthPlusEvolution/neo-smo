@@ -78,10 +78,10 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     std::vector<double> processed(mul(w, stripe_height));
     std::vector<float> boundary(use_fs ? w : 0, 0);
     const auto pitch = mul(add(w, 15) / 16, 16);
-    const auto& grain = plane ? filter.grain_c() : filter.grain_y();
+    const auto& grain = plane ? filter.grain_c_integer() : filter.grain_y_integer();
     auto center = plane_view(static_cast<const std::int32_t*>(source.data()), w, h).cursor();
     auto distances = plane_view(filter.distances().data(), f.width, f.height).cursor();
-    auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(std::int16_t))).cursor();
     auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
     std::size_t stripe_rows = 0;
     auto* stripe_output = output.data.data();
@@ -179,6 +179,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     std::vector<float> fs_boundary(use_fs ? w : 0, 0);
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c() : filter.grain_y();
+    const auto& grain_integer = plane ? filter.grain_c_integer() : filter.grain_y_integer();
     std::vector<double> gx, gy;
     if (o.sample_mode == 7) {
       gx.resize(n);
@@ -215,12 +216,20 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     auto processed_row = processed_view.cursor();
     std::size_t stripe_rows = 0;
     auto* stripe_output = output.data.data();
-    auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto noise = integer ? span2d::RowCursor<const float>{}
+                         : plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(float))).cursor();
+    auto noise_integer =
+        integer ? plane_view(grain_integer.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(std::int16_t)))
+                      .cursor()
+                : span2d::RowCursor<const std::int16_t>{};
     auto target = output_view.cursor();
     for (std::size_t y = 0; y < h; ++y) {
       if (y) {
         ++center;
-        ++noise;
+        if (integer)
+          ++noise_integer;
+        else
+          ++noise;
         ++target;
         distance_row += std::size_t{1} << sy;
         if (o.sample_mode == 7) {
@@ -247,6 +256,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       batch.count = w;
       batch.output = processed_row.ptr();
       batch.grain = noise.ptr();
+      batch.integer_grain = noise_integer.ptr();
       std::size_t collected = 0;
       std::size_t processed_prefix = 0;
       if (o.sample_mode <= 3) {
@@ -258,8 +268,8 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
                                    std::min(y, h - 1 - y),
                                    sx,
                                    sy};
-        const auto prefix = process_sampled_row(sampling, batch, o.sample_mode, filter.parameters().thresholds[plane][0],
-                                               integer, o.blur_first);
+        const auto prefix = process_sampled_row(sampling, batch, o.sample_mode,
+                                                filter.parameters().thresholds[plane][0], integer, o.blur_first);
         collected = prefix.collected;
         processed_prefix = prefix.processed;
       }
@@ -317,7 +327,10 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       if (processed_prefix) {
         batch.center += processed_prefix;
         batch.output += processed_prefix;
-        batch.grain += processed_prefix;
+        if (integer)
+          batch.integer_grain += processed_prefix;
+        else
+          batch.grain += processed_prefix;
         batch.count -= processed_prefix;
         for (auto& ref : batch.refs)
           ref += processed_prefix;

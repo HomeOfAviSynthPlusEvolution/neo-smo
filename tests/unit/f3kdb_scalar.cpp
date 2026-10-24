@@ -131,9 +131,9 @@ void random_tables() {
   f::Format fmt; fmt.width=8;fmt.height=6;fmt.frames=3;
   f::Options o; o.dynamic_grain=true; o.range=255; o.sample_mode=2;
   ScalarFilter filter(fmt,o), repeat(fmt,o);
-  check(filter.grain_y()==repeat.grain_y() && filter.offsets()==repeat.offsets(),"deterministic tables");
+  check(filter.grain_y_integer()==repeat.grain_y_integer() && filter.offsets()==repeat.offsets(),"deterministic tables");
   const std::size_t length=128*((fmt.width+255)/128)*fmt.height;
-  check(filter.grain_y().size()==3*length,"dynamic sequence capacity");
+  check(filter.grain_y_integer().size()==3*length && filter.grain_y().empty(),"dynamic sequence capacity");
   for(auto offset:filter.offsets()) check(offset%16==0 && offset<=2*length,"wide aligned offsets");
   for(std::size_t y=0;y<fmt.height;++y) for(std::size_t x=0;x<fmt.width;++x) {
     const auto d=filter.distances()[y*fmt.width+x]; const auto r=std::min({x,y,fmt.width-1-x,fmt.height-1-y});
@@ -145,7 +145,42 @@ void random_tables() {
   for(std::size_t y=0;y<6;++y) for(std::size_t x=0;x<8;++x) {
     replay.next(1,0); const auto r=std::min({x,y,7-x,5-y}); if(r){replay.next(1,0);replay.next(1,0);}
   }
-  check(filter.grain_y()[0]==std::round(replay.next(1,0)*256),"RNG consumption order");
+  for (auto value : filter.grain_y_integer())
+    check(value==std::round(replay.next(1,0)*256),"RNG consumption order");
+  // Replay both complete tables before the dynamic offsets. Exercise the
+  // maximum integer amplitude and fractional floating noise with all RNGs.
+  for (bool integer : {true, false}) for (int algorithm=0; algorithm<3; ++algorithm) {
+    f::Format format; format.width=4; format.height=2; format.frames=3;
+    format.color=f::Color::yuv; format.sub_x=1; format.sub_y=1;
+    format.sample=integer?f::Sample::integer:f::Sample::floating;
+    format.depth=integer?16:32;
+    f::Options options; options.range=0; options.dynamic_grain=true;
+    options.seed=17; options.random_algo_grain=algorithm;
+    options.grain_y=4096; options.grain_c=0.125;
+    const f::Filter actual(format,options);
+    f::Random expected((0x92D68CA2u-17u)^(4u<<16)^2u^(3u<<16)^3u);
+    for (std::size_t y=0;y<2;++y) for (std::size_t x=0;x<4;++x) {
+      expected.next(algorithm,1);
+      if (x%2==0 && y%2==0) { expected.next(algorithm,1); expected.next(algorithm,1); }
+    }
+    const std::size_t sequence=128*((format.width+255)/128)*format.height;
+    for (int plane=0;plane<2;++plane) {
+      const auto& ints=plane?actual.grain_c_integer():actual.grain_y_integer();
+      const auto& floats=plane?actual.grain_c():actual.grain_y();
+      check(integer ? floats.empty() && ints.size()==3*sequence : ints.empty() && floats.size()==3*sequence,
+            "only active noise representation allocated");
+      const double amplitude=(plane?0.125:4096)*4/(integer?1:65536.0);
+      for (std::size_t i=0;i<3*sequence;++i) {
+        const double value=expected.next(algorithm,1)*amplitude;
+        check(integer ? ints[i]==std::round(value) : floats[i]==static_cast<float>(value),"complete noise table replay");
+      }
+    }
+    for (auto offset : actual.offsets()) {
+      const long double value=static_cast<long double>(expected.next(1,0))*sequence;
+      const auto rounded=value>0?std::floor(value+0.5L):std::ceil(value-0.5L);
+      check(offset==static_cast<std::size_t>(16*std::floor((sequence+rounded)/16)),"noise replay dynamic offset");
+    }
+  }
 }
 void output_cases() {
   f::Format fmt;fmt.width=3; auto o=identity();o.output_sample_type=f::OutputSample::floating;

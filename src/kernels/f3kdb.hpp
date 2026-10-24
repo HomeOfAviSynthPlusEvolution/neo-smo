@@ -12,7 +12,8 @@ struct Row {
   const double* refs[4];
   const double* gx[5];
   const double* gy[5];
-  const double* grain;
+  const float* grain;
+  const std::int16_t* integer_grain;
   double* output;
   std::size_t count;
 };
@@ -27,7 +28,9 @@ struct SamplingRow {
   std::size_t vertical_limit;
   int sub_x, sub_y;
 };
-struct SamplingResult { std::size_t collected, processed; };
+struct SamplingResult {
+  std::size_t collected, processed;
+};
 // Fuse integer sampling/deband where profitable; otherwise collect references.
 // The processed prefix leaves sample buffers untouched.
 SamplingResult process_sampled_row(const SamplingRow&, const Row&, int mode, double threshold, bool integer, bool blur);
@@ -37,7 +40,7 @@ void process_row(const Row&, int mode, const double* thresholds, bool integer, b
 struct IntegerRow {
   const std::int32_t* center;
   const Distance* distances;
-  const double* grain;
+  const std::int16_t* grain;
   double* output;
   std::size_t width, vertical_limit;
   std::size_t row_offset; // center index from the plane origin; plane extent <= INT32_MAX

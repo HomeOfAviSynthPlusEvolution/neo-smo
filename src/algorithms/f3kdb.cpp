@@ -1,3 +1,4 @@
+#include <type_traits>
 #include "algorithms/f3kdb_internal.hpp"
 #include "kernels/f3kdb.hpp"
 
@@ -146,7 +147,10 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
   const auto length = mul(mul(128, add(f.width, 255) / 128), f.height);
   const auto count = mul(length, o.dynamic_grain ? 3 : 1);
   capacity<Distance>(pixels);
-  capacity<double>(count);
+  if (f.sample == Sample::integer)
+    capacity<std::int16_t>(count);
+  else
+    capacity<float>(count);
   capacity<std::size_t>(f.frames);
   // Prove every plane's final window fits before allocating or advancing RNG.
   for (int plane = 0; plane < (f.color == Color::gray ? 1 : 3); ++plane) {
@@ -156,9 +160,15 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
       throw std::overflow_error("grain window exceeds sequence");
   }
   distances_.resize(pixels);
-  grain_y_.resize(count);
-  if (f.color == Color::yuv)
-    grain_c_.resize(count);
+  if (f.sample == Sample::integer) {
+    grain_y_integer_.resize(count);
+    if (f.color == Color::yuv)
+      grain_c_integer_.resize(count);
+  } else {
+    grain_y_.resize(count);
+    if (f.color == Color::yuv)
+      grain_c_.resize(count);
+  }
   offsets_.resize(f.frames);
   const auto w32 = static_cast<std::uint32_t>(f.width), h32 = static_cast<std::uint32_t>(f.height),
              n32 = static_cast<std::uint32_t>(f.frames);
@@ -184,14 +194,20 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
         rng.next(o.random_algo_grain, o.random_param_grain);
       }
     }
-  auto fill = [&](std::vector<double>& table, double amplitude) {
-    for (auto& value : table) {
-      value = rng.next(o.random_algo_grain, o.random_param_grain) * amplitude;
-      value = f.sample == Sample::integer ? away(value) : fp(value);
+  auto fill = [&](auto& table, double amplitude) {
+    for (auto& stored : table) {
+      const double value = rng.next(o.random_algo_grain, o.random_param_grain) * amplitude;
+      stored = static_cast<typename std::decay_t<decltype(table)>::value_type>(f.sample == Sample::integer ? away(value)
+                                                                                                           : fp(value));
     }
   };
-  fill(grain_y_, params_.grain[0]);
-  fill(grain_c_, params_.grain[1]);
+  if (f.sample == Sample::integer) {
+    fill(grain_y_integer_, params_.grain[0]);
+    fill(grain_c_integer_, params_.grain[1]);
+  } else {
+    fill(grain_y_, params_.grain[0]);
+    fill(grain_c_, params_.grain[1]);
+  }
   if (o.dynamic_grain)
     for (auto& offset : offsets_) {
       // long double avoids narrowing the potentially wide offset to an int.

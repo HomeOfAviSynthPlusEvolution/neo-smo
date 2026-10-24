@@ -165,9 +165,10 @@ void sampling_tests() {
           for (std::size_t x = j >= (mode == 2 ? 4 : 2) ? 0 : count; x <= width; ++x)
             check(samples[j][x] == -1, "sampling tail and unused outputs");
         for (bool blur : {false, true}) for (double threshold : {0.0, 0.5, 1.0, 255.25, 65535.0}) {
-          std::vector<double> output(width + 1, -999), grain(width);
+          std::vector<double> output(width + 1, -999);
+          std::vector<std::int16_t> grain(width);
           for (std::size_t x = 0; x < width; ++x) grain[x] = double(int(x % 31) - 15);
-          simd::Row batch{}; batch.center = row.center; batch.grain = grain.data(); batch.output = output.data(); batch.count = width;
+          simd::Row batch{}; batch.center = row.center; batch.integer_grain = grain.data(); batch.output = output.data(); batch.count = width;
           const auto processed = simd::process_sampled_row(row, batch, mode, threshold, true, blur).processed;
           check(processed <= count, "fused sampling extent");
           for (std::size_t x = 0; x < processed; ++x) {
@@ -214,8 +215,10 @@ void row_tests() {
   std::mt19937 rng(0x3f3db);
   std::array<std::vector<double>,16> storage;
   for (auto& v:storage) v.resize(n);
-  std::vector<double> out(n),grain(n);
-  simd::Row row{}; row.center=storage[0].data(); row.count=n; row.output=out.data(); row.grain=grain.data();
+  std::vector<double> out(n);
+  std::vector<float> grain(n);
+  std::vector<std::int16_t> integer_grain(n);
+  simd::Row row{}; row.center=storage[0].data(); row.count=n; row.output=out.data(); row.grain=grain.data(); row.integer_grain=integer_grain.data();
   for (int j=0;j<4;++j) row.refs[j]=storage[j+1].data();
   for (int j=0;j<5;++j) { row.gx[j]=storage[5+2*j].data(); row.gy[j]=storage[6+2*j].data(); }
   for (bool integer:{true,false}) for (int pattern=0;pattern<5;++pattern) {

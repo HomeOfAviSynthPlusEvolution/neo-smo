@@ -159,7 +159,8 @@ void process_row_scalar(const Row& row, int mode, const double* thresholds, bool
       if (mode == 7)
         directions = directions && aligned({row.gx[0][x], row.gy[0][x]}, {row.gx[j + 1][x], row.gy[j + 1][x]}, angle);
     }
-    row.output[x] = plus(deband(row.center[x], refs, mode, t, integer, blur, directions, boost), row.grain[x], integer);
+    row.output[x] = plus(deband(row.center[x], refs, mode, t, integer, blur, directions, boost),
+                         (integer ? row.integer_grain[x] : row.grain[x]), integer);
   }
 }
 
@@ -350,14 +351,22 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
     };
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? grain_c_ : grain_y_;
+    const auto& grain_integer = plane ? filter.grain_c_integer() : filter.grain_y_integer();
     auto center = source_view.cursor();
-    auto noise = plane_view(grain.data() + offsets_[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto noise = integer ? span2d::RowCursor<const float>{}
+                         : plane_view(grain.data() + offsets_[frame], w, h, mul(pitch, sizeof(float))).cursor();
+    auto noise_integer =
+        integer ? plane_view(grain_integer.data() + offsets_[frame], w, h, mul(pitch, sizeof(std::int16_t))).cursor()
+                : span2d::RowCursor<const std::int16_t>{};
     auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
     auto distances = plane_view(distances_.data(), f.width, f.height).cursor();
     for (std::size_t y = 0; y < h; ++y) {
       if (y) {
         ++center;
-        ++noise;
+        if (integer)
+          ++noise_integer;
+        else
+          ++noise;
         ++target;
         distances += std::size_t{1} << sy;
       }
@@ -387,7 +396,7 @@ Frame process_scalar(const Filter& filter, std::size_t frame, const std::vector<
         }
         const double d = deband(center.row()[x], refs, o.sample_mode, params_.thresholds[plane], integer, o.blur_first,
                                 directions, o.angle_boost);
-        processed[x] = plus(d, noise.row()[x], integer);
+        processed[x] = plus(d, integer ? noise_integer.row()[x] : noise.row()[x], integer);
       }
       if (use_fs)
         diffuse_stripe_scalar({processed.data(), target.ptr(), boundary.data(), w, 1, output.stride, out.depth, integer,
