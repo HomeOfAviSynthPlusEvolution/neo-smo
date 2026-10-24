@@ -52,7 +52,7 @@ void collect_row(const double* center, const double* gx, const double* gy, const
     }
   }
 }
-// Modes 1-3 use exact integer arithmetic and need no wide source intermediates.
+// Modes 1-5 use exact integer arithmetic and need no wide source intermediates.
 Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   const auto& params = filter.parameters();
   const auto& f = params.input;
@@ -112,13 +112,19 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
           const auto offset = static_cast<std::ptrdiff_t>(o.sample_mode == 1 ? v1 * w : h1);
           refs[0] = pixel[offset];
           refs[1] = pixel[-offset];
-        } else {
+        } else if (o.sample_mode == 2) {
           const auto h2 = std::size_t(d.second >> sx), v2 = std::size_t(d.second >> sy);
           if (h2 > hlimit || v2 > vlimit)
             throw std::logic_error("reference outside plane");
           const auto a = static_cast<std::ptrdiff_t>(v2 * w + h1);
           const auto b = static_cast<std::ptrdiff_t>(h2) - static_cast<std::ptrdiff_t>(v1 * w);
           refs = {double(pixel[a]), double(pixel[b]), double(pixel[-a]), double(pixel[-b])};
+        }
+        if (o.sample_mode >= 4) {
+          const auto vertical = static_cast<std::ptrdiff_t>(v1 * w);
+          const auto horizontal = static_cast<std::ptrdiff_t>(h1);
+          refs = {double(pixel[vertical]), double(pixel[-vertical]), double(pixel[horizontal]),
+                  double(pixel[-horizontal])};
         }
         processed_row[x] =
             deband(*pixel, refs, o.sample_mode, params.thresholds[plane], true, o.blur_first) + noise.ptr()[x];
@@ -154,7 +160,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
   if (input.size() != planes)
     invalid("plane count");
   // Signed 32-bit gather indices must cover every source-plane displacement.
-  if (integer && o.sample_mode <= 3 && f.sub_x <= 1 && f.sub_y <= 1 &&
+  if (integer && o.sample_mode <= 5 && f.sub_x <= 1 && f.sub_y <= 1 &&
       mul(f.width, f.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
     return process_integer_frame(filter, frame, input);
   Frame result{out, {}};

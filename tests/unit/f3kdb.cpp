@@ -210,6 +210,38 @@ void sampling_tests() {
     }
   }
 }
+void integer_cross_tests() {
+  // Four distinct neighbours, full-range codes, 255-pixel distances and a
+  // partial vector expose pair ordering and both stages of mode 4 rounding.
+  constexpr std::size_t width=519,height=515;
+  std::mt19937 rng(0x4f3db);
+  std::vector<std::int32_t> source(width*height);
+  for (auto& value : source) value=static_cast<std::int32_t>(rng()%65536);
+  std::vector<std::int16_t> grain(width);
+  for (std::size_t x=0;x<width;++x) grain[x]=x%2?16384:-16384;
+  std::vector<double> output(width+1);
+  for (int sx : {0,1}) for (int sy : {0,1}) for (int mode : {4,5})
+    for (std::size_t y : {0,1,257,514}) {
+      const auto vlimit=std::min(y,height-1-y);
+      std::vector<ref::Distance> distances(width<<sx);
+      for (std::size_t x=0;x<width;++x)
+        distances[x<<sx]={static_cast<std::uint8_t>(std::min({std::size_t{255},vlimit<<sy,std::min(x,width-1-x)<<sx})),255};
+      const simd::IntegerRow row{source.data()+y*width,distances.data(),grain.data(),output.data(),width,vlimit,y*width,sx,sy};
+      for (bool blur : {false,true}) for (double threshold : {0.0,0.5,1500.25,65535.0,131070.5}) {
+        const std::array<double,3> thresholds{threshold,threshold*0.75,threshold*0.5};
+        std::fill(output.begin(),output.end(),-999999);
+        const auto count=simd::process_integer_row(row,mode,thresholds.data(),blur);
+        for (std::size_t x=0;x<count;++x) {
+          const auto distance=distances[x<<sx].first;
+          const std::size_t dx=distance>>sx,dy=distance>>sy;
+          const std::array<double,4> refs{double(source[(y+dy)*width+x]),double(source[(y-dy)*width+x]),
+                                        double(source[y*width+x+dx]),double(source[y*width+x-dx])};
+          check(output[x]==ref::deband(source[y*width+x],refs,mode,thresholds,true,blur)+grain[x],"integer cross coordinate oracle");
+        }
+        for (std::size_t x=count;x<output.size();++x) check(output[x]==-999999,"integer cross tail untouched");
+      }
+    }
+}
 void row_tests() {
   constexpr std::size_t n=17;
   std::mt19937 rng(0x3f3db);
@@ -396,7 +428,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); row_tests(); fs_tests(); frame_tests();
+      weight_tests(); sampling_tests(); integer_cross_tests(); row_tests(); fs_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
