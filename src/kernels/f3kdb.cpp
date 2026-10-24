@@ -22,6 +22,7 @@ std::size_t collect_simple_target(const SamplingRow&, int) {
 SamplingResult sampled_target(const SamplingRow&, const Row&, int, double, bool, bool) {
   return {0, 0};
 }
+std::size_t integer_target(const IntegerRow&, int, const double*, bool) { return 0; }
 void row_target(const Row& row, int mode, const double* t, bool integer, bool blur, double angle, double boost) {
   process_row_scalar(row, mode, t, integer, blur, angle, boost);
 }
@@ -184,6 +185,106 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
       break;
   }
   return {count, count};
+}
+template <int Mode, bool Blur, int SX, int SY>
+std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
+  const hn::ScalableTag<std::int32_t> d;
+  const hn::Rebind<std::int32_t, decltype(d)> di;
+  const hn::Rebind<std::uint8_t, decltype(d)> db;
+  const auto lanes = hn::Lanes(d), full = row.width / lanes * lanes;
+  const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
+  const auto step = std::size_t{1} << SX;
+  const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int32_t(row.width - 1)),
+             vlimit = hn::Set(di, std::int32_t(row.vertical_limit));
+  const auto pitch = hn::Set(di, std::int32_t(row.width));
+  // Integer differences satisfy delta < t exactly when delta < ceil(t).
+  const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
+  for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
+    hn::VFromD<decltype(db)> first, second;
+    if (SX == 0)
+      hn::LoadInterleaved2(db, distances, first, second);
+    else {
+      hn::VFromD<decltype(db)> skip1, skip2;
+      hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
+    }
+    const auto distance1 = hn::PromoteTo(di, first), h1 = hn::ShiftRightSame(distance1, SX),
+               v1 = hn::ShiftRightSame(distance1, SY);
+    const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x))), hlimit = hn::Min(pos, hn::Sub(last, pos));
+    auto valid = hn::Eq(index, index);
+    if constexpr (Mode != 3)
+      valid = hn::And(valid, hn::Le(v1, vlimit));
+    if constexpr (Mode != 1)
+      valid = hn::And(valid, hn::Le(h1, hlimit));
+    if (!hn::AllTrue(di, valid))
+      throw std::logic_error("reference outside plane");
+    const auto* center = row.center + x;
+    const auto* source = row.center - row.row_offset;
+    const auto absolute = hn::Add(pos, hn::Set(di, std::int32_t(row.row_offset)));
+    constexpr int N = Mode == 2 ? 4 : 2;
+    hn::VFromD<decltype(d)> refs[N];
+    if constexpr (Mode == 1 || Mode == 3) {
+      const auto off = Mode == 1 ? hn::Mul(v1, pitch) : h1;
+      refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, off));
+      refs[1] = hn::GatherIndex(d, source, hn::Sub(absolute, off));
+    } else {
+      const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
+                 v2 = hn::ShiftRightSame(distance2, SY);
+      if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
+        throw std::logic_error("reference outside plane");
+      const auto a = hn::Add(hn::Mul(v2, pitch), h1), b = hn::Sub(h2, hn::Mul(v1, pitch));
+      refs[0] = hn::GatherIndex(d, source, hn::Add(absolute, a));
+      refs[1] = hn::GatherIndex(d, source, hn::Add(absolute, b));
+      refs[2] = hn::GatherIndex(d, source, hn::Sub(absolute, a));
+      refs[3] = hn::GatherIndex(d, source, hn::Sub(absolute, b));
+    }
+    auto sum = hn::Zero(d);
+    for (int j = 0; j < N; ++j)
+      sum = hn::Add(sum, refs[j]);
+    const auto mean = hn::ShiftRight<(Mode == 2 ? 2 : 1)>(hn::Add(sum, hn::Set(d, N / 2)));
+    const auto value = hn::LoadU(d, center);
+    auto accept = hn::Lt(hn::Abs(hn::Sub(mean, value)), limit);
+    if constexpr (!Blur) {
+      accept = hn::Eq(value, value);
+      for (int j = 0; j < N; ++j)
+        accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit));
+    }
+    const auto result = hn::IfThenElse(accept, mean, value);
+    const hn::ScalableTag<double> dd;
+    const hn::Half<decltype(d)> half;
+    const auto low = hn::Add(hn::PromoteTo(dd, hn::LowerHalf(half, result)), hn::LoadU(dd, row.grain + x));
+    const auto high =
+        hn::Add(hn::PromoteTo(dd, hn::UpperHalf(half, result)), hn::LoadU(dd, row.grain + x + hn::Lanes(dd)));
+    hn::StoreU(low, dd, row.output + x);
+    hn::StoreU(high, dd, row.output + x + hn::Lanes(dd));
+  }
+  return full;
+}
+template <int SX, int SY>
+std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
+  if (row.sub_x > 1 || row.width == 0)
+    return 0;
+  switch (mode) {
+    case 1:
+      return blur ? integer_samples<1, true, SX, SY>(row, thresholds)
+                  : integer_samples<1, false, SX, SY>(row, thresholds);
+    case 2:
+      return blur ? integer_samples<2, true, SX, SY>(row, thresholds)
+                  : integer_samples<2, false, SX, SY>(row, thresholds);
+    case 3:
+      return blur ? integer_samples<3, true, SX, SY>(row, thresholds)
+                  : integer_samples<3, false, SX, SY>(row, thresholds);
+    default:
+      return 0;
+  }
+}
+std::size_t integer_target(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
+  if (row.sub_x > 1 || row.sub_y > 1)
+    return 0;
+  if (row.sub_x == 0)
+    return row.sub_y == 0 ? integer_dispatch<0, 0>(row, mode, thresholds, blur)
+                          : integer_dispatch<0, 1>(row, mode, thresholds, blur);
+  return row.sub_y == 0 ? integer_dispatch<1, 0>(row, mode, thresholds, blur)
+                        : integer_dispatch<1, 1>(row, mode, thresholds, blur);
 }
 HWY_INLINE V weight(D d, const V* c) {
   auto sum = hn::Zero(d);
@@ -385,6 +486,10 @@ namespace neo_smo::f3kdb {
 HWY_EXPORT(frame_target);
 Frame process_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return HWY_DYNAMIC_DISPATCH(frame_target)(filter, frame, input);
+}
+HWY_EXPORT(integer_target);
+std::size_t process_integer_row(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
+  return HWY_DYNAMIC_DISPATCH(integer_target)(row, mode, thresholds, blur);
 }
 HWY_EXPORT(sampled_target);
 SamplingResult process_sampled_row(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,

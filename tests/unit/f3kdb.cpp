@@ -125,6 +125,7 @@ void sampling_tests() {
     constexpr std::size_t height = 515;
     std::vector<double> source(width * height);
     for (std::size_t i = 0; i < source.size(); ++i) source[i] = double(i);
+    std::vector<std::int32_t> packed_source(source.begin(), source.end());
     std::array<std::int64_t, 256> vertical{};
     for (std::size_t i = 1; i < vertical.size(); ++i) vertical[i] = vertical[i - 1] + width;
     for (int sx : {0, 1, 2}) for (int sy : {0, 1}) for (int mode : {1, 2, 3}) {
@@ -176,6 +177,22 @@ void sampling_tests() {
           }
           for (std::size_t x = processed; x <= width; ++x) check(output[x] == -999, "fused sampling tail");
           check(simd::process_sampled_row(row, batch, mode, threshold, false, blur).processed == 0, "fused floating fallback");
+          std::fill(output.begin(), output.end(), -999);
+          const simd::IntegerRow packed{packed_source.data() + y * width, distances.data(), grain.data(), output.data(), width, vlimit, y * width, sx, sy};
+          const std::array<double, 3> thresholds{threshold, threshold, threshold};
+          const auto prefix = simd::process_integer_row(packed, mode, thresholds.data(), blur);
+          check(prefix <= width && (sx < 2 || prefix == 0), "packed sampling extent");
+          for (std::size_t x = 0; x < prefix; ++x) {
+            const auto d = distances[x * step];
+            const auto h1 = std::int64_t(d.first >> sx), v1 = std::int64_t(d.first >> sy);
+            const auto h2 = std::int64_t(d.second >> sx), v2 = std::int64_t(d.second >> sy), w = std::int64_t(width);
+            const auto a = mode == 1 ? v1 * w : mode == 3 ? h1 : v2 * w + h1, b = h2 - v1 * w;
+            const std::array<std::int64_t, 4> offsets = mode == 2 ? std::array<std::int64_t, 4>{a,b,-a,-b} : std::array<std::int64_t, 4>{a,-a,0,0};
+            std::array<double, 4> refs{};
+            for (int j = 0; j < 4; ++j) refs[j] = source[std::int64_t(y * width + x) + offsets[j]];
+            check(output[x] == ref::deband(source[y * width + x], refs, mode, thresholds, true, blur) + grain[x], "packed sampling value");
+          }
+          for (std::size_t x = prefix; x <= width; ++x) check(output[x] == -999, "packed sampling tail");
         }
         if (count && y == 0) {
           distances[0].first = 255;

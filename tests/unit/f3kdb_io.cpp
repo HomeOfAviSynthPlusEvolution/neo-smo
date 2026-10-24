@@ -97,6 +97,12 @@ void check_unpack(const std::vector<std::uint32_t>& bits, int depth, bool intege
     check(identical(actual[i + 1], expected[i]), "unpack depth=" + std::to_string(depth) + " i=" + std::to_string(i));
   }
   check(actual.front() == 12345.5 && actual.back() == 12345.5, "unpack output guards");
+  if (integer) {
+    std::vector<std::int32_t> packed(width * height + 2, -123456);
+    check(simd::unpack_integer_plane({input.data() + 1, packed.data() + 1, width, height, stride, depth}), "valid packed input rejected");
+    for (std::size_t i = 0; i < expected.size(); ++i) check(packed[i + 1] == expected[i], "packed unpack value");
+    check(packed.front() == -123456 && packed.back() == -123456, "packed unpack guards");
+  }
 }
 
 void unpack_tests() {
@@ -126,12 +132,15 @@ void unpack_tests() {
   for (std::size_t width : {1, 2, 3, 7, 15, 17, 31, 65}) {
     check_unpack({0, 0x8000, 1, 0x8001, 0x7bff, 0xfbff, 0x3c00}, 16, false, width);
     check_unpack({0, 0x80000000, 1, 0x80000001, 0x7f7fffff, 0xff7fffff, 0x3f800000}, 32, false, width);
+    for (int depth : {8, 10, 16}) check_unpack({0, 1, 17, (1u << depth) - 1}, depth, true, width);
     for (int depth = 9; depth < 16; ++depth) {
       std::vector<std::uint8_t> raw(width * 2 + 1, 0);
       std::vector<double> out(width);
       store(raw.data() + 1 + (width - 1) * 2, static_cast<std::uint16_t>(1u << depth));
       check(!simd::unpack_plane({raw.data() + 1, out.data(), width, 1, width * 2, depth, true}),
             "out-of-depth integer accepted");
+      std::vector<std::int32_t> packed(width);
+      check(!simd::unpack_integer_plane({raw.data() + 1, packed.data(), width, 1, width * 2, depth}), "out-of-depth packed integer accepted");
     }
     for (std::uint32_t bad : {0x7f800000u, 0xff800000u, 0x7fc00000u, 0x7f800001u, 0xffc12345u}) {
       std::vector<std::uint8_t> raw(width * 4 + 1, 0);

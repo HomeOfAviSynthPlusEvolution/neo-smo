@@ -33,6 +33,24 @@ struct SamplingResult { std::size_t collected, processed; };
 SamplingResult process_sampled_row(const SamplingRow&, const Row&, int mode, double threshold, bool integer, bool blur);
 std::size_t collect_simple_row(const SamplingRow&, int mode);
 void process_row(const Row&, int mode, const double* thresholds, bool integer, bool blur, double angle, double boost);
+// Exact 16-bit processing units in 32-bit lanes. The caller handles the tail.
+struct IntegerRow {
+  const std::int32_t* center;
+  const Distance* distances;
+  const double* grain;
+  double* output;
+  std::size_t width, vertical_limit;
+  std::size_t row_offset; // center index from the plane origin; plane extent <= INT32_MAX
+  int sub_x, sub_y;
+};
+std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
+struct IntegerInputPlane {
+  const std::uint8_t* input;
+  std::int32_t* output;
+  std::size_t width, height, stride;
+  int depth;
+};
+bool unpack_integer_plane(const IntegerInputPlane&);
 // Exposed internally so tests can check the continuous weight before quantization.
 void weights(const double* responses[4], double* output, std::size_t count);
 // Contiguous rows of post-grain processing values. boundary contains raw F32

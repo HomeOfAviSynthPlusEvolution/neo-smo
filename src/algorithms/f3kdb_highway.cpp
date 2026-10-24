@@ -52,6 +52,95 @@ void collect_row(const double* center, const double* gx, const double* gy, const
     }
   }
 }
+// Modes 1-3 use exact integer arithmetic and need no wide source intermediates.
+Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
+  const auto& params = filter.parameters();
+  const auto& f = params.input;
+  const auto& out = params.output;
+  const auto& o = params.options;
+  const std::size_t planes = f.color == Color::gray ? 1 : 3;
+  Frame result{out, {}};
+  for (std::size_t plane = 0; plane < planes; ++plane) {
+    const int sx = plane ? f.sub_x : 0, sy = plane ? f.sub_y : 0;
+    const auto w = f.width >> sx, h = f.height >> sy, n = mul(w, h);
+    const auto row_bytes = mul(w, bytes_per_sample(f));
+    const auto& view = input[plane];
+    if (!view.data || view.stride < row_bytes || view.bytes < add(mul(h - 1, view.stride), row_bytes))
+      invalid("plane storage/stride");
+    capacity<std::int32_t>(n);
+    std::vector<std::int32_t> source(n);
+    if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.data(), w, h, view.stride, f.depth}))
+      invalid("integer pixel exceeds declared depth");
+    Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
+    output.data.resize(mul(output.stride, h));
+    const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
+    const auto stripe_height = use_fs ? std::min<std::size_t>(32, h) : 1;
+    std::vector<double> processed(mul(w, stripe_height));
+    std::vector<float> boundary(use_fs ? w : 0, 0);
+    const auto pitch = mul(add(w, 15) / 16, 16);
+    const auto& grain = plane ? filter.grain_c() : filter.grain_y();
+    auto center = plane_view(static_cast<const std::int32_t*>(source.data()), w, h).cursor();
+    auto distances = plane_view(filter.distances().data(), f.width, f.height).cursor();
+    auto noise = plane_view(grain.data() + filter.offsets()[frame], w, h, mul(pitch, sizeof(double))).cursor();
+    auto target = plane_view(output.data.data(), output.stride, h, output.stride).cursor();
+    std::size_t stripe_rows = 0;
+    auto* stripe_output = output.data.data();
+    auto* processed_row = processed.data();
+    for (std::size_t y = 0; y < h; ++y) {
+      if (y) {
+        ++center;
+        ++noise;
+        ++target;
+        distances += std::size_t{1} << sy;
+      }
+      if (stripe_rows == 0) {
+        stripe_output = target.ptr();
+        processed_row = processed.data();
+      }
+      const auto vlimit = std::min(y, h - 1 - y);
+      const IntegerRow row{center.ptr(), distances.ptr(), noise.ptr(), processed_row, w, vlimit, y * w, sx, sy};
+      const auto count = process_integer_row(row, o.sample_mode, params.thresholds[plane].data(), o.blur_first);
+      for (std::size_t x = count; x < w; ++x) {
+        const auto d = distances.ptr()[x << sx];
+        const auto h1 = std::size_t(d.first >> sx), v1 = std::size_t(d.first >> sy);
+        const auto hlimit = std::min(x, w - 1 - x);
+        if ((o.sample_mode != 3 && v1 > vlimit) || (o.sample_mode != 1 && h1 > hlimit))
+          throw std::logic_error("reference outside plane");
+        const auto* pixel = center.ptr() + x;
+        std::array<double, 4> refs{};
+        if (o.sample_mode == 1 || o.sample_mode == 3) {
+          const auto offset = static_cast<std::ptrdiff_t>(o.sample_mode == 1 ? v1 * w : h1);
+          refs[0] = pixel[offset];
+          refs[1] = pixel[-offset];
+        } else {
+          const auto h2 = std::size_t(d.second >> sx), v2 = std::size_t(d.second >> sy);
+          if (h2 > hlimit || v2 > vlimit)
+            throw std::logic_error("reference outside plane");
+          const auto a = static_cast<std::ptrdiff_t>(v2 * w + h1);
+          const auto b = static_cast<std::ptrdiff_t>(h2) - static_cast<std::ptrdiff_t>(v1 * w);
+          refs = {double(pixel[a]), double(pixel[b]), double(pixel[-a]), double(pixel[-b])};
+        }
+        processed_row[x] =
+            deband(*pixel, refs, o.sample_mode, params.thresholds[plane], true, o.blur_first) + noise.ptr()[x];
+      }
+      ++stripe_rows;
+      if (use_fs) {
+        if (stripe_rows == stripe_height || y + 1 == h) {
+          diffuse_stripe({processed.data(), stripe_output, boundary.data(), w, stripe_rows, output.stride, out.depth,
+                          true, plane != 0, o.keep_tv_range});
+          stripe_rows = 0;
+        } else
+          processed_row += w;
+      } else {
+        pack_row({processed_row, target.ptr(), w, y, out.depth, o.dither_algo, true, out.sample == Sample::integer,
+                  plane != 0, o.keep_tv_range});
+        stripe_rows = 0;
+      }
+    }
+    result.planes.push_back(std::move(output));
+  }
+  return result;
+}
 } // namespace
 
 Frame process_highway(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
@@ -64,6 +153,10 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     invalid("frame index out of range");
   if (input.size() != planes)
     invalid("plane count");
+  // Signed 32-bit gather indices must cover every source-plane displacement.
+  if (integer && o.sample_mode <= 3 && f.sub_x <= 1 && f.sub_y <= 1 &&
+      mul(f.width, f.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
+    return process_integer_frame(filter, frame, input);
   Frame result{out, {}};
   for (std::size_t plane = 0; plane < planes; ++plane) {
     const int sx = plane ? f.sub_x : 0, sy = plane ? f.sub_y : 0;

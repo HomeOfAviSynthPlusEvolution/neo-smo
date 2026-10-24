@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
@@ -20,6 +21,18 @@ namespace HWY_NAMESPACE {
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
 bool unpack_plane_target(const InputPlane& plane) {
   return unpack_plane_scalar(plane);
+}
+bool unpack_integer_plane_target(const IntegerInputPlane& plane) {
+  for (std::size_t y = 0; y < plane.height; ++y)
+    for (std::size_t x = 0; x < plane.width; ++x) {
+      std::uint16_t value = plane.input[y * plane.stride + x];
+      if (plane.depth != 8)
+        std::memcpy(&value, plane.input + y * plane.stride + x * 2, 2);
+      if (value > (std::uint32_t{1} << plane.depth) - 1)
+        return false;
+      plane.output[y * plane.width + x] = std::int32_t(value) << (16 - plane.depth);
+    }
+  return true;
 }
 void pack_row_target(const OutputRow& row) {
   pack_row_scalar(row);
@@ -92,6 +105,36 @@ bool unpack_plane_target(const InputPlane& plane) {
         value =
             hn::BitCast(d, hn::Or(hn::BitCast(du64, value), hn::ShiftLeft<48>(hn::And(raw, hn::Set(du64, 0x8000)))));
       }
+      if (n == hn::Lanes(d))
+        hn::StoreU(value, d, output.ptr() + x);
+      else
+        hn::StoreN(value, d, output.ptr() + x, n);
+    }
+  }
+  return true;
+}
+
+bool unpack_integer_plane_target(const IntegerInputPlane& plane) {
+  const hn::ScalableTag<std::int32_t> d;
+  const hn::Rebind<std::uint8_t, decltype(d)> du8;
+  const hn::Rebind<std::uint16_t, decltype(d)> du16;
+  const auto maximum = hn::Set(d, std::int32_t((std::uint32_t{1} << plane.depth) - 1));
+  const std::size_t bytes = plane.depth == 8 ? 1 : 2;
+  auto input = detail::plane_view(plane.input, detail::mul(plane.width, bytes), plane.height, plane.stride).cursor();
+  auto output = detail::plane_view(plane.output, plane.width, plane.height).cursor();
+  for (std::size_t y = 0; y < plane.height; ++y) {
+    if (y) {
+      ++input;
+      ++output;
+    }
+    for (std::size_t x = 0; x < plane.width; x += hn::Lanes(d)) {
+      const auto n = std::min(hn::Lanes(d), plane.width - x);
+      const auto* p = input.ptr() + x * bytes;
+      const auto codes =
+          plane.depth == 8 ? hn::PromoteTo(d, load_bytes(du8, p, n)) : hn::PromoteTo(d, load_bytes(du16, p, n));
+      if (!hn::AllFalse(d, hn::Gt(codes, maximum)))
+        return false;
+      const auto value = hn::ShiftLeftSame(codes, 16 - plane.depth);
       if (n == hn::Lanes(d))
         hn::StoreU(value, d, output.ptr() + x);
       else
@@ -238,6 +281,10 @@ HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
 namespace neo_smo::f3kdb {
+HWY_EXPORT(unpack_integer_plane_target);
+bool unpack_integer_plane(const IntegerInputPlane& plane) {
+  return HWY_DYNAMIC_DISPATCH(unpack_integer_plane_target)(plane);
+}
 HWY_EXPORT(unpack_plane_target);
 HWY_EXPORT(pack_row_target);
 HWY_EXPORT(sobel_plane_target);
