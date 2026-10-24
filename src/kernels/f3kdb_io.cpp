@@ -202,7 +202,7 @@ void pack_row_target(const OutputRow& row) {
       if (row.dither == 1)
         value = hn::Round(value);
       else {
-        const auto positions = hn::Iota(du64, static_cast<std::uint64_t>(x));
+        const auto positions = hn::Iota(du64, static_cast<std::uint64_t>(x + row.x));
         auto bayer = hn::Zero(du64);
         // b[ybit][xbit] = (2*xbit) XOR (3*ybit), most significant
         // Bayer digit comes from the least significant coordinate bit.

@@ -281,9 +281,11 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         row.input_depth = f.depth;
         row.row_offset = y * view.stride;
       }
-      const bool direct = out.sample == Sample::integer && o.dither_algo == 1;
+      const bool direct = out.sample == Sample::integer && o.dither_algo <= 2;
       if (direct) {
         row.packed_output = target.ptr();
+        row.dither = o.dither_algo;
+        row.y = y;
         row.output_depth = out.depth;
         row.chroma = plane != 0;
         row.limited = o.keep_tv_range;
@@ -341,7 +343,7 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         const auto start = direct ? count : 0;
         if (start < w)
           pack_row({processed_row + start, target.ptr() + start * bytes_per_sample(out), w - start, y, out.depth,
-                    o.dither_algo, true, out.sample == Sample::integer, plane != 0, o.keep_tv_range});
+                    o.dither_algo, true, out.sample == Sample::integer, plane != 0, o.keep_tv_range, start});
         stripe_rows = 0;
       }
     }

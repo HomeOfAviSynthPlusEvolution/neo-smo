@@ -380,17 +380,20 @@ void integer_pack_tests() {
     grain[x]=static_cast<std::int16_t>(value-source[x]);
   }
   const std::array<double,3> thresholds{};
-  for (int depth=8;depth<=16;++depth) for (bool chroma : {false,true}) for (bool limited : {false,true}) {
+  for (int depth=8;depth<=16;++depth) for (bool chroma : {false,true}) for (bool limited : {false,true})
+    for (int dither : {1,2}) {
     const std::size_t bytes=depth==8?1:2;
     std::vector<std::uint8_t> output(width*bytes+2,0xa5);
     simd::IntegerRow row{source.data(),distances.data(),grain.data(),intermediate.data(),width,0,0,0,0};
-    row.packed_output=output.data()+1; row.output_depth=depth; row.chroma=chroma; row.limited=limited;
+    row.packed_output=output.data()+1; row.output_depth=depth; row.chroma=chroma; row.limited=limited; row.dither=dither; row.y=depth+3;
     const auto count=simd::process_integer_row(row,1,thresholds.data(),true);
     const double scale=std::ldexp(1.0,depth-16);
     const double low=limited?std::ldexp(16.0,depth-8):0;
     const double high=limited?std::ldexp(chroma?240.0:235.0,depth-8):std::ldexp(1.0,depth)-1;
     for (std::size_t x=0;x<count;++x) {
-      const auto expected=std::clamp(ref::round_even((int(x)-16384)*scale),low,high);
+      const double value=(int(x)-16384)*scale;
+      const auto expected=std::clamp(dither==1?ref::round_even(value):
+          std::floor(value+(ref::bayer16(row.y,x)+0.5)/256),low,high);
       const auto actual=depth==8?output[x+1]:read<std::uint16_t>(output.data()+1+x*2);
       check(actual==expected,"pack value");
     }
@@ -628,14 +631,14 @@ void native_integer_frame_tests() {
   // Exact allocation extent, unaligned base and odd stride exercise the final
   // four-byte gather without granting readable padding beyond the last pixel.
   for (int mode=1;mode<=7;++mode) for (int depth : {8,10,16})
-    for (std::size_t w : {1,2,3,17,33}) for (int dither : {1,2,3}) {
+    for (std::size_t w : {1,2,3,7,17,33}) for (int dither : {1,2,3}) for (bool float_output : {false,true}) {
       const std::size_t h=35, bytes=depth==8?1:2, stride=w*bytes+3, extent=(h-1)*stride+w*bytes;
       ref::Format f;f.width=w;f.height=h;f.depth=depth;
       ref::Options o;o.sample_mode=mode;o.dither_algo=dither;o.range=255;o.scale=true;
       o.threshold.fill(2048.5);o.threshold1.fill(4096);o.threshold2.fill(8192);o.grain_y=3.75;
       o.blur_first=(w%2)!=0;o.keep_tv_range=dither==2;
-      o.output_sample_type=dither==2?ref::OutputSample::floating:ref::OutputSample::integer;
-      o.output_depth=dither==2?32:depth==8?16:8;
+      o.output_sample_type=float_output?ref::OutputSample::floating:ref::OutputSample::integer;
+      o.output_depth=float_output?32:dither==2?10:depth==8?16:8;
       std::vector<std::uint8_t> data(extent+1,0xa5);
       for (std::size_t y=0;y<h;++y) for (std::size_t x=0;x<w;++x) {
         const auto code=std::uint16_t((x*73+y*101)&((1u<<depth)-1));

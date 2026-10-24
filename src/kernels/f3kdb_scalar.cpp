@@ -218,7 +218,7 @@ void pack_row_scalar(const OutputRow& row) {
       const double value = row.integer_input ? std::ldexp(z, row.depth - 16) : (z + offset) * scale;
       const double quantized = row.dither == 1
                                    ? round_even(std::clamp(value, lo - 1, hi + 1))
-                                   : std::floor(std::clamp(value, lo - 1, hi + 1) + (bayer16(row.y, x) + 0.5) / 256);
+                                   : std::floor(std::clamp(value, lo - 1, hi + 1) + (bayer16(row.y, x + row.x) + 0.5) / 256);
       const double code = std::clamp(quantized, lo, hi);
       if (row.depth == 8)
         *target = static_cast<std::uint8_t>(code);

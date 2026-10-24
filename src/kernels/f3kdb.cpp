@@ -749,7 +749,19 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     if (row.packed_output) {
       const int shift = 16 - row.output_depth;
       auto code = result;
-      if (shift) {
+      if (shift && row.dither == 2) {
+        const auto positions = hn::Iota(d, static_cast<std::int32_t>(x));
+        auto bayer = hn::Zero(d);
+        for (int bit = 0; bit < 4; ++bit) {
+          const auto xb = hn::And(hn::ShiftRightSame(positions, bit), hn::Set(d, 1));
+          const auto digit = hn::Xor(hn::ShiftLeft<1>(xb), hn::Set(d, 3 * ((row.y >> bit) & 1)));
+          bayer = hn::Or(bayer, hn::ShiftLeftSame(digit, 2 * (3 - bit)));
+        }
+        // floor(result/step + (bayer+0.5)/256) is exactly
+        // floor((result + floor((2*bayer+1)*step/512))/step).
+        const auto bias = hn::ShiftRight<9>(hn::ShiftLeftSame(hn::Add(hn::ShiftLeft<1>(bayer), hn::Set(d, 1)), shift));
+        code = hn::ShiftRightSame(hn::Add(result, bias), shift);
+      } else if (shift) {
         const auto quotient = hn::ShiftRightSame(result, shift);
         const auto remainder = hn::Sub(result, hn::ShiftLeftSame(quotient, shift));
         const auto half_step = hn::Set(d, std::int32_t{1} << (shift - 1));

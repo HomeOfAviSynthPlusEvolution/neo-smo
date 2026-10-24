@@ -81,9 +81,9 @@ struct IntegerRow {
   const std::int16_t* grain;
   double* output;
   std::size_t width, vertical_limit;
-  std::size_t row_offset; // center index from the plane origin; plane extent <= INT32_MAX
+  std::size_t row_offset; // plane-relative element index, or byte offset for native input; <= INT32_MAX
   int sub_x, sub_y;
-  // Optional dither-1 integer output; otherwise write double processing units.
+  // Optional dither-1/2 integer output; otherwise write double processing units.
   std::uint8_t* packed_output = nullptr;
   int output_depth = 8;
   bool chroma = false, limited = false;
@@ -92,6 +92,8 @@ struct IntegerRow {
   const std::uint8_t* native = nullptr;
   std::size_t native_stride = 0, native_extent = 0;
   int input_depth = 16;
+  int dither = 1;
+  std::size_t y = 0;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
 struct IntegerInputPlane {
@@ -131,6 +133,7 @@ struct InputPlane {
 // False means an out-of-depth integer or a nonfinite float was encountered.
 bool unpack_plane(const InputPlane&);
 void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height);
+// Integer source samples are processing codes in [0, 65535].
 void sobel_plane(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy, std::size_t width,
                  std::size_t height);
 struct OutputRow {
@@ -144,6 +147,7 @@ struct OutputRow {
   bool integer_output;
   bool chroma;
   bool limited;
+  std::size_t x = 0; // original column when packing a row suffix
 };
 void pack_row(const OutputRow&);
 } // namespace neo_smo::f3kdb

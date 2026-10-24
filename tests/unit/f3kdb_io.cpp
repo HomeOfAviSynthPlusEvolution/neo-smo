@@ -162,7 +162,7 @@ void unpack_tests() {
 }
 
 void check_pack(const std::vector<double>& values, int depth, bool integer_input, bool integer_output, bool chroma,
-                bool limited, int dither, std::size_t y) {
+                bool limited, int dither, std::size_t y, std::size_t origin = 0) {
   const std::size_t bytes = depth == 8 ? 1 : depth <= 16 ? 2 : 4;
   std::vector<std::uint8_t> expected(values.size() * bytes + 9, 0xa5), actual = expected;
   const double offset = chroma ? 0.5 : 0, scale = std::ldexp(1.0, depth), tvscale = std::ldexp(1.0, depth - 8);
@@ -183,7 +183,7 @@ void check_pack(const std::vector<double>& values, int depth, bool integer_input
     } else {
       v = integer_input ? std::ldexp(v, depth - 16) : (v + offset) * scale;
       v = std::clamp(v, lo - 1, hi + 1);
-      v = dither == 1 ? ref::round_even(v) : std::floor(v + (ref::bayer16(y, x) + 0.5) / 256);
+      v = dither == 1 ? ref::round_even(v) : std::floor(v + (ref::bayer16(y, x + origin) + 0.5) / 256);
       v = std::clamp(v, lo, hi);
       if (bytes == 1)
         *p = static_cast<std::uint8_t>(v);
@@ -192,7 +192,7 @@ void check_pack(const std::vector<double>& values, int depth, bool integer_input
     }
   }
   simd::pack_row({values.data(), actual.data() + 1, values.size(), y, depth, dither, integer_input, integer_output,
-                  chroma, limited});
+                  chroma, limited, origin});
   converted += values.size();
   if (actual != expected) {
     std::size_t i = 0;
@@ -207,6 +207,8 @@ void check_pack(const std::vector<double>& values, int depth, bool integer_input
 }
 
 void pack_tests() {
+  for (std::size_t origin = 1; origin < 16; ++origin)
+    check_pack({-17.0, 0.0, 127.0, 128.0, 255.0, 256.0, 32767.0, 65535.0}, 8, true, true, false, false, 2, 7, origin);
   // Representative exponent/mantissa transitions, even/odd ties and both
   // neighbouring F64 values catch F64->F32->F16 double rounding without enumeration.
   std::vector<double> halves = {0.0, -0.0, 65504, -65504, 1e300, -1e300};
