@@ -203,6 +203,38 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
   }
   return {count, count};
 }
+HWY_INLINE V weight(D d, const V* c);
+HWY_INLINE V response(D d, V delta, V threshold);
+HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* thresholds) {
+  auto sum = hn::Zero(d), maximum = hn::Zero(d);
+  for (int j = 0; j < 4; ++j) {
+    sum = hn::Add(sum, refs[j]);
+    maximum = hn::Max(maximum, hn::Abs(hn::Sub(refs[j], center)));
+  }
+  const auto average = hn::Mul(sum, hn::Set(d, 0.25));
+  const auto da = hn::Abs(hn::Sub(average, center));
+  const auto twice = hn::Add(center, center);
+  const auto qv = hn::Abs(hn::Sub(hn::Add(refs[0], refs[1]), twice));
+  const auto qh = hn::Abs(hn::Sub(hn::Add(refs[2], refs[3]), twice));
+  const V c[4] = {response(d, da, hn::Set(d, thresholds[0])), response(d, maximum, hn::Set(d, thresholds[1])),
+                  response(d, qv, hn::Set(d, thresholds[2])), response(d, qh, hn::Set(d, thresholds[2]))};
+  const auto f = weight(d, c);
+  return hn::IfThenElse(hn::Eq(f, hn::Zero(d)), center,
+                        hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, center), f, center), hn::Set(d, 0.5))));
+}
+template <class DI>
+HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
+  const D dd;
+  const hn::Half<DI> half;
+  V low[4], high[4];
+  for (int j = 0; j < 4; ++j) {
+    low[j] = hn::PromoteTo(dd, hn::LowerHalf(half, refs[j]));
+    high[j] = hn::PromoteTo(dd, hn::UpperHalf(half, refs[j]));
+  }
+  const auto lo = weighted_half(dd, hn::PromoteTo(dd, hn::LowerHalf(half, center)), low, thresholds);
+  const auto hi = weighted_half(dd, hn::PromoteTo(dd, hn::UpperHalf(half, center)), high, thresholds);
+  return hn::Combine(d, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
+}
 template <int Mode, bool Blur, int SX, int SY>
 std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
   const hn::ScalableTag<std::int32_t> d;
@@ -293,6 +325,10 @@ std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
       for (int j : {0, 2})
         accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
     }
+    if constexpr (Mode == 6) {
+      mean = weighted_integer(d, value, refs, thresholds);
+      accept = hn::Eq(value, value);
+    }
     const hn::Rebind<std::int16_t, decltype(d)> dg;
     const auto result = hn::Add(hn::IfThenElse(accept, mean, value), hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
     if (row.packed_output) {
@@ -348,6 +384,8 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
                   : integer_samples<4, false, SX, SY>(row, thresholds);
     case 5:
       return integer_samples<5, true, SX, SY>(row, thresholds);
+    case 6:
+      return integer_samples<6, true, SX, SY>(row, thresholds);
     default:
       return 0;
   }

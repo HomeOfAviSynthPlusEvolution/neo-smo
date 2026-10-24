@@ -224,7 +224,7 @@ void integer_cross_tests() {
   std::vector<std::int16_t> grain(width);
   for (std::size_t x=0;x<width;++x) grain[x]=x%2?16384:-16384;
   std::vector<double> output(width+1);
-  for (int sx : {0,1}) for (int sy : {0,1}) for (int mode : {4,5})
+  for (int sx : {0,1}) for (int sy : {0,1}) for (int mode : {4,5,6})
     for (std::size_t y : {0,1,257,514}) {
       const auto vlimit=std::min(y,height-1-y);
       std::vector<ref::Distance> distances(width<<sx);
@@ -240,7 +240,8 @@ void integer_cross_tests() {
           const std::size_t dx=distance>>sx,dy=distance>>sy;
           const std::array<double,4> refs{double(source[(y+dy)*width+x]),double(source[(y-dy)*width+x]),
                                         double(source[y*width+x+dx]),double(source[y*width+x-dx])};
-          check(output[x]==ref::deband(source[y*width+x],refs,mode,thresholds,true,blur)+grain[x],"integer cross coordinate oracle");
+          const auto expected=ref::deband(source[y*width+x],refs,mode,thresholds,true,blur)+grain[x];
+          check(std::abs(output[x]-expected)<=(mode==6?1:0),"integer cross coordinate oracle");
         }
         for (std::size_t x=count;x<output.size();++x) check(output[x]==-999999,"integer cross tail untouched");
       }

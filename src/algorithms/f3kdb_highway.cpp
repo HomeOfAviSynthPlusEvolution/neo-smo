@@ -53,7 +53,8 @@ void collect_row(const double* center, const double* gx, const double* gy, const
     }
   }
 }
-// Modes 1-5 use exact integer arithmetic and need no wide source intermediates.
+// Modes 1-6 keep source samples in exact 32-bit integer lanes.
+// Weighted mode 6 promotes its local references for double-precision weights.
 Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   const auto& params = filter.parameters();
   const auto& f = params.input;
@@ -172,7 +173,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
   if (input.size() != planes)
     invalid("plane count");
   // Signed 32-bit gather indices must cover every source-plane displacement.
-  if (integer && o.sample_mode <= 5 && f.sub_x <= 1 && f.sub_y <= 1 &&
+  if (integer && o.sample_mode <= 6 && f.sub_x <= 1 && f.sub_y <= 1 &&
       mul(f.width, f.height) <= std::size_t(std::numeric_limits<std::int32_t>::max()))
     return process_integer_frame(filter, frame, input);
   Frame result{out, {}};
