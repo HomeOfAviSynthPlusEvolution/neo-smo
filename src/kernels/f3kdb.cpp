@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
 #define HWY_COMPILE_ALL_ATTAINABLE
 #endif
@@ -15,6 +16,9 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+std::size_t collect_simple_target(const SamplingRow&, int) {
+  return 0;
+}
 void row_target(const Row& row, int mode, const double* t, bool integer, bool blur, double angle, double boost) {
   process_row_scalar(row, mode, t, integer, blur, angle, boost);
 }
@@ -26,6 +30,78 @@ namespace hn = hwy::HWY_NAMESPACE;
 using D = hn::ScalableTag<double>;
 using V = hn::VFromD<D>;
 using M = hn::MFromD<D>;
+// Read the interleaved distance bytes directly. Chroma subsampling by two
+// skips every other pair; wider subsampling uses the existing scalar collector.
+template <int Mode>
+std::size_t collect_simple(const SamplingRow& row) {
+  const D d;
+  const hn::Rebind<std::int64_t, D> di;
+  const hn::Rebind<std::uint8_t, D> db;
+  static_assert(sizeof(Distance) == 2);
+  const auto lanes = hn::Lanes(d);
+  const auto full = row.width / lanes * lanes;
+  const auto step = std::size_t{1} << row.sub_x;
+  const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
+  const auto index = hn::Iota(di, 0);
+  const auto vertical_limit = hn::Set(di, static_cast<std::int64_t>(row.vertical_limit));
+  const auto last = hn::Set(di, static_cast<std::int64_t>(row.width - 1));
+  for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
+    hn::VFromD<decltype(db)> first, second;
+    if (row.sub_x == 0) {
+      hn::LoadInterleaved2(db, distances, first, second);
+    } else {
+      hn::VFromD<decltype(db)> skip_first, skip_second;
+      hn::LoadInterleaved4(db, distances, first, second, skip_first, skip_second);
+    }
+    const auto distance1 = hn::PromoteTo(di, first);
+    const auto h1 = hn::ShiftRightSame(distance1, row.sub_x);
+    const auto v1 = hn::ShiftRightSame(distance1, row.sub_y);
+    const auto position = hn::Add(index, hn::Set(di, static_cast<std::int64_t>(x)));
+    const auto horizontal_limit = hn::Min(position, hn::Sub(last, position));
+    auto valid = hn::Eq(index, index);
+    if constexpr (Mode != 3)
+      valid = hn::And(valid, hn::Le(v1, vertical_limit));
+    if constexpr (Mode != 1)
+      valid = hn::And(valid, hn::Le(h1, horizontal_limit));
+    if (!hn::AllTrue(di, valid))
+      throw std::logic_error("reference outside plane");
+    const auto* center = row.center + x;
+    if constexpr (Mode == 1 || Mode == 3) {
+      const auto offset = Mode == 1 ? hn::GatherIndex(di, row.vertical_offsets, v1) : h1;
+      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, offset)), d, row.samples[0] + x);
+      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, offset)), d, row.samples[1] + x);
+    } else {
+      const auto distance2 = hn::PromoteTo(di, second);
+      const auto h2 = hn::ShiftRightSame(distance2, row.sub_x);
+      const auto v2 = hn::ShiftRightSame(distance2, row.sub_y);
+      valid = hn::And(hn::Le(v2, vertical_limit), hn::Le(h2, horizontal_limit));
+      if (!hn::AllTrue(di, valid))
+        throw std::logic_error("reference outside plane");
+      const auto a = hn::Add(hn::GatherIndex(di, row.vertical_offsets, v2), h1);
+      const auto b = hn::Sub(h2, hn::GatherIndex(di, row.vertical_offsets, v1));
+      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, a)), d, row.samples[0] + x);
+      hn::StoreU(hn::GatherIndex(d, center, hn::Add(index, b)), d, row.samples[1] + x);
+      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, a)), d, row.samples[2] + x);
+      hn::StoreU(hn::GatherIndex(d, center, hn::Sub(index, b)), d, row.samples[3] + x);
+    }
+  }
+  return full;
+}
+std::size_t collect_simple_target(const SamplingRow& row, int mode) {
+  // Two-lane gathers cost more than the scalar collector on narrow targets.
+  if (hn::Lanes(D{}) < 4 || row.sub_x > 1 || row.width == 0)
+    return 0;
+  switch (mode) {
+    case 1:
+      return collect_simple<1>(row);
+    case 2:
+      return collect_simple<2>(row);
+    case 3:
+      return collect_simple<3>(row);
+    default:
+      return 0;
+  }
+}
 // Full vectors use ordinary unaligned accesses. Only the last partial vector
 // needs bounded loads/stores (notably important on pre-AVX-512 targets).
 HWY_INLINE V load_row(D d, const double* p, std::size_t n) {
@@ -256,6 +332,10 @@ namespace neo_smo::f3kdb {
 HWY_EXPORT(frame_target);
 Frame process_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input) {
   return HWY_DYNAMIC_DISPATCH(frame_target)(filter, frame, input);
+}
+HWY_EXPORT(collect_simple_target);
+std::size_t collect_simple_row(const SamplingRow& row, int mode) {
+  return HWY_DYNAMIC_DISPATCH(collect_simple_target)(row, mode);
 }
 HWY_EXPORT(row_target);
 HWY_EXPORT(weights_target);

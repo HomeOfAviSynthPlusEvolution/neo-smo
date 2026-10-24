@@ -8,12 +8,14 @@ namespace {
 // Modes 1/3 only use two neighbours; their other references are the center.
 template <int Mode>
 void collect_row(const double* center, const double* gx, const double* gy, const Distance* distances, std::size_t w,
-                 std::size_t h, std::size_t y, int sx, int sy, const std::array<std::ptrdiff_t, 256>& vertical_offsets,
+                 std::size_t h, std::size_t y, int sx, int sy, const std::array<std::int64_t, 256>& vertical_offsets,
                  const std::array<double*, 4>& samples, const std::array<double*, 4>& grad_x,
-                 const std::array<double*, 4>& grad_y) {
+                 const std::array<double*, 4>& grad_y, std::size_t start = 0) {
   const auto vertical_limit = std::min(y, h - 1 - y);
   const auto step = std::size_t{1} << sx;
-  for (std::size_t x = 0; x < w; ++x, distances += step, ++center) {
+  center += start;
+  distances += start * step;
+  for (std::size_t x = start; x < w; ++x, distances += step, ++center) {
     const std::size_t h1 = distances->first >> sx, v1 = distances->first >> sy;
     const auto horizontal_limit = std::min(x, w - 1 - x);
     if ((Mode != 3 && v1 > vertical_limit) || (Mode != 1 && h1 > horizontal_limit))
@@ -24,12 +26,13 @@ void collect_row(const double* center, const double* gx, const double* gy, const
       samples[1][x] = center[-offset];
     } else {
       std::array<std::ptrdiff_t, 4> offsets;
-      const auto vertical = vertical_offsets[v1], horizontal = static_cast<std::ptrdiff_t>(h1);
+      const auto vertical = static_cast<std::ptrdiff_t>(vertical_offsets[v1]);
+      const auto horizontal = static_cast<std::ptrdiff_t>(h1);
       if constexpr (Mode == 2) {
         const std::size_t h2 = distances->second >> sx, v2 = distances->second >> sy;
         if (h2 > horizontal_limit || v2 > vertical_limit)
           throw std::logic_error("reference outside plane");
-        const auto a = vertical_offsets[v2] + horizontal;
+        const auto a = static_cast<std::ptrdiff_t>(vertical_offsets[v2]) + horizontal;
         const auto b = static_cast<std::ptrdiff_t>(h2) - vertical;
         offsets = {a, b, -a, -b};
       } else {
@@ -109,7 +112,7 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
     const auto output_view = plane_view(output.data.data(), output.stride, h, output.stride);
     // Distance stores bytes. Build the reachable vertical displacements once
     // by addition; every sampling mode and both gradient planes reuse them.
-    std::array<std::ptrdiff_t, 256> vertical_offsets{};
+    std::array<std::int64_t, 256> vertical_offsets{};
     for (std::size_t i = 1; i <= std::min<std::size_t>(255, h - 1); ++i)
       vertical_offsets[i] = vertical_offsets[i - 1] + source_view.stride();
     auto center = source_view.cursor();
@@ -146,27 +149,58 @@ Frame process_highway(const Filter& filter, std::size_t frame, const std::vector
       const std::array<double*, 4> gradients_y = {grad_y[0].data(), grad_y[1].data(), grad_y[2].data(),
                                                   grad_y[3].data()};
       const auto* distances = distance_row.ptr();
-      switch (o.sample_mode) {
-        case 1:
-          collect_row<1>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy, vertical_offsets,
-                         values, gradients_x, gradients_y);
-          break;
-        case 2:
-          collect_row<2>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy, vertical_offsets,
-                         values, gradients_x, gradients_y);
-          break;
-        case 3:
-          collect_row<3>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy, vertical_offsets,
-                         values, gradients_x, gradients_y);
-          break;
-        case 7:
-          collect_row<7>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy, vertical_offsets,
-                         values, gradients_x, gradients_y);
-          break;
-        default:
-          collect_row<4>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy, vertical_offsets,
-                         values, gradients_x, gradients_y);
-          break;
+      std::size_t collected = 0;
+      if (o.sample_mode <= 3) {
+        const SamplingRow sampling{center.ptr(),
+                                   distances,
+                                   vertical_offsets.data(),
+                                   {values[0], values[1], values[2], values[3]},
+                                   w,
+                                   std::min(y, h - 1 - y),
+                                   sx,
+                                   sy};
+        collected = collect_simple_row(sampling, o.sample_mode);
+      }
+      // Keep the full scalar loop starting at a compile-time zero. A variable
+      // start here inhibits optimization on targets that do not use gather.
+      if (collected == 0) {
+        switch (o.sample_mode) {
+          case 1:
+            collect_row<1>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y);
+            break;
+          case 2:
+            collect_row<2>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y);
+            break;
+          case 3:
+            collect_row<3>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y);
+            break;
+          case 7:
+            collect_row<7>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y);
+            break;
+          default:
+            collect_row<4>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y);
+            break;
+        }
+      } else if (collected < w) {
+        switch (o.sample_mode) {
+          case 1:
+            collect_row<1>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y, collected);
+            break;
+          case 2:
+            collect_row<2>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y, collected);
+            break;
+          case 3:
+            collect_row<3>(center.ptr(), gradient_x.ptr(), gradient_y.ptr(), distances, w, h, y, sx, sy,
+                           vertical_offsets, values, gradients_x, gradients_y, collected);
+            break;
+        }
       }
       Row batch{};
       batch.center = center.ptr();

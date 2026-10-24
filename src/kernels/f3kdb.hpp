@@ -16,6 +16,18 @@ struct Row {
   double* output;
   std::size_t count;
 };
+// SIMD prefix of neighbour collection for modes 1-3. The caller handles the
+// remaining pixels with the checked scalar collector.
+struct SamplingRow {
+  const double* center;
+  const Distance* distances;
+  const std::int64_t* vertical_offsets;
+  double* samples[4];
+  std::size_t width;
+  std::size_t vertical_limit;
+  int sub_x, sub_y;
+};
+std::size_t collect_simple_row(const SamplingRow&, int mode);
 void process_row(const Row&, int mode, const double* thresholds, bool integer, bool blur, double angle, double boost);
 // Exposed internally so tests can check the continuous weight before quantization.
 void weights(const double* responses[4], double* output, std::size_t count);

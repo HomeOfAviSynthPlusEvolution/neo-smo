@@ -118,6 +118,66 @@ void weight_tests() {
     }
   }
 }
+void sampling_tests() {
+  // Unique source values expose wrong neighbours even when a later threshold
+  // would reject them. Keep the distance buffer exact-sized for ASan.
+  for (std::size_t width : {1, 3, 7, 17, 519}) {
+    constexpr std::size_t height = 515;
+    std::vector<double> source(width * height);
+    for (std::size_t i = 0; i < source.size(); ++i) source[i] = double(i);
+    std::array<std::int64_t, 256> vertical{};
+    for (std::size_t i = 1; i < vertical.size(); ++i) vertical[i] = vertical[i - 1] + width;
+    for (int sx : {0, 1, 2}) for (int sy : {0, 1}) for (int mode : {1, 2, 3}) {
+      for (std::size_t y : {0, 1, 257, 514}) {
+        const auto step = std::size_t{1} << sx;
+        std::vector<ref::Distance> distances(width * step, {255, 255});
+        std::array<std::vector<double>, 4> samples;
+        for (auto& sample : samples) sample.assign(width + 1, -1);
+        const auto vlimit = std::min(y, height - 1 - y);
+        for (std::size_t x = 0; x < width; ++x) {
+          const auto hlimit = std::min(x, width - 1 - x);
+          auto bound = std::size_t{255};
+          if (mode != 3) bound = std::min(bound, vlimit << sy);
+          if (mode != 1) bound = std::min(bound, hlimit << sx);
+          distances[x * step] = {static_cast<std::uint8_t>(bound), static_cast<std::uint8_t>(bound / 2)};
+        }
+        simd::SamplingRow row{source.data() + y * width, distances.data(), vertical.data(),
+                              {samples[0].data(), samples[1].data(), samples[2].data(), samples[3].data()},
+                              width, vlimit, sx, sy};
+        const auto count = simd::collect_simple_row(row, mode);
+        check(count <= width && (sx < 2 || count == 0), "sampling prefix extent");
+        for (std::size_t x = 0; x < count; ++x) {
+          const auto first = distances[x * step].first, second = distances[x * step].second;
+          const auto h1 = std::int64_t(first >> sx), v1 = std::int64_t(first >> sy);
+          const auto h2 = std::int64_t(second >> sx), v2 = std::int64_t(second >> sy);
+          std::array<std::int64_t, 4> offsets{};
+          if (mode == 1) offsets = {v1 * std::int64_t(width), -v1 * std::int64_t(width), 0, 0};
+          else if (mode == 3) offsets = {h1, -h1, 0, 0};
+          else {
+            const auto a = v2 * std::int64_t(width) + h1, b = h2 - v1 * std::int64_t(width);
+            offsets = {a, b, -a, -b};
+          }
+          for (int j = 0; j < (mode == 2 ? 4 : 2); ++j)
+            check(samples[j][x] == double(std::int64_t(y * width + x) + offsets[j]), "sampling neighbour");
+        }
+        for (int j = 0; j < 4; ++j)
+          for (std::size_t x = j >= (mode == 2 ? 4 : 2) ? 0 : count; x <= width; ++x)
+            check(samples[j][x] == -1, "sampling tail and unused outputs");
+        if (count && y == 0) {
+          distances[0].first = 255;
+          bool rejected = false;
+          try { simd::collect_simple_row(row, mode); } catch (const std::logic_error&) { rejected = true; }
+          check(rejected, "sampling first distance bounds");
+          if (mode == 2) {
+            distances[0] = {0, 255}; rejected = false;
+            try { simd::collect_simple_row(row, mode); } catch (const std::logic_error&) { rejected = true; }
+            check(rejected, "sampling second distance bounds");
+          }
+        }
+      }
+    }
+  }
+}
 void row_tests() {
   constexpr std::size_t n=17;
   std::mt19937 rng(0x3f3db);
@@ -302,7 +362,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); row_tests(); fs_tests(); frame_tests();
+      weight_tests(); sampling_tests(); row_tests(); fs_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
