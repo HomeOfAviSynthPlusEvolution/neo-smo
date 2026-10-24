@@ -98,7 +98,14 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         processed_row = processed.data();
       }
       const auto vlimit = std::min(y, h - 1 - y);
-      const IntegerRow row{center.ptr(), distances.ptr(), noise.ptr(), processed_row, w, vlimit, y * w, sx, sy};
+      IntegerRow row{center.ptr(), distances.ptr(), noise.ptr(), processed_row, w, vlimit, y * w, sx, sy};
+      const bool direct = out.sample == Sample::integer && o.dither_algo == 1;
+      if (direct) {
+        row.packed_output = target.ptr();
+        row.output_depth = out.depth;
+        row.chroma = plane != 0;
+        row.limited = o.keep_tv_range;
+      }
       const auto count = process_integer_row(row, o.sample_mode, params.thresholds[plane].data(), o.blur_first);
       for (std::size_t x = count; x < w; ++x) {
         const auto d = distances.ptr()[x << sx];
@@ -138,8 +145,10 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         } else
           processed_row += w;
       } else {
-        pack_row({processed_row, target.ptr(), w, y, out.depth, o.dither_algo, true, out.sample == Sample::integer,
-                  plane != 0, o.keep_tv_range});
+        const auto start = direct ? count : 0;
+        if (start < w)
+          pack_row({processed_row + start, target.ptr() + start * bytes_per_sample(out), w - start, y, out.depth,
+                    o.dither_algo, true, out.sample == Sample::integer, plane != 0, o.keep_tv_range});
         stripe_rows = 0;
       }
     }

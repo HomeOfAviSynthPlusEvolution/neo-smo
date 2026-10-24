@@ -45,6 +45,10 @@ struct IntegerRow {
   std::size_t width, vertical_limit;
   std::size_t row_offset; // center index from the plane origin; plane extent <= INT32_MAX
   int sub_x, sub_y;
+  // Optional dither-1 integer output; otherwise write double processing units.
+  std::uint8_t* packed_output = nullptr;
+  int output_depth = 8;
+  bool chroma = false, limited = false;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
 struct IntegerInputPlane {

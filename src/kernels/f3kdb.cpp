@@ -295,6 +295,31 @@ std::size_t integer_samples(const IntegerRow& row, const double* thresholds) {
     }
     const hn::Rebind<std::int16_t, decltype(d)> dg;
     const auto result = hn::Add(hn::IfThenElse(accept, mean, value), hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
+    if (row.packed_output) {
+      const int shift = 16 - row.output_depth;
+      auto code = result;
+      if (shift) {
+        const auto quotient = hn::ShiftRightSame(result, shift);
+        const auto remainder = hn::Sub(result, hn::ShiftLeftSame(quotient, shift));
+        const auto half_step = hn::Set(d, std::int32_t{1} << (shift - 1));
+        const auto odd = hn::Ne(hn::And(quotient, hn::Set(d, 1)), hn::Zero(d));
+        const auto up = hn::Or(hn::Gt(remainder, half_step), hn::And(hn::Eq(remainder, half_step), odd));
+        code = hn::Add(quotient, hn::IfThenElseZero(up, hn::Set(d, 1)));
+      }
+      const int low = row.limited ? 16 << (row.output_depth - 8) : 0;
+      const int high = row.limited ? (row.chroma ? 240 : 235) << (row.output_depth - 8) : (1 << row.output_depth) - 1;
+      code = hn::Min(hn::Set(d, high), hn::Max(hn::Set(d, low), code));
+      const hn::Rebind<std::uint16_t, decltype(d)> du16;
+      const auto words = hn::DemoteTo(du16, code);
+      if (row.output_depth == 8) {
+        const hn::Rebind<std::uint8_t, decltype(d)> du8;
+        hn::StoreU(hn::DemoteTo(du8, words), du8, row.packed_output + x);
+      } else {
+        const hn::Repartition<std::uint8_t, decltype(du16)> bytes;
+        hn::StoreU(hn::BitCast(bytes, words), bytes, row.packed_output + 2 * x);
+      }
+      continue;
+    }
     const hn::ScalableTag<double> dd;
     const hn::Half<decltype(d)> half;
     const auto low = hn::PromoteTo(dd, hn::LowerHalf(half, result));
