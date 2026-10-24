@@ -227,10 +227,12 @@ void gradient_sampling_tests() {
     std::vector<std::int16_t> integer_grain(w);
     std::vector<float> grain(w);
     for (std::size_t x=0;x<w;++x) { integer_grain[x]=int(x%31)-15;grain[x]=float(int(x%31)-15)/65536; }
-    for (int pattern=0;pattern<4;++pattern) {
-      const bool integer=pattern==0;
+    for (int pattern=0;pattern<6;++pattern) {
+      const bool integer=pattern==0 || pattern>=4;
       for (std::size_t i=0;i<source.size();++i) {
         source[i]=int(rng()%65536);gx[i]=int(rng()%524281)-262140;gy[i]=int(rng()%524281)-262140;
+        if (pattern==4) source[i]=i%65536;
+        if (pattern==5) source[i]=(rng()%256)*256;
         if (pattern==1) { source[i]=float((source[i]-32768)/65536);gx[i]*=1e-25;gy[i]*=1e-25; }
         if (pattern==2) { source[i]=(i%2?-1:1)*double(std::numeric_limits<float>::max());gx[i]*=1e30;gy[i]*=1e30; }
         if (pattern==3) { source[i]=std::numeric_limits<float>::denorm_min()*(1+i%3);gx[i]=0;gy[i]=0; }
@@ -260,7 +262,7 @@ void gradient_sampling_tests() {
         simd::Row batch{};batch.center=row.sampling.center;batch.output=output.data();batch.count=w;
         batch.grain=grain.data();batch.integer_grain=integer_grain.data();
         for (double angle : {0.0,0.15,0.25,0.5}) for (double boost : {0.0,1.5,4.0}) {
-          const double threshold=integer?65535:0.5;
+          const double threshold=pattern==5?256:integer?65535:0.5;
           const std::array<double,3> t{threshold,threshold*0.75,threshold*0.5};
           std::fill(output.begin(),output.end(),-999999);
           const auto prefix=simd::process_cross_row(row,batch,t.data(),integer,angle,boost);

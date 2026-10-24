@@ -250,17 +250,12 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
     const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(absolute, vertical), hn::Sub(absolute, vertical),
                                                  hn::Add(absolute, h), hn::Sub(absolute, h)};
     V r[4];
-    auto directions = hn::Eq(hn::Zero(d), hn::Zero(d));
-    const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
     for (int j = 0; j < 4; ++j) {
       r[j] = hn::GatherIndex(d, source, offsets[j]);
-      const auto rx = hn::GatherIndex(d, gx, offsets[j]), ry = hn::GatherIndex(d, gy, offsets[j]);
-      if constexpr (Fused)
-        directions = hn::And(directions, aligned(d, cgx, cgy, rx, ry, angle, cosine, sine));
-      else {
+      if constexpr (!Fused) {
         hn::StoreU(r[j], d, row.samples[j] + x);
-        hn::StoreU(rx, d, cross.grad_x[j] + x);
-        hn::StoreU(ry, d, cross.grad_y[j] + x);
+        hn::StoreU(hn::GatherIndex(d, gx, offsets[j]), d, cross.grad_x[j] + x);
+        hn::StoreU(hn::GatherIndex(d, gy, offsets[j]), d, cross.grad_y[j] + x);
       }
     }
     if constexpr (Fused) {
@@ -271,6 +266,24 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       auto maximum = zero;
       for (int j = 0; j < 4; ++j)
         maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, Integer)));
+      // A zero maximum-difference response rejects both possible boosts.
+      // An integer mean equal to the center also makes every blend identical.
+      // Neither case needs direction tests or gradient memory accesses.
+      auto unchanged =
+          hn::And(hn::Gt(maximum, zero), hn::Ge(maximum, hn::Set(d, std::max(thresholds[1], thresholds[1] * boost))));
+      if constexpr (Integer)
+        unchanged = hn::Or(unchanged, hn::Eq(average, s));
+      if (hn::AllTrue(d, unchanged)) {
+        const auto result = Integer ? hn::Add(s, load_integer_grain(d, output->integer_grain + x, lanes))
+                                    : fp(d, hn::Add(s, load_grain(d, output->grain + x, lanes)));
+        hn::StoreU(result, d, output->output + x);
+        continue;
+      }
+      auto directions = hn::Eq(zero, zero);
+      const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
+      for (int j = 0; j < 4; ++j)
+        directions = hn::And(directions, aligned(d, cgx, cgy, hn::GatherIndex(d, gx, offsets[j]),
+                                                 hn::GatherIndex(d, gy, offsets[j]), angle, cosine, sine));
       auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]), twice = hn::Add(s, s);
       if constexpr (!Integer) {
         vertical = fp(d, vertical);
