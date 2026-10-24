@@ -1,5 +1,6 @@
 #include "plugin/avs_filter.hpp"
 #include "plugin/avs_deen.hpp"
+#include "plugin/avs_f3kdb.hpp"
 
 const AVS_Linkage* AVS_linkage = nullptr;
 namespace neo_smo::avs {
@@ -64,6 +65,7 @@ NEO_SMO_AVS_EXPORT const char* __stdcall AvisynthPluginInit3(IScriptEnvironment*
     ADD(DCTFilter);
 #undef ADD
     avs::add_deen(env);
+    avs::add_f3kdb(env);
     return "neo-smo AviSynth+ filters";
   } catch (const AvisynthError&) {
     throw;

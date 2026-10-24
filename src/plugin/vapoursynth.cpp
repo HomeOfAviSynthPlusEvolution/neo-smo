@@ -1,3 +1,5 @@
+#include "plugin/f3kdb.hpp"
+#include "plugin/f3kdb_params.hpp"
 #include "plugin/deen_descriptor.hpp"
 #include "plugin/deen.hpp"
 #include "plugin/descriptors.hpp"
@@ -2232,4 +2234,6 @@ VS_EXTERNAL_API(void) VapourSynthPluginInit2(VSPlugin* plugin, const VSPLUGINAPI
   const auto mini_sig = ds::make_vapoursynth_signature(deen_descriptor(true)).value();
   vspapi->registerFunction("Deen", deen_sig.c_str(), "clip:vnode;", deen_create, nullptr, plugin);
   vspapi->registerFunction("MiniDeen", mini_sig.c_str(), "clip:vnode;", mini_deen_create, nullptr, plugin);
+  const auto f3kdb_sig = ds::make_vapoursynth_signature(f3kdb_descriptor()).value();
+  vspapi->registerFunction("F3kdb", f3kdb_sig.c_str(), "clip:vnode;", f3kdb_create, nullptr, plugin);
 }
