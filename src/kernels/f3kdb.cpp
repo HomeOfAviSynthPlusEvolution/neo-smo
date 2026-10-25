@@ -390,27 +390,27 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
   hn::VFromD<decltype(d)> r[4];
-  auto sum = zero, maximum = zero;
-  for (int j = 0; j < 4; ++j) {
+  for (int j = 0; j < 4; ++j)
     r[j] = hn::ConvertTo(d, refs[j]);
-    sum = hn::Add(sum, r[j]);
-    maximum = hn::Max(maximum, hn::Abs(hn::Sub(r[j], s)));
-  }
-  const auto average = hn::Mul(sum, hn::Set(d, 0.25f));
+  // All sums/differences here are exact 16-bit integer/quarter-integer
+  // values. Balance the dependency chains and reuse both pair sums.
+  const auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]);
+  const auto maximum = hn::Max(hn::Max(hn::Abs(hn::Sub(r[0], s)), hn::Abs(hn::Sub(r[1], s))),
+                               hn::Max(hn::Abs(hn::Sub(r[2], s)), hn::Abs(hn::Sub(r[3], s))));
+  const auto average = hn::Mul(hn::Add(vertical, horizontal), hn::Set(d, 0.25f));
   const auto twice = hn::Add(s, s);
   const hn::VFromD<decltype(d)> delta[4] = {
       hn::Abs(hn::Sub(average, s)), maximum,
-      hn::Abs(hn::Sub(hn::Add(r[0], r[1]), twice)),
-      hn::Abs(hn::Sub(hn::Add(r[2], r[3]), twice))};
-  auto product = one;
+      hn::Abs(hn::Sub(vertical, twice)), hn::Abs(hn::Sub(horizontal, twice))};
+  hn::VFromD<decltype(d)> c[4];
   for (int j = 0; j < 4; ++j) {
     const int k = j < 2 ? j : 2;
     // Subtract before scaling: near the upper endpoint this difference is
     // exact, whereas 1 - delta / threshold loses relative accuracy.
-    const auto c = hn::Min(one, hn::Max(zero, hn::Mul(
+    c[j] = hn::Min(one, hn::Max(zero, hn::Mul(
         hn::Sub(hn::Set(d, thresholds[k]), delta[j]), hn::Set(d, slopes[k]))));
-    product = hn::Mul(product, c);
   }
+  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
   // Integral thresholds in [1,65535] and quarter-integral differences make
   // every positive response >= 0.75/65535. Their product is normal binary32.
   const auto positive = hn::Gt(product, zero);
