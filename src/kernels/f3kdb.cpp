@@ -391,16 +391,17 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto s = hn::ConvertTo(d, center);
   // Keep exact 16-bit sums and differences in int32 until the responses
   // need floats. The largest magnitude is 4 * 65535, well within int32.
-  const auto vertical = hn::Add(refs[0], refs[1]), horizontal = hn::Add(refs[2], refs[3]);
-  const auto maximum = hn::Max(hn::Max(hn::Abs(hn::Sub(refs[0], center)), hn::Abs(hn::Sub(refs[1], center))),
-                               hn::Max(hn::Abs(hn::Sub(refs[2], center)), hn::Abs(hn::Sub(refs[3], center))));
-  const auto blend_delta = hn::Mul(hn::ConvertTo(d, hn::Sub(hn::Add(vertical, horizontal),
-                                                         hn::ShiftLeft<2>(center))), hn::Set(d, 0.25f));
-  const auto twice = hn::ShiftLeft<1>(center);
+  hn::VFromD<DI> signed_delta[4];
+  for (int j = 0; j < 4; ++j) signed_delta[j] = hn::Sub(refs[j], center);
+  const auto vertical_delta = hn::Add(signed_delta[0], signed_delta[1]);
+  const auto horizontal_delta = hn::Add(signed_delta[2], signed_delta[3]);
+  const auto maximum = hn::Max(hn::Max(hn::Abs(signed_delta[0]), hn::Abs(signed_delta[1])),
+                               hn::Max(hn::Abs(signed_delta[2]), hn::Abs(signed_delta[3])));
+  const auto blend_delta = hn::Mul(hn::ConvertTo(d, hn::Add(vertical_delta, horizontal_delta)), hn::Set(d, 0.25f));
   const hn::VFromD<decltype(d)> delta[4] = {
       hn::Abs(blend_delta), hn::ConvertTo(d, maximum),
-      hn::ConvertTo(d, hn::Abs(hn::Sub(vertical, twice))),
-      hn::ConvertTo(d, hn::Abs(hn::Sub(horizontal, twice)))};
+      hn::ConvertTo(d, hn::Abs(vertical_delta)),
+      hn::ConvertTo(d, hn::Abs(horizontal_delta))};
   hn::VFromD<decltype(d)> c[4];
   for (int j = 0; j < 4; ++j) {
     const int k = j < 2 ? j : 2;
