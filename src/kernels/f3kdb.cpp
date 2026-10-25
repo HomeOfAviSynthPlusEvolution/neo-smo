@@ -389,19 +389,18 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const hn::Rebind<float, DI> d;
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
-  hn::VFromD<decltype(d)> r[4];
-  for (int j = 0; j < 4; ++j)
-    r[j] = hn::ConvertTo(d, refs[j]);
-  // All sums/differences here are exact 16-bit integer/quarter-integer
-  // values. Balance the dependency chains and reuse both pair sums.
-  const auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]);
-  const auto maximum = hn::Max(hn::Max(hn::Abs(hn::Sub(r[0], s)), hn::Abs(hn::Sub(r[1], s))),
-                               hn::Max(hn::Abs(hn::Sub(r[2], s)), hn::Abs(hn::Sub(r[3], s))));
-  const auto average = hn::Mul(hn::Add(vertical, horizontal), hn::Set(d, 0.25f));
-  const auto twice = hn::Add(s, s);
+  // Keep exact 16-bit sums and differences in int32 until the responses
+  // need floats. The largest magnitude is 4 * 65535, well within int32.
+  const auto vertical = hn::Add(refs[0], refs[1]), horizontal = hn::Add(refs[2], refs[3]);
+  const auto maximum = hn::Max(hn::Max(hn::Abs(hn::Sub(refs[0], center)), hn::Abs(hn::Sub(refs[1], center))),
+                               hn::Max(hn::Abs(hn::Sub(refs[2], center)), hn::Abs(hn::Sub(refs[3], center))));
+  const auto blend_delta = hn::Mul(hn::ConvertTo(d, hn::Sub(hn::Add(vertical, horizontal),
+                                                         hn::ShiftLeft<2>(center))), hn::Set(d, 0.25f));
+  const auto twice = hn::ShiftLeft<1>(center);
   const hn::VFromD<decltype(d)> delta[4] = {
-      hn::Abs(hn::Sub(average, s)), maximum,
-      hn::Abs(hn::Sub(vertical, twice)), hn::Abs(hn::Sub(horizontal, twice))};
+      hn::Abs(blend_delta), hn::ConvertTo(d, maximum),
+      hn::ConvertTo(d, hn::Abs(hn::Sub(vertical, twice))),
+      hn::ConvertTo(d, hn::Abs(hn::Sub(horizontal, twice)))};
   hn::VFromD<decltype(d)> c[4];
   for (int j = 0; j < 4; ++j) {
     const int k = j < 2 ? j : 2;
@@ -431,7 +430,7 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   // and product rounding keep the combined weight error below 2^-20.
   const auto f = hn::IfThenElseZero(positive, hn::MulAdd(fraction, slope, lower));
   // The rounded 16-bit blend fits int32; saturation is redundant.
-  const auto blended = hn::Mul(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, input_scale));
+  const auto blended = hn::Mul(hn::MulAdd(blend_delta, f, s), hn::Set(d, input_scale));
   return hn::ConvertInRangeTo(di, hn::Add(blended, hn::Set(d, 0.5f)));
 }
 template <class DI>
