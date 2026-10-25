@@ -660,6 +660,107 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
       return 0;
   }
 }
+#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
+template <int Mode, bool Blur, int SX, int SY>
+std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresholds) {
+  static_assert(Mode == 1 || Mode == 3);
+  const IntegerRow row = input_row;
+  const int bytes = row.input_depth == 8 ? 1 : 2;
+  const hn::ScalableTag<std::uint16_t> d;
+  const hn::Repartition<std::int32_t, decltype(d)> di;
+  const hn::Rebind<std::uint32_t, decltype(di)> du;
+  const hn::Rebind<std::uint16_t, decltype(di)> dh;
+  const hn::Rebind<std::uint8_t, decltype(d)> db;
+  const hn::Repartition<std::uint8_t, decltype(d)> raw;
+  const hn::Rebind<std::int16_t, decltype(d)> dg;
+  const auto lanes = hn::Lanes(d), half = hn::Lanes(di), full = row.width / lanes * lanes;
+  const auto threshold = hn::Set(d, std::uint16_t(std::ceil(thresholds[0])));
+  const auto pitch = hn::Set(di, std::int32_t(row.native_stride)),
+             vlimit = hn::Set(di, std::int32_t(row.vertical_limit));
+  const auto last = hn::Set(di, std::int32_t(row.width - 1));
+  constexpr int N = 2;
+  for (std::size_t x = 0; x < full; x += lanes) {
+    hn::VFromD<decltype(db)> first, second;
+    const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances) + (x << SX) * 2;
+    if constexpr (SX == 0)
+      hn::LoadInterleaved2(db, distances, first, second);
+    else {
+      hn::VFromD<decltype(db)> a, b;
+      hn::LoadInterleaved4(db, distances, first, second, a, b);
+    }
+    const auto d1 = hn::PromoteTo(d, first);
+    hn::VFromD<decltype(dh)> gathered[2][N];
+    for (int part = 0; part < 2; ++part) {
+      const auto dist1 = hn::PromoteTo(di, part == 0 ? hn::LowerHalf(dh, d1) : hn::UpperHalf(dh, d1));
+      const auto h1 = hn::ShiftRight<SX>(dist1), v1 = hn::ShiftRight<SY>(dist1);
+      const auto pos = hn::Iota(di, std::int32_t(x + part * half)), hlimit = hn::Min(pos, hn::Sub(last, pos));
+      auto valid = hn::Eq(pos, pos);
+      if constexpr (Mode != 3)
+        valid = hn::And(valid, hn::Le(v1, vlimit));
+      if constexpr (Mode != 1)
+        valid = hn::And(valid, hn::Le(h1, hlimit));
+      if (!hn::AllTrue(di, valid))
+        throw std::logic_error("reference outside plane");
+      const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+      hn::VFromD<decltype(di)> offsets[N];
+      const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
+      offsets[0] = hn::Add(absolute, off);
+      offsets[1] = hn::Sub(absolute, off);
+      for (int j = 0; j < N; ++j) {
+        // Clamp the four-byte load, then extract the requested sample. This
+        // includes the last visible sample without requiring source padding.
+        const auto start = hn::Min(offsets[j], hn::Set(di, std::int32_t(row.native_extent - 4)));
+        const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(offsets[j], start)));
+        const auto words = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
+        const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
+        const auto value = hn::And(hn::Shr(words, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
+        gathered[part][j] = hn::DemoteTo(dh, hn::ShiftLeftSame(hn::BitCast(di, value), 16 - row.input_depth));
+      }
+    }
+    hn::VFromD<decltype(d)> refs[N];
+    for (int j = 0; j < N; ++j)
+      refs[j] = hn::Combine(d, gathered[1][j], gathered[0][j]);
+    const auto* source = row.native + row.row_offset + x * bytes;
+    const auto center =
+        hn::ShiftLeftSame(bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source)) : hn::BitCast(d, hn::LoadU(raw, source)),
+                          16 - row.input_depth);
+    const auto absdiff = [](auto a, auto b) {
+      return hn::Sub(hn::Max(a, b), hn::Min(a, b));
+    };
+    auto mean = hn::AverageRound(refs[0], refs[1]);
+    auto accepted = hn::Lt(absdiff(mean, center), threshold);
+    if constexpr (!Blur && Mode <= 3) {
+      accepted = hn::Eq(center, center);
+      for (int j = 0; j < N; ++j)
+        accepted = hn::And(accepted, hn::Lt(absdiff(refs[j], center), threshold));
+    }
+    auto value = hn::IfThenElse(accepted, mean, center);
+    // Saturation to [0,65535] commutes with the final output clamp.
+    const auto grain = hn::LoadU(dg, row.grain + x);
+    value = hn::SaturatedAdd(value, hn::BitCast(d, hn::Max(hn::Zero(dg), grain)));
+    value = hn::SaturatedSub(value, hn::BitCast(d, hn::Neg(hn::Min(hn::Zero(dg), grain))));
+    const int shift = 16 - row.output_depth;
+    auto code = value;
+    if (shift) {
+      const auto q = hn::ShiftRightSame(value, shift), rem = hn::Sub(value, hn::ShiftLeftSame(q, shift));
+      const auto midpoint = hn::Set(d, std::uint16_t(1u << (shift - 1)));
+      const auto up =
+          hn::Or(hn::Gt(rem, midpoint), hn::And(hn::Eq(rem, midpoint), hn::Ne(hn::And(q, hn::Set(d, 1)), hn::Zero(d))));
+      code = hn::Add(q, hn::IfThenElseZero(up, hn::Set(d, 1)));
+    }
+    const auto low = std::uint16_t(row.limited ? 16 << (row.output_depth - 8) : 0),
+               high = std::uint16_t(row.limited ? (row.chroma ? 240 : 235) << (row.output_depth - 8)
+                                                : (1u << row.output_depth) - 1);
+    code = hn::Min(hn::Set(d, high), hn::Max(hn::Set(d, low), code));
+    if (row.output_depth == 8)
+      hn::StoreU(hn::DemoteTo(db, code), db, row.packed_output + x);
+    else
+      hn::StoreU(hn::BitCast(raw, code), raw, row.packed_output + 2 * x);
+  }
+  return full;
+}
+#endif
+
 template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
           int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false,
           int NativeDepth = 0, int OutputDepth = 0>
@@ -937,6 +1038,16 @@ template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
   if (row.sub_x > 1 || row.width == 0)
     return 0;
+#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
+  // Keep compact-word arithmetic on the measured wide-target path.
+  // Other output contracts and threshold ranges keep the general kernel.
+  if (row.native && row.native_extent >= 4 && row.packed_output && row.dither == 1 &&
+      thresholds[0] > 0 && thresholds[0] <= 65535) {
+    if (mode == 1)
+      return blur ? native_word_pairs<1, true, SX, SY>(row, thresholds)
+                  : native_word_pairs<1, false, SX, SY>(row, thresholds);
+  }
+#endif
   switch (mode) {
     case 0:
       return integer_samples<0, true, SX, SY>(row, thresholds);

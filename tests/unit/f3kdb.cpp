@@ -775,6 +775,53 @@ void cached_reference_frame_tests() {
       check(fractional.reference_offsets(plane).empty(),"F64 path does not allocate unused offsets");
   }
 }
+void native_pair_frame_tests() {
+  // Exercise native word pairs independently of the existing byte-output path:
+  // both blur rules, subsampling, saturation, threshold fallback, and exact
+  // unaligned allocations. Width 130 covers 32-lane table interiors and tails.
+  int variant = 0;
+  for (int mode : {1, 3})
+    for (int depth : {8, 10, 16})
+      for (int sx : {0, 1})
+        for (int sy : {0, 1})
+          for (bool blur : {false, true}) {
+            ref::Format f;
+            f.width = 130;
+            f.height = 38;
+            f.depth = depth;
+            f.color = ref::Color::yuv;
+            f.sub_x = sx;
+            f.sub_y = sy;
+            ref::Options o;
+            o.sample_mode = mode;
+            o.blur_first = blur;
+            o.scale = true;
+            o.dither_algo = 1;
+            o.output_depth = depth == 8 ? 16 : (variant & 1) ? 8 : 16;
+            const double thresholds[] = {0.5, 2048.5, 65535.0, 0.0};
+            o.threshold.fill(thresholds[variant % 4]);
+            o.range = variant % 4 == 3 ? 255 : 15;
+            o.grain_y = o.grain_c = 4096;
+            o.keep_tv_range = (variant & 2) != 0;
+            const auto generated = input(f, 0);
+            std::vector<std::vector<std::uint8_t>> storage(3);
+            std::vector<ref::PlaneView> views;
+            for (std::size_t plane = 0; plane < 3; ++plane) {
+              const auto w = f.width >> (plane ? sx : 0), h = f.height >> (plane ? sy : 0);
+              const auto row_bytes = w * (depth == 8 ? 1 : 2), stride = row_bytes + variant % 2;
+              const auto extent = (h - 1) * stride + row_bytes;
+              storage[plane].resize(extent + 1);
+              for (std::size_t y = 0; y < h; ++y)
+                std::memcpy(storage[plane].data() + 1 + y * stride,
+                            static_cast<const std::uint8_t*>(generated.views[plane].data) +
+                                y * generated.views[plane].stride,
+                            row_bytes);
+              views.push_back({storage[plane].data() + 1, extent, stride});
+            }
+            compare(ScalarFilter(f, o).process(0, views), simd::Filter(f, o).process(0, views), o);
+            ++variant;
+          }
+}
 void native_weighted_gather_tests() {
   // Maximal valid distances at each coordinate include odd luma distances
   // at the right edge of subsampled planes. Use exact, unaligned allocations
@@ -963,7 +1010,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); cached_reference_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); native_pair_frame_tests(); cached_reference_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
