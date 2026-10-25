@@ -246,6 +246,14 @@ HWY_INLINE V cross_gather(D d, const double* wide, const std::int32_t* compact, 
 template <int SX, int SY, bool Fused = false, bool Integer = false, bool Compact = false>
 std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nullptr,
                           const double* thresholds = nullptr, double angle = 0, double boost = 1) {
+  // Output doubles may alias caller-owned thresholds. Snapshot the immutable
+  // parameters so their conversions and broadcasts can stay outside the loop.
+  double row_thresholds[3]{};
+  if constexpr (Fused) {
+    for (int j = 0; j < 3; ++j)
+      row_thresholds[j] = thresholds[j];
+    thresholds = row_thresholds;
+  }
   const auto& row = cross.sampling;
   const D d;
   const hn::Rebind<std::conditional_t<Compact, std::int32_t, std::int64_t>, D> di;
