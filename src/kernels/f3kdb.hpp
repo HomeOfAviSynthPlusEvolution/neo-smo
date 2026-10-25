@@ -94,6 +94,9 @@ struct IntegerRow {
   int input_depth = 16;
   int dither = 1;
   std::size_t y = 0;
+  // Internal Filter-owned distances only: after subsampling, both coordinates
+  // are known to stay within this plane. Does not relax storage/extent checks.
+  bool validated_distances = false;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
 struct IntegerInputPlane {

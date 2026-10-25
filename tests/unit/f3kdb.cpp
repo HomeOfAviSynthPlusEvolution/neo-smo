@@ -770,7 +770,9 @@ void native_weighted_gather_tests() {
           const auto hlimit=std::min(x,width-1-x);
           distances[x<<sx].first=std::uint8_t(std::min({std::size_t{255},((vlimit+1)<<sy)-1,((hlimit+1)<<sx)-1}));
         }
+        for(bool validated : {false,true}) {
         simd::IntegerRow row{nullptr,distances.data(),grain.data(),output.data(),width,vlimit,y*stride,sx,sy};
+        row.validated_distances=validated;
         row.native=data.data()+1;row.native_stride=stride;row.native_extent=extent;row.input_depth=depth;
         std::fill(output.begin(),output.end(),-999999);
         const auto count=simd::process_integer_row(row,6,thresholds.data(),true);
@@ -783,6 +785,16 @@ void native_weighted_gather_tests() {
           check(std::abs(output[x]-expected)<=1,"native weighted gather oracle");
         }
         for(std::size_t x=count;x<output.size();++x)check(output[x]==-999999,"native weighted gather tail");
+        if(!validated && y==0 && count) {
+          const auto original=distances[0].first;
+          distances[0].first=255;
+          bool rejected=false;
+          try { simd::process_integer_row(row,6,thresholds.data(),true); }
+          catch(const std::logic_error&) { rejected=true; }
+          distances[0].first=original;
+          check(rejected,"untrusted native weighted coordinates rejected");
+        }
+        }
       }
     }
 }

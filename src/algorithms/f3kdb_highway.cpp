@@ -272,6 +272,10 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
       }
       const auto vlimit = std::min(y, h - 1 - y);
       IntegerRow row{center.ptr(), distances.ptr(), noise.ptr(), processed_row, w, vlimit, y * w, sx, sy};
+      // Filter construction bounds mode-6 distances by both luma edges.
+      // Dimensions are divisible by the subsampling factors, so shifting
+      // each distance and its coordinate preserves the plane bounds.
+      row.validated_distances = o.sample_mode == 6;
       if (native) {
         row.native = static_cast<const std::uint8_t*>(view.data);
         row.native_stride = view.stride;

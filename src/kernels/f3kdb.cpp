@@ -661,7 +661,7 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
   }
 }
 template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
-          int PackedDither = -1>
+          int PackedDither = -1, bool ValidatedDistances = false>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -744,8 +744,10 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
         valid = hn::And(valid, hn::Le(v1, vlimit));
       if constexpr (Mode != 1)
         valid = hn::And(valid, hn::Le(h1, hlimit));
-      if (!hn::AllTrue(di, valid))
-        throw std::logic_error("reference outside plane");
+      if constexpr (!ValidatedDistances) {
+        if (!hn::AllTrue(di, valid))
+          throw std::logic_error("reference outside plane");
+      }
       const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
       hn::VFromD<decltype(d)> refs[N];
@@ -875,15 +877,15 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   }
   return full;
 }
-template <int SX, int SY>
+template <int SX, int SY, bool ValidatedDistances = false>
 std::size_t integer_native_weighted(const IntegerRow& row, const double* thresholds) {
   // Keep output selection out of the general weighted loop. Zero denotes
   // the intermediate output used by floating conversion and error diffusion.
   if (!row.packed_output)
-    return integer_samples<6, true, SX, SY, true, true, 0>(row, thresholds);
+    return integer_samples<6, true, SX, SY, true, true, 0, ValidatedDistances>(row, thresholds);
   if (row.dither == 2)
-    return integer_samples<6, true, SX, SY, true, true, 2>(row, thresholds);
-  return integer_samples<6, true, SX, SY, true, true, 1>(row, thresholds);
+    return integer_samples<6, true, SX, SY, true, true, 2, ValidatedDistances>(row, thresholds);
+  return integer_samples<6, true, SX, SY, true, true, 1, ValidatedDistances>(row, thresholds);
 }
 template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
@@ -923,7 +925,8 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
         const std::size_t last_rows = (((4 / bytes - 1) << SX) - 1) >> SY;
         if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
             row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride)
-          return fast_weights ? integer_native_weighted<SX, SY>(row, thresholds)
+          return fast_weights ? (row.validated_distances ? integer_native_weighted<SX, SY, true>(row, thresholds)
+                                                        : integer_native_weighted<SX, SY>(row, thresholds))
                               : integer_samples<6, true, SX, SY, true, false>(row, thresholds);
       }
       return fast_weights ? integer_samples<6, true, SX, SY, false, true>(row, thresholds)
