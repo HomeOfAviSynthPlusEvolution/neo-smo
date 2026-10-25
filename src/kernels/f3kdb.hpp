@@ -43,7 +43,9 @@ struct CrossSamplingRow {
   // Their cross/dot products are exact in double and need no normalization.
   bool bounded_integer_gradients = false;
   // Optional exact integer planes, indexed from the plane origin. The fused
-  // kernel promotes gathered values; row.center/gx/gy remain widened row views.
+  // kernel promotes gathered and center values directly when its bounded
+  // compact path applies. Widened row views are then needed only for the
+  // unprocessed suffix; other paths require complete widened views.
   const std::int32_t* compact_source = nullptr;
   const std::int32_t* compact_gx = nullptr;
   const std::int32_t* compact_gy = nullptr;

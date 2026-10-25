@@ -494,9 +494,6 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
       const double* gradient_values_x;
       const double* gradient_values_y;
       if constexpr (std::is_same_v<T, std::int32_t>) {
-        std::copy_n(center.ptr(), w, wide_center.data());
-        std::copy_n(gradient_x.ptr(), w, wide_gx.data());
-        std::copy_n(gradient_y.ptr(), w, wide_gy.data());
         center_values = wide_center.data();
         gradient_values_x = wide_gx.data();
         gradient_values_y = wide_gy.data();
@@ -551,6 +548,14 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
                                               o.max_angle, o.angle_boost);
         collected = prefix.collected;
         processed_prefix = prefix.processed;
+      }
+      if constexpr (std::is_same_v<T, std::int32_t>) {
+        // This typed path is mode 7 with bounded compact planes and indices.
+        // Its fused prefix loads centers directly; fallback targets and tails
+        // still receive complete widened views for their unprocessed suffix.
+        std::copy_n(center.ptr() + processed_prefix, w - processed_prefix, wide_center.data() + processed_prefix);
+        std::copy_n(gradient_x.ptr() + processed_prefix, w - processed_prefix, wide_gx.data() + processed_prefix);
+        std::copy_n(gradient_y.ptr() + processed_prefix, w - processed_prefix, wide_gy.data() + processed_prefix);
       }
       // Keep the full scalar loop starting at a compile-time zero. A variable
       // start here inhibits optimization on targets that do not use gather.

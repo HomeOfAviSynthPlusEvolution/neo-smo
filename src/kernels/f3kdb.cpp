@@ -234,6 +234,16 @@ HWY_INLINE M aligned_integer(D d, V gx, V gy, V hx, V hy, double angle, V cosine
     accept = hn::Le(hn::Mul(cross, cosine), hn::Mul(dot, sine));
   return hn::Or(bothzero, hn::And(nonzero, accept));
 }
+template <bool Compact>
+HWY_INLINE V cross_center(D d, const double* wide, const std::int32_t* compact,
+                          std::size_t row_offset, std::size_t x) {
+  if constexpr (Compact) {
+    const hn::Rebind<std::int32_t, D> d32;
+    return hn::PromoteTo(d, hn::LoadU(d32, compact + row_offset + x));
+  } else {
+    return hn::LoadU(d, wide + x);
+  }
+}
 template <bool Compact, class Index>
 HWY_INLINE V cross_gather(D d, const double* wide, const std::int32_t* compact, Index index) {
   const hn::Rebind<std::int32_t, D> d32;
@@ -304,7 +314,8 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       }
     }
     if constexpr (Fused) {
-      const auto s = hn::LoadU(d, row.center + x), zero = hn::Zero(d), one = hn::Set(d, 1.0);
+      const auto s = cross_center<Compact>(d, row.center, cross.compact_source, cross.row_offset, x),
+                 zero = hn::Zero(d), one = hn::Set(d, 1.0);
       const auto average =
           Integer ? hn::Mul(hn::Add(hn::Add(r[0], r[1]), hn::Add(r[2], r[3])), hn::Set(d, 0.25)) : mean(d, r, 4, false);
       const auto da = hn::Abs(diff(d, average, s, Integer));
@@ -325,7 +336,8 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
         continue;
       }
       auto directions = hn::Eq(zero, zero);
-      const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
+      const auto cgx = cross_center<Compact>(d, cross.gx, cross.compact_gx, cross.row_offset, x),
+                 cgy = cross_center<Compact>(d, cross.gy, cross.compact_gy, cross.row_offset, x);
       for (int j = 0; j < 4; ++j) {
         const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
                    hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
