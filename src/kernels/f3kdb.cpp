@@ -880,11 +880,11 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
         code = hn::Min(hn::Set(d, (1 << output_depth) - 1), code);
       }
       const hn::Rebind<std::uint16_t, decltype(d)> du16;
-      const auto words = hn::DemoteTo(du16, code);
       if (output_depth == 8) {
         const hn::Rebind<std::uint8_t, decltype(d)> du8;
-        hn::StoreU(hn::DemoteTo(du8, words), du8, row.packed_output + x);
+        hn::StoreU(hn::DemoteTo(du8, code), du8, row.packed_output + x);
       } else {
+        const auto words = hn::DemoteTo(du16, code);
         const hn::Repartition<std::uint8_t, decltype(du16)> bytes;
         hn::StoreU(hn::BitCast(bytes, words), bytes, row.packed_output + 2 * x);
       }
