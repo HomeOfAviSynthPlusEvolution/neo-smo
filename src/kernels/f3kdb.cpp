@@ -684,7 +684,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     if constexpr (DirectNative) {
       // The row dispatcher proved that these four-byte reads fit the plane.
       // Coordinate validation below still precedes every reference read.
-      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), position);
+      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native + (CachedOffsets ? row.row_offset : 0)), position);
       if constexpr (!HWY_IS_LITTLE_ENDIAN)
         bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
       const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
@@ -737,7 +737,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       if constexpr (CachedOffsets) {
         static_assert(Mode == 6 && DirectNative && ValidatedDistances);
         const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x)));
-        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+        const auto absolute = hn::Mul(pos, hn::Set(di, bytes));
         const auto vertical = hn::LoadU(d, row.vertical_offsets + x);
         const auto horizontal = hn::LoadU(d, row.horizontal_offsets + x);
         refs[0] = gather(hn::Add(absolute, vertical));
