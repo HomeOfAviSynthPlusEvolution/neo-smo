@@ -414,8 +414,12 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   // every positive response >= 0.75/65535. Their product is normal binary32.
   const auto positive = hn::Gt(product, zero);
   const auto bits = hn::BitCast(di, hn::IfThenElse(positive, product, one));
-  const auto exponent = hn::Sub(hn::ShiftRight<23>(bits), hn::Set(di, 127));
-  const auto q = hn::ConvertInRangeTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1f))));
+  const auto biased_exponent = hn::ShiftRight<23>(bits);
+  const auto exponent = hn::Sub(biased_exponent, hn::Set(di, 127));
+  // floor(e/10) = floor((E+3)/10)-13, E in [1,127]. Multiplication
+  // by 205 followed by >>11 is exact division by ten for E+3 in [4,130].
+  const auto q = hn::Sub(hn::ShiftRight<11>(hn::Mul(hn::Add(biased_exponent, hn::Set(di, 3)),
+                                                hn::Set(di, 205))), hn::Set(di, 13));
   const auto remainder = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
   static constexpr float powers[16] = {1.0f, 0x1.125fbep0f, 0x1.261118p0f, 0x1.3b2c48p0f,
       0x1.51cb46p0f, 0x1.6a09e6p0f, 0x1.840600p0f, 0x1.9fdf8cp0f,
@@ -436,18 +440,20 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto mantissa = hn::BitCast(d, hn::Or(hn::And(bits, hn::Set(di, 0x007fffff)),
                                              hn::Set(di, 0x3f800000)));
   const auto t = hn::Sub(mantissa, one), z = hn::Sub(t, hn::Set(d, 0.5f));
-  constexpr float coefficients[9] = {
-      0x1.67fd762703c62p-6f, -0x1.33c6958706f00p-7f, 0x1.2c02b1c129546p-8f,
-      -0x1.3a011bb834600p-9f, 0x1.57944156155c1p-10f, -0x1.7d3b21ee12484p-11f,
-      0x1.b4f8b68efa72ep-12f, -0x1.431b83c280ea9p-12f, 0x1.8b15e6f1fa946p-13f};
-  auto polynomial = hn::Set(d, coefficients[8]);
-  for (int j = 7; j >= 0; --j)
+  // Binary32 needs fewer terms than the binary64 fallback. Exhausting all
+  // mantissas and exponent remainders (fused and unfused) gives no reversals
+  // and <4e-7 root error after scaling into [0,1]. Including response/product
+  // rounding remains within the 2^-20 weight budget.
+  constexpr float coefficients[5] = {
+      0x1.67fe7bd9c4502p-6f, -0x1.333dc78b37e74p-7f, 0x1.2ae1af75366f0p-8f,
+      -0x1.5b19e298ac5d8p-9f, 0x1.85f25f1bcbd1bp-10f};
+  auto polynomial = hn::Set(d, coefficients[4]);
+  for (int j = 3; j >= 0; --j)
     polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
   const auto correction = hn::Mul(hn::Sub(one, t), polynomial);
   const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
   const auto f = hn::IfThenElseZero(positive, hn::Mul(scale, hn::Min(upper, hn::Max(lower, root))));
-  // Both the exponent quotient above and the rounded 16-bit blend are proven
-  // to fit int32; the saturating conversion would add redundant comparisons.
+  // The rounded 16-bit blend fits int32; saturation is redundant.
   return hn::ConvertInRangeTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
 }
 template <class DI>
