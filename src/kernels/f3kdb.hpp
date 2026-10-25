@@ -103,6 +103,8 @@ struct IntegerInputPlane {
   int depth;
 };
 bool unpack_integer_plane(const IntegerInputPlane&);
+// Check native storage without widening it or writing plane.output.
+bool validate_integer_plane(const IntegerInputPlane&);
 // Exposed internally so tests can check the continuous weight before quantization.
 void weights(const double* responses[4], double* output, std::size_t count);
 // Contiguous rows of post-grain processing values. boundary contains raw F32

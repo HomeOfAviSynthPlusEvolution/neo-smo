@@ -98,6 +98,7 @@ void check_unpack(const std::vector<std::uint32_t>& bits, int depth, bool intege
   }
   check(actual.front() == 12345.5 && actual.back() == 12345.5, "unpack output guards");
   if (integer) {
+    check(simd::validate_integer_plane({input.data() + 1, nullptr, width, height, stride, depth}), "valid native input rejected");
     std::vector<std::int32_t> packed(width * height + 2, -123456);
     check(simd::unpack_integer_plane({input.data() + 1, packed.data() + 1, width, height, stride, depth}), "valid packed input rejected");
     for (std::size_t i = 0; i < expected.size(); ++i) check(packed[i + 1] == expected[i], "packed unpack value");
@@ -141,6 +142,13 @@ void unpack_tests() {
             "out-of-depth integer accepted");
       std::vector<std::int32_t> packed(width);
       check(!simd::unpack_integer_plane({raw.data() + 1, packed.data(), width, 1, width * 2, depth}), "out-of-depth packed integer accepted");
+      check(!simd::validate_integer_plane({raw.data() + 1, nullptr, width, 1, width * 2, depth}), "out-of-depth native integer accepted");
+      store(raw.data() + 1 + (width - 1) * 2, std::uint16_t{0});
+      for(std::size_t at : {std::size_t{0},width/2,width-1}) {
+        store(raw.data() + 1 + at * 2, static_cast<std::uint16_t>(1u << depth));
+        check(!simd::validate_integer_plane({raw.data()+1,nullptr,width,1,width*2,depth}), "native validator prefix/tail");
+        store(raw.data() + 1 + at * 2, std::uint16_t{0});
+      }
     }
     for (std::uint32_t bad : {0x7f800000u, 0xff800000u, 0x7fc00000u, 0x7f800001u, 0xffc12345u}) {
       std::vector<std::uint8_t> raw(width * 4 + 1, 0);

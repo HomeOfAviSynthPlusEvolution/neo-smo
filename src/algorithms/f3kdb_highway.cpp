@@ -224,12 +224,10 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
     std::unique_ptr<std::int32_t[]> source(new std::int32_t[stored]);
     if (native) {
       // Eight/sixteen-bit storage cannot contain out-of-depth codes. Other
-      // depths are validated with bounded row scratch, before writing output.
+      // depths are checked without writing a widened scratch plane.
       if (f.depth != 8 && f.depth != 16)
-        for (std::size_t y = 0; y < h; ++y)
-          if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data) + y * view.stride,
-                                     source.get(), w, 1, view.stride, f.depth}))
-            invalid("integer pixel exceeds declared depth");
+        if (!validate_integer_plane({static_cast<const std::uint8_t*>(view.data), nullptr, w, h, view.stride, f.depth}))
+          invalid("integer pixel exceeds declared depth");
     } else if (!unpack_integer_plane({static_cast<const std::uint8_t*>(view.data), source.get(), w, h,
                                       view.stride, f.depth}))
       invalid("integer pixel exceeds declared depth");

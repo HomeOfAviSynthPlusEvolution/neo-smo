@@ -19,6 +19,22 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+bool validate_integer_plane_target(const IntegerInputPlane& plane) {
+  if (plane.depth == 8 || plane.depth == 16)
+    return true;
+  const hn::ScalableTag<std::uint16_t> d;
+  const auto lanes = hn::Lanes(d), full = plane.width / lanes * lanes;
+  auto bits = hn::Zero(d);
+  for (std::size_t y = 0; y < plane.height; ++y) {
+    const auto* row = plane.input + y * plane.stride;
+    for (std::size_t x = 0; x < full; x += lanes)
+      bits = hn::Or(bits, hn::LoadU(d, reinterpret_cast<const std::uint16_t*>(row + 2 * x)));
+    if (full != plane.width)
+      bits = hn::Or(bits, hn::LoadN(d, reinterpret_cast<const std::uint16_t*>(row + 2 * full), plane.width - full));
+  }
+  const auto invalid = hn::Set(d, static_cast<std::uint16_t>(0xffffu << plane.depth));
+  return hn::AllTrue(d, hn::Eq(hn::And(bits, invalid), hn::Zero(d)));
+}
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
 bool unpack_plane_target(const InputPlane& plane) {
   return unpack_plane_scalar(plane);
@@ -296,6 +312,10 @@ HWY_AFTER_NAMESPACE();
 #if HWY_ONCE
 namespace neo_smo::f3kdb {
 HWY_EXPORT(unpack_integer_plane_target);
+HWY_EXPORT(validate_integer_plane_target);
+bool validate_integer_plane(const IntegerInputPlane& plane) {
+  return HWY_DYNAMIC_DISPATCH(validate_integer_plane_target)(plane);
+}
 bool unpack_integer_plane(const IntegerInputPlane& plane) {
   return HWY_DYNAMIC_DISPATCH(unpack_integer_plane_target)(plane);
 }
