@@ -850,6 +850,11 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
+  auto maximum_limit = hn::Zero(d), pair_limit = hn::Zero(d);
+  if constexpr (Mode == 5) {
+    maximum_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[1])));
+    pair_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[2])));
+  }
   // Power-of-two unit changes are exact. Borrow native codes directly and
   // scale the blend once, instead of shifting five input vectors per block.
   const float input_scale = FastWeights && DirectNative ? float(1u << (16 - input_depth)) : 1.0f;
@@ -972,10 +977,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
         mean = hn::ShiftRight<1>(hn::Add(hn::Add(results[0], results[1]), hn::Set(d, 1)));
         accept = hn::Eq(value, value);
       } else if constexpr (Mode == 5) {
-        const auto maximum_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[1])));
         for (int j = 0; j < 4; ++j)
           accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), maximum_limit));
-        const auto pair_limit = hn::Set(d, std::int32_t(std::ceil(thresholds[2])));
         const auto twice = hn::Add(value, value);
         for (int j : {0, 2})
           accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
