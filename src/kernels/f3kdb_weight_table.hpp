@@ -21,10 +21,13 @@ inline const std::array<std::uint64_t, integer_weight_table_size>& integer_weigh
     };
     float lower = root(0);
     for (std::size_t i = 0; i < result.size(); ++i) {
-      const float pair[2] = {lower, root(i + 1)};
+      const float upper = root(i + 1);
+      // Adjacent positive endpoints satisfy Sterbenz's lemma, so the
+      // difference is exact. Cache it off the interpolation dependency chain.
+      const float pair[2] = {lower, upper - lower};
       // Preserve memory lane order on both little- and big-endian targets.
       std::memcpy(&result[i], pair, sizeof(pair));
-      lower = pair[1];
+      lower = upper;
     }
     return result;
   }();

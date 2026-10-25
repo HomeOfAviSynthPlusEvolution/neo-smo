@@ -374,15 +374,16 @@ void integer_weight_table_tests() {
   double worst=0;
   for(std::size_t i=0;i+1<table.size();++i) {
     float pair[2],next[2];std::memcpy(pair,&table[i],sizeof(pair));std::memcpy(next,&table[i+1],sizeof(next));
-    check(pair[1]==next[0],"integer root table shared endpoints");
-    check(pair[0]<=pair[1],"integer root table monotonic endpoints");
+    const float upper=pair[0]+pair[1];
+    check(upper==next[0],"integer root table shared endpoints");
+    check(pair[1]>=0,"integer root table monotonic endpoints");
     float previous=pair[0];
     for(unsigned fraction : {0u,1u,8192u,16384u,24576u,32766u,32767u}) {
       const std::uint32_t bits=simd::integer_weight_first_bits+(std::uint32_t(i)<<15)+fraction;
       float x;std::memcpy(&x,&bits,sizeof(x));
       const float t=float(fraction)*0x1p-15f;
-      const float actual=std::fma(t,pair[1]-pair[0],pair[0]);
-      check(actual>=previous && actual<=pair[1],"integer root interpolation monotonic");
+      const float actual=std::fma(t,pair[1],pair[0]);
+      check(actual>=previous && actual<=upper,"integer root interpolation monotonic");
       previous=actual;
       worst=std::max(worst,std::abs(double(actual)-std::pow(double(x),0.1)));
     }
