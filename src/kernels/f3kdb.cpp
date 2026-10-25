@@ -679,12 +679,18 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
              vlimit = hn::Set(di, std::int32_t(row.vertical_limit));
   const auto bytes = DirectNative || row.native ? (input_depth == 8 ? 1 : 2) : 1;
   const auto pitch = hn::Set(di, std::int32_t(row.native ? row.native_stride : row.width));
+  // These 512-bit targets use native gathers with signed byte offsets.
+  // Generic Highway gathers require nonnegative offsets, so all other
+  // targets retain the plane origin even when reference offsets are cached.
+  constexpr bool relative_gather = CachedOffsets &&
+      (HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL ||
+       HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR);
   const auto gather = [&](auto position) {
     const hn::Rebind<std::uint32_t, decltype(d)> du;
     if constexpr (DirectNative) {
       // The row dispatcher proved that these four-byte reads fit the plane.
       // Coordinate validation below still precedes every reference read.
-      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), position);
+      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native + (relative_gather ? row.row_offset : 0)), position);
       if constexpr (!HWY_IS_LITTLE_ENDIAN)
         bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
       const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
@@ -748,8 +754,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       if constexpr (CachedOffsets) {
         static_assert(Mode == 6 && DirectNative && ValidatedDistances);
         const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x)));
-        // Generic Highway gather implementations require nonnegative offsets.
-        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)),
+                                      hn::Set(di, relative_gather ? 0 : std::int32_t(row.row_offset)));
         const auto vertical = hn::LoadU(d, row.vertical_offsets + x);
         const auto horizontal = hn::LoadU(d, row.horizontal_offsets + x);
         refs[0] = gather(hn::Add(absolute, vertical));
