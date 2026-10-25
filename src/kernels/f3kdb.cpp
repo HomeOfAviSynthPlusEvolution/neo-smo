@@ -869,9 +869,15 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
                                   hn::And(quotient, hn::Set(d, 1)));
         code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       }
-      const int low = row.limited ? 16 << (output_depth - 8) : 0;
-      const int high = row.limited ? (row.chroma ? 240 : 235) << (output_depth - 8) : (1 << output_depth) - 1;
-      code = hn::Min(hn::Set(d, high), hn::Max(hn::Set(d, low), code));
+      // DemoteTo saturates to the unsigned storage range. Only limited
+      // range and sub-16-bit word formats require an explicit bound.
+      if (row.limited) {
+        const int low = 16 << (output_depth - 8);
+        const int high = (row.chroma ? 240 : 235) << (output_depth - 8);
+        code = hn::Min(hn::Set(d, high), hn::Max(hn::Set(d, low), code));
+      } else if (output_depth != 8 && output_depth != 16) {
+        code = hn::Min(hn::Set(d, (1 << output_depth) - 1), code);
+      }
       const hn::Rebind<std::uint16_t, decltype(d)> du16;
       const auto words = hn::DemoteTo(du16, code);
       if (output_depth == 8) {
