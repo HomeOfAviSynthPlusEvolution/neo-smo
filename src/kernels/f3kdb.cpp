@@ -660,7 +660,8 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
       return 0;
   }
 }
-template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false>
+template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
+          int PackedDither = -1>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -698,8 +699,10 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
   };
   const auto load_center = [&](std::size_t x) {
-    if (!row.native)
-      return hn::LoadU(d, row.center + x);
+    if constexpr (!DirectNative) {
+      if (!row.native)
+        return hn::LoadU(d, row.center + x);
+    }
     const auto* source = row.native + row.row_offset + x * bytes;
     const hn::Rebind<std::uint16_t, decltype(d)> dw;
     const hn::Repartition<std::uint8_t, decltype(dw)> dwb;
@@ -826,10 +829,10 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     }
     const hn::Rebind<std::int16_t, decltype(d)> dg;
     const auto result = hn::Add(debanded, hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
-    if (row.packed_output) {
+    if (PackedDither >= 0 ? PackedDither != 0 : row.packed_output != nullptr) {
       const int shift = 16 - row.output_depth;
       auto code = result;
-      if (shift && row.dither == 2) {
+      if (shift && (PackedDither >= 0 ? PackedDither : row.dither) == 2) {
         const auto positions = hn::Iota(d, static_cast<std::int32_t>(x));
         auto bayer = hn::Zero(d);
         for (int bit = 0; bit < 4; ++bit) {
@@ -873,6 +876,16 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   return full;
 }
 template <int SX, int SY>
+std::size_t integer_native_weighted(const IntegerRow& row, const double* thresholds) {
+  // Keep output selection out of the general weighted loop. Zero denotes
+  // the intermediate output used by floating conversion and error diffusion.
+  if (!row.packed_output)
+    return integer_samples<6, true, SX, SY, true, true, 0>(row, thresholds);
+  if (row.dither == 2)
+    return integer_samples<6, true, SX, SY, true, true, 2>(row, thresholds);
+  return integer_samples<6, true, SX, SY, true, true, 1>(row, thresholds);
+}
+template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
   if (row.sub_x > 1 || row.width == 0)
     return 0;
@@ -910,7 +923,7 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
         const std::size_t last_rows = (((4 / bytes - 1) << SX) - 1) >> SY;
         if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
             row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride)
-          return fast_weights ? integer_samples<6, true, SX, SY, true, true>(row, thresholds)
+          return fast_weights ? integer_native_weighted<SX, SY>(row, thresholds)
                               : integer_samples<6, true, SX, SY, true, false>(row, thresholds);
       }
       return fast_weights ? integer_samples<6, true, SX, SY, false, true>(row, thresholds)
