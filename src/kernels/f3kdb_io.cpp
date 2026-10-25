@@ -25,12 +25,21 @@ bool validate_integer_plane_target(const IntegerInputPlane& plane) {
   const hn::ScalableTag<std::uint16_t> d;
   const auto lanes = hn::Lanes(d), full = plane.width / lanes * lanes;
   auto bits = hn::Zero(d);
+  // Plane storage may start at an odd address or use an odd byte stride.
+  // Keep source accesses byte-based, including partial vectors, and only
+  // give Highway a uint16_t pointer to aligned uint16_t storage.
+  HWY_ALIGN std::uint16_t samples[hn::MaxLanes(d)];
   for (std::size_t y = 0; y < plane.height; ++y) {
     const auto* row = plane.input + y * plane.stride;
-    for (std::size_t x = 0; x < full; x += lanes)
-      bits = hn::Or(bits, hn::LoadU(d, reinterpret_cast<const std::uint16_t*>(row + 2 * x)));
-    if (full != plane.width)
-      bits = hn::Or(bits, hn::LoadN(d, reinterpret_cast<const std::uint16_t*>(row + 2 * full), plane.width - full));
+    for (std::size_t x = 0; x < full; x += lanes) {
+      std::memcpy(samples, row + 2 * x, lanes * sizeof(std::uint16_t));
+      bits = hn::Or(bits, hn::Load(d, samples));
+    }
+    if (full != plane.width) {
+      hn::Store(hn::Zero(d), d, samples);
+      std::memcpy(samples, row + 2 * full, (plane.width - full) * sizeof(std::uint16_t));
+      bits = hn::Or(bits, hn::Load(d, samples));
+    }
   }
   const auto invalid = hn::Set(d, static_cast<std::uint16_t>(0xffffu << plane.depth));
   return hn::AllTrue(d, hn::Eq(hn::And(bits, invalid), hn::Zero(d)));
