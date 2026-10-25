@@ -652,7 +652,7 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
       return 0;
   }
 }
-template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false>
+template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -699,17 +699,14 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
-  bool fast_weights = Mode == 6;
   float weight_thresholds[3]{}, weight_slopes[3]{};
-  if constexpr (Mode == 6) {
+  if constexpr (FastWeights) {
     for (int j = 0; j < 3; ++j) {
-      fast_weights &= thresholds[j] >= 1 && thresholds[j] <= 65535 &&
-                      thresholds[j] == std::floor(thresholds[j]);
       weight_thresholds[j] = static_cast<float>(thresholds[j]);
       weight_slopes[j] = thresholds[j] > 0 ? static_cast<float>(3.0 / thresholds[j]) : 0.0f;
     }
   }
-  const float* weight_roots = fast_weights ? integer_weight_table().data() : nullptr;
+  const float* weight_roots = FastWeights ? integer_weight_table().data() : nullptr;
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
     const auto value = load_center(x);
     auto debanded = value;
@@ -804,8 +801,10 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
       }
       if constexpr (Mode == 6) {
-        mean = fast_weights ? weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes, weight_roots)
-                            : weighted_integer(d, value, refs, thresholds);
+        if constexpr (FastWeights)
+          mean = weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes, weight_roots);
+        else
+          mean = weighted_integer(d, value, refs, thresholds);
         accept = hn::Eq(value, value);
       }
       debanded = hn::IfThenElse(accept, mean, value);
@@ -880,6 +879,12 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
     case 5:
       return integer_samples<5, true, SX, SY>(row, thresholds);
     case 6: {
+      // Select the numerical contract once per row. Keeping the F64 fallback
+      // out of the F32 loop reduces live registers and loop-invariant spills.
+      bool fast_weights = true;
+      for (int j = 0; j < 3; ++j)
+        fast_weights &= thresholds[j] >= 1 && thresholds[j] <= 65535 &&
+                        thresholds[j] == std::floor(thresholds[j]);
       if (row.native) {
         const std::size_t bytes = row.input_depth == 8 ? 1 : 2;
         const auto row_bytes = row.width * bytes;
@@ -890,9 +895,11 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
         const std::size_t last_rows = (((4 / bytes - 1) << SX) - 1) >> SY;
         if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
             row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride)
-          return integer_samples<6, true, SX, SY, true>(row, thresholds);
+          return fast_weights ? integer_samples<6, true, SX, SY, true, true>(row, thresholds)
+                              : integer_samples<6, true, SX, SY, true, false>(row, thresholds);
       }
-      return integer_samples<6, true, SX, SY>(row, thresholds);
+      return fast_weights ? integer_samples<6, true, SX, SY, false, true>(row, thresholds)
+                          : integer_samples<6, true, SX, SY, false, false>(row, thresholds);
     }
     default:
       return 0;
