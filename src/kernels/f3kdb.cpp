@@ -661,11 +661,14 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
   }
 }
 template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
-          int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false>
+          int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false,
+          int NativeDepth = 0, int OutputDepth = 0>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
   const IntegerRow row = input_row;
+  const int input_depth = NativeDepth ? NativeDepth : row.input_depth;
+  const int output_depth = OutputDepth ? OutputDepth : row.output_depth;
   const hn::ScalableTag<std::int32_t> d;
   const hn::Rebind<std::int32_t, decltype(d)> di;
   const hn::Rebind<std::uint8_t, decltype(d)> db;
@@ -674,7 +677,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   const auto step = std::size_t{1} << SX;
   const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int32_t(row.width - 1)),
              vlimit = hn::Set(di, std::int32_t(row.vertical_limit));
-  const auto bytes = row.native ? (row.input_depth == 8 ? 1 : 2) : 1;
+  const auto bytes = DirectNative || row.native ? (input_depth == 8 ? 1 : 2) : 1;
   const auto pitch = hn::Set(di, std::int32_t(row.native ? row.native_stride : row.width));
   const auto gather = [&](auto position) {
     const hn::Rebind<std::uint32_t, decltype(d)> du;
@@ -687,7 +690,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
       if constexpr (FastWeights)
         return hn::BitCast(d, code);
-      return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
+      return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
     }
     if (!row.native)
       return hn::GatherIndex(d, row.center - row.row_offset, position);
@@ -696,7 +699,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
     const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
     const auto code = hn::And(hn::Shr(bits, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
-    return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
+    return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
   };
   const auto load_center = [&](std::size_t x) {
     if constexpr (!DirectNative) {
@@ -710,13 +713,13 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
                                 : hn::PromoteTo(d, hn::BitCast(dw, hn::LoadU(dwb, source)));
     if constexpr (FastWeights && DirectNative)
       return code;
-    return hn::ShiftLeftSame(code, 16 - row.input_depth);
+    return hn::ShiftLeftSame(code, 16 - input_depth);
   };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
   // Power-of-two unit changes are exact. Borrow native codes directly and
   // scale the blend once, instead of shifting five input vectors per block.
-  const float input_scale = FastWeights && DirectNative ? float(1u << (16 - row.input_depth)) : 1.0f;
+  const float input_scale = FastWeights && DirectNative ? float(1u << (16 - input_depth)) : 1.0f;
   float weight_thresholds[3]{}, weight_slopes[3]{};
   if constexpr (FastWeights) {
     for (int j = 0; j < 3; ++j) {
@@ -844,7 +847,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     const hn::Rebind<std::int16_t, decltype(d)> dg;
     const auto result = hn::Add(debanded, hn::PromoteTo(d, hn::LoadU(dg, row.grain + x)));
     if (PackedDither >= 0 ? PackedDither != 0 : row.packed_output != nullptr) {
-      const int shift = 16 - row.output_depth;
+      const int shift = 16 - output_depth;
       auto code = result;
       if (shift && (PackedDither >= 0 ? PackedDither : row.dither) == 2) {
         const auto positions = hn::Iota(d, static_cast<std::int32_t>(x));
@@ -867,12 +870,12 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
                                   hn::And(quotient, hn::Set(d, 1)));
         code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       }
-      const int low = row.limited ? 16 << (row.output_depth - 8) : 0;
-      const int high = row.limited ? (row.chroma ? 240 : 235) << (row.output_depth - 8) : (1 << row.output_depth) - 1;
+      const int low = row.limited ? 16 << (output_depth - 8) : 0;
+      const int high = row.limited ? (row.chroma ? 240 : 235) << (output_depth - 8) : (1 << output_depth) - 1;
       code = hn::Min(hn::Set(d, high), hn::Max(hn::Set(d, low), code));
       const hn::Rebind<std::uint16_t, decltype(d)> du16;
       const auto words = hn::DemoteTo(du16, code);
-      if (row.output_depth == 8) {
+      if (output_depth == 8) {
         const hn::Rebind<std::uint8_t, decltype(d)> du8;
         hn::StoreU(hn::DemoteTo(du8, words), du8, row.packed_output + x);
       } else {
@@ -899,6 +902,20 @@ std::size_t integer_native_weighted(const IntegerRow& row, const double* thresho
   if (row.dither == 2)
     return integer_samples<6, true, SX, SY, true, true, 2, ValidatedDistances, CachedOffsets>(row, thresholds);
   return integer_samples<6, true, SX, SY, true, true, 1, ValidatedDistances, CachedOffsets>(row, thresholds);
+}
+std::size_t integer_cached_weighted(const IntegerRow& row, const double* thresholds) {
+  // Cached offsets already encode subsampling. Share one layout-independent
+  // kernel and specialize common storage pairs without duplicating layouts.
+  if (row.packed_output && row.dither == 1 && row.input_depth == row.output_depth) {
+    switch (row.input_depth) {
+      case 8: return integer_samples<6, true, 0, 0, true, true, 1, true, true, 8, 8>(row, thresholds);
+      case 10: return integer_samples<6, true, 0, 0, true, true, 1, true, true, 10, 10>(row, thresholds);
+      case 16: return integer_samples<6, true, 0, 0, true, true, 1, true, true, 16, 16>(row, thresholds);
+    }
+  }
+  if (row.packed_output && row.dither == 2 && row.input_depth == 16 && row.output_depth == 8)
+    return integer_samples<6, true, 0, 0, true, true, 2, true, true, 16, 8>(row, thresholds);
+  return integer_native_weighted<0, 0, true, true>(row, thresholds);
 }
 template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
@@ -939,7 +956,7 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
         if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
             row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride) {
           if (fast_weights && row.validated_distances && row.vertical_offsets && row.horizontal_offsets)
-            return integer_native_weighted<SX, SY, true, true>(row, thresholds);
+            return integer_cached_weighted(row, thresholds);
           return fast_weights ? (row.validated_distances ? integer_native_weighted<SX, SY, true>(row, thresholds)
                                                         : integer_native_weighted<SX, SY>(row, thresholds))
                               : integer_samples<6, true, SX, SY, true, false>(row, thresholds);
