@@ -385,7 +385,7 @@ HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* threshold
 template <class DI>
 HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
                                      const hn::VFromD<DI>* refs, const float* thresholds,
-                                     const float* slopes, const std::uint64_t* roots) {
+                                     const float* slopes, const std::uint64_t* roots, float input_scale) {
   const hn::Rebind<float, DI> d;
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
@@ -431,7 +431,8 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   // and product rounding keep the combined weight error below 2^-20.
   const auto f = hn::IfThenElseZero(positive, hn::MulAdd(fraction, hn::Sub(upper, lower), lower));
   // The rounded 16-bit blend fits int32; saturation is redundant.
-  return hn::ConvertInRangeTo(di, hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f)));
+  const auto blended = hn::Mul(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, input_scale));
+  return hn::ConvertInRangeTo(di, hn::Add(blended, hn::Set(d, 0.5f)));
 }
 template <class DI>
 HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
@@ -683,6 +684,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       if constexpr (!HWY_IS_LITTLE_ENDIAN)
         bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
       const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
+      if constexpr (FastWeights)
+        return hn::BitCast(d, code);
       return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
     }
     if (!row.native)
@@ -702,15 +705,20 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     const hn::Repartition<std::uint8_t, decltype(dw)> dwb;
     const auto code = bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source))
                                 : hn::PromoteTo(d, hn::BitCast(dw, hn::LoadU(dwb, source)));
+    if constexpr (FastWeights && DirectNative)
+      return code;
     return hn::ShiftLeftSame(code, 16 - row.input_depth);
   };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
+  // Power-of-two unit changes are exact. Borrow native codes directly and
+  // scale the blend once, instead of shifting five input vectors per block.
+  const float input_scale = FastWeights && DirectNative ? float(1u << (16 - row.input_depth)) : 1.0f;
   float weight_thresholds[3]{}, weight_slopes[3]{};
   if constexpr (FastWeights) {
     for (int j = 0; j < 3; ++j) {
-      weight_thresholds[j] = static_cast<float>(thresholds[j]);
-      weight_slopes[j] = thresholds[j] > 0 ? static_cast<float>(3.0 / thresholds[j]) : 0.0f;
+      weight_thresholds[j] = static_cast<float>(thresholds[j]) / input_scale;
+      weight_slopes[j] = static_cast<float>(3.0 / thresholds[j]) * input_scale;
     }
   }
   const std::uint64_t* weight_roots = FastWeights ? integer_weight_table().data() : nullptr;
@@ -809,7 +817,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       }
       if constexpr (Mode == 6) {
         if constexpr (FastWeights)
-          mean = weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes, weight_roots);
+          mean = weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes, weight_roots, input_scale);
         else
           mean = weighted_integer(d, value, refs, thresholds);
         accept = hn::Eq(value, value);

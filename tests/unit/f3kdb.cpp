@@ -763,7 +763,7 @@ void native_weighted_gather_tests() {
       std::vector<ref::Distance> distances(width<<sx);
       std::vector<std::int16_t> grain(width,0);
       std::vector<double> output(width+1);
-      const std::array<double,3> thresholds{2048,4096,8192};
+      const std::array<double,3> thresholds{2047,4093,8191};
       for(std::size_t y=0;y<height;++y) {
         const auto vlimit=std::min(y,height-1-y);
         for(std::size_t x=0;x<width;++x) {
