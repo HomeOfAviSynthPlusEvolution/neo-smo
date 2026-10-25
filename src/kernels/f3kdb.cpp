@@ -848,11 +848,12 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
         code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       } else if (shift) {
         const auto quotient = hn::ShiftRightSame(result, shift);
-        const auto remainder = hn::Sub(result, hn::ShiftLeftSame(quotient, shift));
-        const auto half_step = hn::Set(d, std::int32_t{1} << (shift - 1));
-        const auto odd = hn::Ne(hn::And(quotient, hn::Set(d, 1)), hn::Zero(d));
-        const auto up = hn::Or(hn::Gt(remainder, half_step), hn::And(hn::Eq(remainder, half_step), odd));
-        code = hn::Add(quotient, hn::IfThenElseZero(up, hn::Set(d, 1)));
+        // Round ties to even using an integer bias, including negative grain.
+        // For result=q*2^shift+r, add half-1+(q&1) before the final shift.
+        // The processing range plus bias is far inside int32.
+        const auto bias = hn::Add(hn::Set(d, (std::int32_t{1} << (shift - 1)) - 1),
+                                  hn::And(quotient, hn::Set(d, 1)));
+        code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       }
       const int low = row.limited ? 16 << (row.output_depth - 8) : 0;
       const int high = row.limited ? (row.chroma ? 240 : 235) << (row.output_depth - 8) : (1 << row.output_depth) - 1;
