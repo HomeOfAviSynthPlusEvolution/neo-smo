@@ -660,7 +660,8 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
       return 0;
   }
 }
-#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
+#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR || \
+    HWY_TARGET == HWY_AVX2 || HWY_TARGET == HWY_SSE4 || HWY_TARGET == HWY_SSSE3
 template <class V>
 HWY_INLINE V word_absdiff(V a, V b) {
   return hn::Sub(hn::Max(a, b), hn::Min(a, b));
@@ -1063,14 +1064,18 @@ template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
   if (row.sub_x > 1 || row.width == 0)
     return 0;
-#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
-  // Keep compact-word arithmetic on the measured wide-target path.
+#if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR || \
+    HWY_TARGET == HWY_AVX2 || HWY_TARGET == HWY_SSE4 || HWY_TARGET == HWY_SSSE3
+  // Extend compact-word arithmetic to narrow targets with measured gains.
   // Other output contracts and threshold ranges keep the general kernel.
   if (row.native && row.native_extent >= 4 && row.packed_output && row.dither == 1 &&
       thresholds[0] > 0 && thresholds[0] <= 65535) {
-    if (mode == 1)
-      return blur ? native_word_pairs<1, true, SX, SY>(row, thresholds)
-                  : native_word_pairs<1, false, SX, SY>(row, thresholds);
+    // SSSE3 mode 1 keeps I32 after mixed/negative full-frame results.
+    if constexpr (HWY_TARGET != HWY_SSSE3) {
+      if (mode == 1)
+        return blur ? native_word_pairs<1, true, SX, SY>(row, thresholds)
+                    : native_word_pairs<1, false, SX, SY>(row, thresholds);
+    }
     if (mode == 3)
       return blur ? native_word_pairs<3, true, SX, SY>(row, thresholds)
                   : native_word_pairs<3, false, SX, SY>(row, thresholds);

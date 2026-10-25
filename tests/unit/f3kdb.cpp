@@ -1005,7 +1005,7 @@ int main() {
       // Normal x86 builds retain the reduced SIMD selection. Dedicated
       // builds exercise SCALAR and EMU128 without duplicating them here.
 #if HWY_ARCH_X86 && !defined(HWY_COMPILE_ONLY_SCALAR) && !defined(HWY_COMPILE_ONLY_EMU128)
-      if (target != HWY_SSE4 && target != HWY_AVX2 && target != HWY_AVX3 && target != HWY_AVX3_SPR)
+      if (target != HWY_SSSE3 && target != HWY_SSE4 && target != HWY_AVX2 && target != HWY_AVX3 && target != HWY_AVX3_SPR)
         continue;
 #endif
       hwy::SetSupportedTargetsForTest(target);
