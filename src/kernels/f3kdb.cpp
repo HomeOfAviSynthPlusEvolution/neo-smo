@@ -410,7 +410,7 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
     c[j] = hn::Min(one, hn::Max(zero, hn::Mul(
         hn::Sub(hn::Set(d, thresholds[k]), delta[j]), hn::Set(d, slopes[k]))));
   }
-  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
+  const auto product = hn::Mul(hn::Mul(c[0], c[2]), hn::Mul(c[1], c[3]));
   // Integral thresholds in [1,65535] and quarter-integral differences make
   // every positive response >= 0.75/65535. Their product is normal binary32.
   const auto positive = hn::Gt(product, zero);
