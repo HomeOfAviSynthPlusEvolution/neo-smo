@@ -661,6 +661,17 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
   }
 }
 #if HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL || HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR
+template <class V>
+HWY_INLINE V word_absdiff(V a, V b) {
+  return hn::Sub(hn::Max(a, b), hn::Min(a, b));
+}
+template <class D>
+HWY_INLINE hn::VFromD<D> native_word_load(D d, const std::uint8_t* source, int depth) {
+  const hn::Rebind<std::uint8_t, D> db;
+  const hn::Repartition<std::uint8_t, D> raw;
+  return hn::ShiftLeftSame(depth == 8 ? hn::PromoteTo(d, hn::LoadU(db, source))
+                                     : hn::BitCast(d, hn::LoadU(raw, source)), 16 - depth);
+}
 template <int Mode, bool Blur, int SX, int SY>
 std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresholds) {
   static_assert(Mode == 1 || Mode == 3);
@@ -689,50 +700,64 @@ std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresho
       hn::LoadInterleaved4(db, distances, first, second, a, b);
     }
     const auto d1 = hn::PromoteTo(d, first);
-    hn::VFromD<decltype(dh)> gathered[2][N];
-    for (int part = 0; part < 2; ++part) {
-      const auto dist1 = hn::PromoteTo(di, part == 0 ? hn::LowerHalf(dh, d1) : hn::UpperHalf(dh, d1));
-      const auto h1 = hn::ShiftRight<SX>(dist1), v1 = hn::ShiftRight<SY>(dist1);
-      const auto pos = hn::Iota(di, std::int32_t(x + part * half)), hlimit = hn::Min(pos, hn::Sub(last, pos));
-      auto valid = hn::Eq(pos, pos);
-      if constexpr (Mode != 3)
-        valid = hn::And(valid, hn::Le(v1, vlimit));
-      if constexpr (Mode != 1)
-        valid = hn::And(valid, hn::Le(h1, hlimit));
-      if (!hn::AllTrue(di, valid))
-        throw std::logic_error("reference outside plane");
-      const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
-      hn::VFromD<decltype(di)> offsets[N];
-      const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
-      offsets[0] = hn::Add(absolute, off);
-      offsets[1] = hn::Sub(absolute, off);
-      for (int j = 0; j < N; ++j) {
-        // Clamp the four-byte load, then extract the requested sample. This
-        // includes the last visible sample without requiring source padding.
-        const auto start = hn::Min(offsets[j], hn::Set(di, std::int32_t(row.native_extent - 4)));
-        const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(offsets[j], start)));
-        const auto words = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
-        const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
-        const auto value = hn::And(hn::Shr(words, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
-        gathered[part][j] = hn::DemoteTo(dh, hn::ShiftLeftSame(hn::BitCast(di, value), 16 - row.input_depth));
+    hn::VFromD<decltype(d)> refs[N];
+    bool tabled = false;
+    if constexpr (Mode == 3) {
+      const auto h = hn::ShiftRight<SX>(d1);
+      // The three loads cover the row interior; the distance check proves
+      // both selected neighbours lie in those tables. Edges use gathers.
+      if (x >= lanes && row.width - x >= 2 * lanes && hn::AllTrue(d, hn::Le(h, hn::Set(d, std::uint16_t(lanes))))) {
+        const auto* source = row.native + row.row_offset + x * bytes;
+        const auto left = native_word_load(d, source - lanes * bytes, row.input_depth),
+                   center = native_word_load(d, source, row.input_depth),
+                   right = native_word_load(d, source + lanes * bytes, row.input_depth);
+        const auto index = hn::Iota(d, 0);
+        refs[0] = hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h)));
+        refs[1] = hn::TwoTablesLookupLanes(
+            left, center, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h)));
+        tabled = true;
       }
     }
-    hn::VFromD<decltype(d)> refs[N];
-    for (int j = 0; j < N; ++j)
-      refs[j] = hn::Combine(d, gathered[1][j], gathered[0][j]);
+    if (!tabled) {
+      hn::VFromD<decltype(dh)> gathered[2][N];
+      for (int part = 0; part < 2; ++part) {
+        const auto dist1 = hn::PromoteTo(di, part == 0 ? hn::LowerHalf(dh, d1) : hn::UpperHalf(dh, d1));
+        const auto h1 = hn::ShiftRight<SX>(dist1), v1 = hn::ShiftRight<SY>(dist1);
+        const auto pos = hn::Iota(di, std::int32_t(x + part * half)), hlimit = hn::Min(pos, hn::Sub(last, pos));
+        auto valid = hn::Eq(pos, pos);
+        if constexpr (Mode != 3)
+          valid = hn::And(valid, hn::Le(v1, vlimit));
+        if constexpr (Mode != 1)
+          valid = hn::And(valid, hn::Le(h1, hlimit));
+        if (!hn::AllTrue(di, valid))
+          throw std::logic_error("reference outside plane");
+        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+        hn::VFromD<decltype(di)> offsets[N];
+        const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
+        offsets[0] = hn::Add(absolute, off);
+        offsets[1] = hn::Sub(absolute, off);
+        for (int j = 0; j < N; ++j) {
+          // Clamp the four-byte load, then extract the requested sample. This
+          // includes the last visible sample without requiring source padding.
+          const auto start = hn::Min(offsets[j], hn::Set(di, std::int32_t(row.native_extent - 4)));
+          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(offsets[j], start)));
+          const auto words = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
+          const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
+          const auto value = hn::And(hn::Shr(words, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
+          gathered[part][j] = hn::DemoteTo(dh, hn::ShiftLeftSame(hn::BitCast(di, value), 16 - row.input_depth));
+        }
+      }
+      for (int j = 0; j < N; ++j)
+        refs[j] = hn::Combine(d, gathered[1][j], gathered[0][j]);
+    }
     const auto* source = row.native + row.row_offset + x * bytes;
-    const auto center =
-        hn::ShiftLeftSame(bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source)) : hn::BitCast(d, hn::LoadU(raw, source)),
-                          16 - row.input_depth);
-    const auto absdiff = [](auto a, auto b) {
-      return hn::Sub(hn::Max(a, b), hn::Min(a, b));
-    };
+    const auto center = native_word_load(d, source, row.input_depth);
     auto mean = hn::AverageRound(refs[0], refs[1]);
-    auto accepted = hn::Lt(absdiff(mean, center), threshold);
+    auto accepted = hn::Lt(word_absdiff(mean, center), threshold);
     if constexpr (!Blur && Mode <= 3) {
       accepted = hn::Eq(center, center);
       for (int j = 0; j < N; ++j)
-        accepted = hn::And(accepted, hn::Lt(absdiff(refs[j], center), threshold));
+        accepted = hn::And(accepted, hn::Lt(word_absdiff(refs[j], center), threshold));
     }
     auto value = hn::IfThenElse(accepted, mean, center);
     // Saturation to [0,65535] commutes with the final output clamp.
@@ -1046,6 +1071,9 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
     if (mode == 1)
       return blur ? native_word_pairs<1, true, SX, SY>(row, thresholds)
                   : native_word_pairs<1, false, SX, SY>(row, thresholds);
+    if (mode == 3)
+      return blur ? native_word_pairs<3, true, SX, SY>(row, thresholds)
+                  : native_word_pairs<3, false, SX, SY>(row, thresholds);
   }
 #endif
   switch (mode) {
