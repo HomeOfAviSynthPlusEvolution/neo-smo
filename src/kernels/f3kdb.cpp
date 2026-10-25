@@ -424,7 +424,7 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   // and product rounding keep the combined weight error below 2^-20.
   const auto f = hn::IfThenElseZero(positive, hn::MulAdd(fraction, hn::Sub(upper, lower), lower));
   // The rounded 16-bit blend fits int32; saturation is redundant.
-  return hn::ConvertInRangeTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
+  return hn::ConvertInRangeTo(di, hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f)));
 }
 template <class DI>
 HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
@@ -652,7 +652,7 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
       return 0;
   }
 }
-template <int Mode, bool Blur, int SX, int SY>
+template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -668,9 +668,18 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   const auto bytes = row.native ? (row.input_depth == 8 ? 1 : 2) : 1;
   const auto pitch = hn::Set(di, std::int32_t(row.native ? row.native_stride : row.width));
   const auto gather = [&](auto position) {
+    const hn::Rebind<std::uint32_t, decltype(d)> du;
+    if constexpr (DirectNative) {
+      // The row dispatcher proved that these four-byte reads fit the plane.
+      // Coordinate validation below still precedes every reference read.
+      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), position);
+      if constexpr (!HWY_IS_LITTLE_ENDIAN)
+        bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
+      const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
+      return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - row.input_depth);
+    }
     if (!row.native)
       return hn::GatherIndex(d, row.center - row.row_offset, position);
-    const hn::Rebind<std::uint32_t, decltype(d)> du;
     const auto start = hn::Min(position, hn::Set(di, std::int32_t(row.native_extent - 4)));
     const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(position, start)));
     const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
@@ -870,8 +879,21 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
                   : integer_samples<4, false, SX, SY>(row, thresholds);
     case 5:
       return integer_samples<5, true, SX, SY>(row, thresholds);
-    case 6:
+    case 6: {
+      if (row.native) {
+        const std::size_t bytes = row.input_depth == 8 ? 1 : 2;
+        const auto row_bytes = row.width * bytes;
+        // Only the final (4/bytes - 1) pixels can cross the plane end.
+        // Their horizontal limit also bounds the shared vertical distance:
+        // d < (4/bytes - 1)*2^SX, hence dy <= (d >> SY). Outside these
+        // final rows, all four-byte gathers fit even without trailing padding.
+        const std::size_t last_rows = (((4 / bytes - 1) << SX) - 1) >> SY;
+        if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
+            row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride)
+          return integer_samples<6, true, SX, SY, true>(row, thresholds);
+      }
       return integer_samples<6, true, SX, SY>(row, thresholds);
+    }
     default:
       return 0;
   }

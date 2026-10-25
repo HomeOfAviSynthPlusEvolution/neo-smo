@@ -741,6 +741,48 @@ void native_integer_frame_tests() {
       }
     }
 }
+void native_weighted_gather_tests() {
+  // Maximal valid distances at each coordinate include odd luma distances
+  // at the right edge of subsampled planes. Use exact, unaligned allocations
+  // to check both direct gathers and the final-row bounded fallback.
+  constexpr std::size_t height=9;
+  for(int depth : {8,10,16}) for(int sx : {0,1}) for(int sy : {0,1})
+    for(std::size_t width : {32,33,64,65}) for(std::size_t padding : {0,1,3}) {
+      const std::size_t bytes=depth==8?1:2,stride=width*bytes+padding,extent=(height-1)*stride+width*bytes;
+      std::vector<std::uint8_t> data(extent+1,0xa5);
+      std::vector<std::int32_t> source(width*height);
+      for(std::size_t y=0;y<height;++y) for(std::size_t x=0;x<width;++x) {
+        const auto code=std::uint16_t((x*37+y*113)&((1u<<depth)-1));
+        auto* p=data.data()+1+y*stride+x*bytes;
+        if(bytes==1)*p=std::uint8_t(code);else write(p,code);
+        source[y*width+x]=std::int32_t(code)<<(16-depth);
+      }
+      std::vector<ref::Distance> distances(width<<sx);
+      std::vector<std::int16_t> grain(width,0);
+      std::vector<double> output(width+1);
+      const std::array<double,3> thresholds{2048,4096,8192};
+      for(std::size_t y=0;y<height;++y) {
+        const auto vlimit=std::min(y,height-1-y);
+        for(std::size_t x=0;x<width;++x) {
+          const auto hlimit=std::min(x,width-1-x);
+          distances[x<<sx].first=std::uint8_t(std::min({std::size_t{255},((vlimit+1)<<sy)-1,((hlimit+1)<<sx)-1}));
+        }
+        simd::IntegerRow row{nullptr,distances.data(),grain.data(),output.data(),width,vlimit,y*stride,sx,sy};
+        row.native=data.data()+1;row.native_stride=stride;row.native_extent=extent;row.input_depth=depth;
+        std::fill(output.begin(),output.end(),-999999);
+        const auto count=simd::process_integer_row(row,6,thresholds.data(),true);
+        for(std::size_t x=0;x<count;++x) {
+          const auto distance=distances[x<<sx].first;
+          const std::size_t dx=distance>>sx,dy=distance>>sy;
+          const std::array<double,4> refs{double(source[(y+dy)*width+x]),double(source[(y-dy)*width+x]),
+              double(source[y*width+x+dx]),double(source[y*width+x-dx])};
+          const double expected=ref::deband(source[y*width+x],refs,6,thresholds,true,true);
+          check(std::abs(output[x]-expected)<=1,"native weighted gather oracle");
+        }
+        for(std::size_t x=count;x<output.size();++x)check(output[x]==-999999,"native weighted gather tail");
+      }
+    }
+}
 void byte_frame_tests() {
   // Full byte vectors, odd tails, chroma layouts, large offsets, fractional
   // thresholds, signed grain saturation, and limited-range packing.
@@ -867,7 +909,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
