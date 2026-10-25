@@ -1,5 +1,6 @@
 #include "kernels/f3kdb.hpp"
 #include "kernels/f3kdb_scalar.hpp"
+#include "kernels/f3kdb_weight_table.hpp"
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -384,7 +385,7 @@ HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* threshold
 template <class DI>
 HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
                                      const hn::VFromD<DI>* refs, const float* thresholds,
-                                     const float* slopes) {
+                                     const float* slopes, const float* roots) {
   const hn::Rebind<float, DI> d;
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
@@ -414,45 +415,14 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   // every positive response >= 0.75/65535. Their product is normal binary32.
   const auto positive = hn::Gt(product, zero);
   const auto bits = hn::BitCast(di, hn::IfThenElse(positive, product, one));
-  const auto biased_exponent = hn::ShiftRight<23>(bits);
-  const auto exponent = hn::Sub(biased_exponent, hn::Set(di, 127));
-  // floor(e/10) = floor((E+3)/10)-13, E in [1,127]. Multiplication
-  // by 205 followed by >>11 is exact division by ten for E+3 in [4,130].
-  const auto q = hn::Sub(hn::ShiftRight<11>(hn::Mul(hn::Add(biased_exponent, hn::Set(di, 3)),
-                                                hn::Set(di, 205))), hn::Set(di, 13));
-  const auto remainder = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
-  static constexpr float powers[16] = {1.0f, 0x1.125fbep0f, 0x1.261118p0f, 0x1.3b2c48p0f,
-      0x1.51cb46p0f, 0x1.6a09e6p0f, 0x1.840600p0f, 0x1.9fdf8cp0f,
-      0x1.bdb8cep0f, 0x1.ddb680p0f, 2.0f};
-  const auto lookup = [&](auto index) {
-    // The eleven powers fit in one or two registers on wide targets. Avoid
-    // copying an automatic array to the stack and gathering it for each block.
-    if (hn::Lanes(d) == 16)
-      return hn::TableLookupLanes(hn::LoadU(d, powers), hn::IndicesFromVec(d, index));
-    if (hn::Lanes(d) == 8)
-      return hn::TwoTablesLookupLanes(hn::LoadU(d, powers), hn::LoadU(d, powers + 8),
-                                      hn::IndicesFromVec(d, index));
-    return hn::GatherIndex(d, powers, index);
-  };
-  const auto lower = lookup(remainder);
-  const auto upper = lookup(hn::Add(remainder, hn::Set(di, 1)));
-  const auto scale = hn::BitCast(d, hn::ShiftLeft<23>(hn::Add(q, hn::Set(di, 127))));
-  const auto mantissa = hn::BitCast(d, hn::Or(hn::And(bits, hn::Set(di, 0x007fffff)),
-                                             hn::Set(di, 0x3f800000)));
-  const auto t = hn::Sub(mantissa, one), z = hn::Sub(t, hn::Set(d, 0.5f));
-  // Binary32 needs fewer terms than the binary64 fallback. Exhausting all
-  // mantissas and exponent remainders (fused and unfused) gives no reversals
-  // and <4e-7 root error after scaling into [0,1]. Including response/product
-  // rounding remains within the 2^-20 weight budget.
-  constexpr float coefficients[5] = {
-      0x1.67fe7bd9c4502p-6f, -0x1.333dc78b37e74p-7f, 0x1.2ae1af75366f0p-8f,
-      -0x1.5b19e298ac5d8p-9f, 0x1.85f25f1bcbd1bp-10f};
-  auto polynomial = hn::Set(d, coefficients[4]);
-  for (int j = 3; j >= 0; --j)
-    polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
-  const auto correction = hn::Mul(hn::Sub(one, t), polynomial);
-  const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
-  const auto f = hn::IfThenElseZero(positive, hn::Mul(scale, hn::Min(upper, hn::Max(lower, root))));
+  const auto index = hn::ShiftRight<15>(hn::Sub(bits, hn::Set(di, integer_weight_first_bits)));
+  const auto fraction = hn::Mul(hn::ConvertTo(d, hn::And(bits, hn::Set(di, 0x7fff))), hn::Set(d, 0x1p-15f));
+  const auto lower = hn::GatherIndex(d, roots, index);
+  const auto upper = hn::GatherIndex(d, roots, hn::Add(index, hn::Set(di, 1)));
+  // The table shares endpoints, and positive-slope interpolation is monotone
+  // even after rounding. The binary32 root error is below 2.4e-7; response
+  // and product rounding keep the combined weight error below 2^-20.
+  const auto f = hn::IfThenElseZero(positive, hn::MulAdd(fraction, hn::Sub(upper, lower), lower));
   // The rounded 16-bit blend fits int32; saturation is redundant.
   return hn::ConvertInRangeTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
 }
@@ -730,6 +700,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       weight_slopes[j] = thresholds[j] > 0 ? static_cast<float>(3.0 / thresholds[j]) : 0.0f;
     }
   }
+  const float* weight_roots = fast_weights ? integer_weight_table().data() : nullptr;
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
     const auto value = load_center(x);
     auto debanded = value;
@@ -824,7 +795,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
       }
       if constexpr (Mode == 6) {
-        mean = fast_weights ? weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes)
+        mean = fast_weights ? weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes, weight_roots)
                             : weighted_integer(d, value, refs, thresholds);
         accept = hn::Eq(value, value);
       }

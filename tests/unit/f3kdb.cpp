@@ -1,6 +1,7 @@
 #include "f3kdb_scalar_filter.hpp"
 #include "algorithms/f3kdb.hpp"
 #include "kernels/f3kdb.hpp"
+#include "kernels/f3kdb_weight_table.hpp"
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
 #define HWY_COMPILE_ALL_ATTAINABLE
 #endif
@@ -367,6 +368,26 @@ void integer_cross_tests() {
         for (std::size_t x=count;x<output.size();++x) check(output[x]==-999999,"integer cross tail untouched");
       }
     }
+}
+void integer_weight_table_tests() {
+  const auto& table=simd::integer_weight_table();
+  double worst=0;
+  for(std::size_t i=0;i+1<table.size();++i) {
+    check(table[i]<=table[i+1],"integer root table monotonic endpoints");
+    float previous=table[i];
+    for(unsigned fraction : {0u,1u,8192u,16384u,24576u,32766u,32767u}) {
+      const std::uint32_t bits=simd::integer_weight_first_bits+(std::uint32_t(i)<<15)+fraction;
+      float x;std::memcpy(&x,&bits,sizeof(x));
+      const float t=float(fraction)*0x1p-15f;
+      const float actual=std::fma(t,table[i+1]-table[i],table[i]);
+      check(actual>=previous && actual<=table[i+1],"integer root interpolation monotonic");
+      previous=actual;
+      worst=std::max(worst,std::abs(double(actual)-std::pow(double(x),0.1)));
+    }
+  }
+  check(worst<2.4e-7,"integer root interpolation error");
+  check(table[66*256]==1.0f,"integer root exact one");
+  max_weight=std::max(max_weight,worst);
 }
 void integer_weight_boundary_tests() {
   // Smooth and full-range neighbours exercise interior weights, quarter-code
@@ -846,7 +867,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
