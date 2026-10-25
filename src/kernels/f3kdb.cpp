@@ -385,7 +385,7 @@ HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* threshold
 template <class DI>
 HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
                                      const hn::VFromD<DI>* refs, const float* thresholds,
-                                     const float* slopes, const float* roots) {
+                                     const float* slopes, const std::uint64_t* roots) {
   const hn::Rebind<float, DI> d;
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
@@ -417,8 +417,15 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto bits = hn::BitCast(di, hn::IfThenElse(positive, product, one));
   const auto index = hn::ShiftRight<15>(hn::Sub(bits, hn::Set(di, integer_weight_first_bits)));
   const auto fraction = hn::Mul(hn::ConvertTo(d, hn::And(bits, hn::Set(di, 0x7fff))), hn::Set(d, 0x1p-15f));
-  const auto lower = hn::GatherIndex(d, roots, index);
-  const auto upper = hn::GatherIndex(d, roots, hn::Add(index, hn::Set(di, 1)));
+  // Read each adjacent pair once. Two half-width qword gathers service N
+  // pixels instead of two full-width dword gathers servicing 2N endpoints.
+  const hn::Half<DI> half;
+  const hn::Repartition<std::uint64_t, DI> dq;
+  const hn::Rebind<std::int64_t, decltype(dq)> diq;
+  const auto low = hn::BitCast(d, hn::GatherIndex(dq, roots, hn::PromoteTo(diq, hn::LowerHalf(half, index))));
+  const auto high = hn::BitCast(d, hn::GatherIndex(dq, roots, hn::PromoteTo(diq, hn::UpperHalf(half, index))));
+  const auto lower = hn::ConcatEven(d, high, low);
+  const auto upper = hn::ConcatOdd(d, high, low);
   // The table shares endpoints, and positive-slope interpolation is monotone
   // even after rounding. The binary32 root error is below 2.4e-7; response
   // and product rounding keep the combined weight error below 2^-20.
@@ -706,7 +713,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       weight_slopes[j] = thresholds[j] > 0 ? static_cast<float>(3.0 / thresholds[j]) : 0.0f;
     }
   }
-  const float* weight_roots = FastWeights ? integer_weight_table().data() : nullptr;
+  const std::uint64_t* weight_roots = FastWeights ? integer_weight_table().data() : nullptr;
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
     const auto value = load_center(x);
     auto debanded = value;

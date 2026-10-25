@@ -373,20 +373,23 @@ void integer_weight_table_tests() {
   const auto& table=simd::integer_weight_table();
   double worst=0;
   for(std::size_t i=0;i+1<table.size();++i) {
-    check(table[i]<=table[i+1],"integer root table monotonic endpoints");
-    float previous=table[i];
+    float pair[2],next[2];std::memcpy(pair,&table[i],sizeof(pair));std::memcpy(next,&table[i+1],sizeof(next));
+    check(pair[1]==next[0],"integer root table shared endpoints");
+    check(pair[0]<=pair[1],"integer root table monotonic endpoints");
+    float previous=pair[0];
     for(unsigned fraction : {0u,1u,8192u,16384u,24576u,32766u,32767u}) {
       const std::uint32_t bits=simd::integer_weight_first_bits+(std::uint32_t(i)<<15)+fraction;
       float x;std::memcpy(&x,&bits,sizeof(x));
       const float t=float(fraction)*0x1p-15f;
-      const float actual=std::fma(t,table[i+1]-table[i],table[i]);
-      check(actual>=previous && actual<=table[i+1],"integer root interpolation monotonic");
+      const float actual=std::fma(t,pair[1]-pair[0],pair[0]);
+      check(actual>=previous && actual<=pair[1],"integer root interpolation monotonic");
       previous=actual;
       worst=std::max(worst,std::abs(double(actual)-std::pow(double(x),0.1)));
     }
   }
   check(worst<2.4e-7,"integer root interpolation error");
-  check(table[66*256]==1.0f,"integer root exact one");
+  float endpoint[2];std::memcpy(endpoint,&table[66*256],sizeof(endpoint));
+  check(endpoint[0]==1.0f,"integer root exact one");
   max_weight=std::max(max_weight,worst);
 }
 void integer_weight_boundary_tests() {
