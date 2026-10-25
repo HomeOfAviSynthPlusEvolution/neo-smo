@@ -282,6 +282,11 @@ Frame process_integer_frame(const Filter& filter, std::size_t frame, const std::
         row.native_extent = extent;
         row.input_depth = f.depth;
         row.row_offset = y * view.stride;
+        const auto& offsets = filter.reference_offsets(plane);
+        if (view.stride == row_bytes && !offsets.empty()) {
+          row.vertical_offsets = offsets.data() + y * w;
+          row.horizontal_offsets = offsets.data() + n + y * w;
+        }
       }
       const bool direct = out.sample == Sample::integer && o.dither_algo <= 2;
       if (direct) {

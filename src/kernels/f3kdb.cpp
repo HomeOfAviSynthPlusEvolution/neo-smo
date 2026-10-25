@@ -661,7 +661,7 @@ std::size_t byte_target(const ByteRow& row, int mode, const double* t, bool blur
   }
 }
 template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
-          int PackedDither = -1, bool ValidatedDistances = false>
+          int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -729,65 +729,77 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     const auto value = load_center(x);
     auto debanded = value;
     if constexpr (Mode != 0) {
-      hn::VFromD<decltype(db)> first, second;
-      if (SX == 0)
-        hn::LoadInterleaved2(db, distances, first, second);
-      else {
-        hn::VFromD<decltype(db)> skip1, skip2;
-        hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
-      }
-      const auto distance1 = hn::PromoteTo(di, first), h1 = hn::ShiftRightSame(distance1, SX),
-                 v1 = hn::ShiftRightSame(distance1, SY);
-      const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x))), hlimit = hn::Min(pos, hn::Sub(last, pos));
-      auto valid = hn::Eq(index, index);
-      if constexpr (Mode != 3)
-        valid = hn::And(valid, hn::Le(v1, vlimit));
-      if constexpr (Mode != 1)
-        valid = hn::And(valid, hn::Le(h1, hlimit));
-      if constexpr (!ValidatedDistances) {
-        if (!hn::AllTrue(di, valid))
-          throw std::logic_error("reference outside plane");
-      }
-      const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
       hn::VFromD<decltype(d)> refs[N];
-      if constexpr (Mode == 1 || Mode == 3) {
-        bool tabled = false;
-        if constexpr (Mode == 3) {
-          // Two adjacent vectors cover each side when every distance fits one
-          // vector. Loads stay inside this row, including at image borders.
-          if (lanes >= 16 && x >= lanes && row.width - x >= 2 * lanes &&
-              hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
-            const auto left = load_center(x - lanes), right = load_center(x + lanes);
-            refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
-            refs[1] = hn::TwoTablesLookupLanes(
-                left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
-            tabled = true;
-          }
-        }
-        if (!tabled) {
-          const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
-          refs[0] = gather(hn::Add(absolute, off));
-          refs[1] = gather(hn::Sub(absolute, off));
-        }
-      } else if constexpr (Mode == 2) {
-        const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
-                   v2 = hn::ShiftRightSame(distance2, SY);
-        if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
-          throw std::logic_error("reference outside plane");
-        const auto a = hn::Add(hn::Mul(v2, pitch), hn::Mul(h1, hn::Set(di, bytes))),
-                   b = hn::Sub(hn::Mul(h2, hn::Set(di, bytes)), hn::Mul(v1, pitch));
-        refs[0] = gather(hn::Add(absolute, a));
-        refs[1] = gather(hn::Add(absolute, b));
-        refs[2] = gather(hn::Sub(absolute, a));
-        refs[3] = gather(hn::Sub(absolute, b));
-      }
-      if constexpr (Mode >= 4) {
-        const auto vertical = hn::Mul(v1, pitch);
+      if constexpr (CachedOffsets) {
+        static_assert(Mode == 6 && DirectNative && ValidatedDistances);
+        const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x)));
+        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+        const auto vertical = hn::LoadU(d, row.vertical_offsets + x);
+        const auto horizontal = hn::LoadU(d, row.horizontal_offsets + x);
         refs[0] = gather(hn::Add(absolute, vertical));
         refs[1] = gather(hn::Sub(absolute, vertical));
-        refs[2] = gather(hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))));
-        refs[3] = gather(hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))));
+        refs[2] = gather(hn::Add(absolute, horizontal));
+        refs[3] = gather(hn::Sub(absolute, horizontal));
+      } else {
+        hn::VFromD<decltype(db)> first, second;
+        if (SX == 0)
+          hn::LoadInterleaved2(db, distances, first, second);
+        else {
+          hn::VFromD<decltype(db)> skip1, skip2;
+          hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
+        }
+        const auto distance1 = hn::PromoteTo(di, first), h1 = hn::ShiftRightSame(distance1, SX),
+                   v1 = hn::ShiftRightSame(distance1, SY);
+        const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x))), hlimit = hn::Min(pos, hn::Sub(last, pos));
+        auto valid = hn::Eq(index, index);
+        if constexpr (Mode != 3)
+          valid = hn::And(valid, hn::Le(v1, vlimit));
+        if constexpr (Mode != 1)
+          valid = hn::And(valid, hn::Le(h1, hlimit));
+        if constexpr (!ValidatedDistances) {
+          if (!hn::AllTrue(di, valid))
+            throw std::logic_error("reference outside plane");
+        }
+        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
+        if constexpr (Mode == 1 || Mode == 3) {
+          bool tabled = false;
+          if constexpr (Mode == 3) {
+            // Two adjacent vectors cover each side when every distance fits one
+            // vector. Loads stay inside this row, including at image borders.
+            if (lanes >= 16 && x >= lanes && row.width - x >= 2 * lanes &&
+                hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
+              const auto left = load_center(x - lanes), right = load_center(x + lanes);
+              refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
+              refs[1] = hn::TwoTablesLookupLanes(
+                  left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
+              tabled = true;
+            }
+          }
+          if (!tabled) {
+            const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
+            refs[0] = gather(hn::Add(absolute, off));
+            refs[1] = gather(hn::Sub(absolute, off));
+          }
+        } else if constexpr (Mode == 2) {
+          const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
+                     v2 = hn::ShiftRightSame(distance2, SY);
+          if (!hn::AllTrue(di, hn::And(hn::Le(h2, hlimit), hn::Le(v2, vlimit))))
+            throw std::logic_error("reference outside plane");
+          const auto a = hn::Add(hn::Mul(v2, pitch), hn::Mul(h1, hn::Set(di, bytes))),
+                     b = hn::Sub(hn::Mul(h2, hn::Set(di, bytes)), hn::Mul(v1, pitch));
+          refs[0] = gather(hn::Add(absolute, a));
+          refs[1] = gather(hn::Add(absolute, b));
+          refs[2] = gather(hn::Sub(absolute, a));
+          refs[3] = gather(hn::Sub(absolute, b));
+        }
+        if constexpr (Mode >= 4) {
+          const auto vertical = hn::Mul(v1, pitch);
+          refs[0] = gather(hn::Add(absolute, vertical));
+          refs[1] = gather(hn::Sub(absolute, vertical));
+          refs[2] = gather(hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))));
+          refs[3] = gather(hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))));
+        }
       }
       auto sum = hn::Zero(d);
       for (int j = 0; j < N; ++j)
@@ -878,15 +890,15 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   }
   return full;
 }
-template <int SX, int SY, bool ValidatedDistances = false>
+template <int SX, int SY, bool ValidatedDistances = false, bool CachedOffsets = false>
 std::size_t integer_native_weighted(const IntegerRow& row, const double* thresholds) {
   // Keep output selection out of the general weighted loop. Zero denotes
   // the intermediate output used by floating conversion and error diffusion.
   if (!row.packed_output)
-    return integer_samples<6, true, SX, SY, true, true, 0, ValidatedDistances>(row, thresholds);
+    return integer_samples<6, true, SX, SY, true, true, 0, ValidatedDistances, CachedOffsets>(row, thresholds);
   if (row.dither == 2)
-    return integer_samples<6, true, SX, SY, true, true, 2, ValidatedDistances>(row, thresholds);
-  return integer_samples<6, true, SX, SY, true, true, 1, ValidatedDistances>(row, thresholds);
+    return integer_samples<6, true, SX, SY, true, true, 2, ValidatedDistances, CachedOffsets>(row, thresholds);
+  return integer_samples<6, true, SX, SY, true, true, 1, ValidatedDistances, CachedOffsets>(row, thresholds);
 }
 template <int SX, int SY>
 std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
@@ -925,10 +937,13 @@ std::size_t integer_dispatch(const IntegerRow& row, int mode, const double* thre
         // final rows, all four-byte gathers fit even without trailing padding.
         const std::size_t last_rows = (((4 / bytes - 1) << SX) - 1) >> SY;
         if (row.native_extent >= row_bytes && row.row_offset <= row.native_extent - row_bytes &&
-            row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride)
+            row.native_extent - row_bytes - row.row_offset > last_rows * row.native_stride) {
+          if (fast_weights && row.validated_distances && row.vertical_offsets && row.horizontal_offsets)
+            return integer_native_weighted<SX, SY, true, true>(row, thresholds);
           return fast_weights ? (row.validated_distances ? integer_native_weighted<SX, SY, true>(row, thresholds)
                                                         : integer_native_weighted<SX, SY>(row, thresholds))
                               : integer_samples<6, true, SX, SY, true, false>(row, thresholds);
+        }
       }
       return fast_weights ? integer_samples<6, true, SX, SY, false, true>(row, thresholds)
                           : integer_samples<6, true, SX, SY, false, false>(row, thresholds);

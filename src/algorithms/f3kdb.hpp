@@ -91,6 +91,7 @@ public:
   Filter(const Format&, const Options& = {});
   const Parameters& parameters() const { return params_; }
   const std::vector<Distance>& distances() const { return distances_; }
+  const std::vector<std::int32_t>& reference_offsets(std::size_t plane) const { return reference_offsets_[plane]; }
   const std::vector<std::size_t>& offsets() const { return offsets_; }
   const std::vector<float>& grain_y() const { return grain_y_; }
   const std::vector<float>& grain_c() const { return grain_c_; }
@@ -105,6 +106,9 @@ public:
 private:
   Parameters params_;
   std::vector<Distance> distances_;
+  // Mode-6 tight native planes: vertical offsets followed by horizontal ones.
+  // Immutable after construction, like distances and grain.
+  std::array<std::vector<std::int32_t>, 3> reference_offsets_;
   // Only the input format's representation is populated. Integer noise is
   // rounded and bounded by +/-16384; floating noise is already rounded to F32.
   std::vector<float> grain_y_, grain_c_;

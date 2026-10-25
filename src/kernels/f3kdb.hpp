@@ -97,6 +97,9 @@ struct IntegerRow {
   // Internal Filter-owned distances only: after subsampling, both coordinates
   // are known to stay within this plane. Does not relax storage/extent checks.
   bool validated_distances = false;
+  // Optional matching native byte offsets for the current row; both required.
+  const std::int32_t* vertical_offsets = nullptr;
+  const std::int32_t* horizontal_offsets = nullptr;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
 struct IntegerInputPlane {

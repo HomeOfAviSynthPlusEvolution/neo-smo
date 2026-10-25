@@ -744,6 +744,36 @@ void native_integer_frame_tests() {
       }
     }
 }
+void cached_reference_frame_tests() {
+  for(int depth : {8,10,16}) for(int sx : {0,1}) for(int sy : {0,1}) for(int dither : {1,2,3}) {
+    ref::Format f;f.width=66;f.height=38;f.frames=2;f.depth=depth;
+    f.color=ref::Color::yuv;f.sub_x=sx;f.sub_y=sy;
+    ref::Options o;o.sample_mode=6;o.scale=true;o.range=255;o.dynamic_grain=true;
+    o.threshold.fill(2047);o.threshold1.fill(4093);o.threshold2.fill(8191);
+    o.dither_algo=dither;o.output_depth=dither==2?8:depth;o.grain_y=o.grain_c=3.75;
+    const auto padded=input(f,0);
+    const simd::Filter filter(f,o);
+    std::vector<std::vector<std::uint8_t>> storage(3);
+    std::vector<ref::PlaneView> tight;
+    for(std::size_t plane=0;plane<3;++plane) {
+      const auto w=f.width>>(plane?sx:0),h=f.height>>(plane?sy:0),stride=w*(depth==8?1:2);
+      check(filter.reference_offsets(plane).size()==2*w*h,"native reference cache extent");
+      storage[plane].resize(h*stride+1);
+      for(std::size_t y=0;y<h;++y)
+        std::memcpy(storage[plane].data()+1+y*stride,
+                    static_cast<const std::uint8_t*>(padded.views[plane].data)+y*padded.views[plane].stride,stride);
+      tight.push_back({storage[plane].data()+1,h*stride,stride});
+    }
+    const auto cached=filter.process(1,tight),fallback=filter.process(1,padded.views);
+    compare(ScalarFilter(f,o).process(1,tight),cached,o);
+    for(std::size_t plane=0;plane<3;++plane)
+      check(cached.planes[plane].data==fallback.planes[plane].data,"reference cache matches stride fallback");
+    o.threshold.fill(2047.5);
+    const simd::Filter fractional(f,o);
+    for(std::size_t plane=0;plane<3;++plane)
+      check(fractional.reference_offsets(plane).empty(),"F64 path does not allocate unused offsets");
+  }
+}
 void native_weighted_gather_tests() {
   // Maximal valid distances at each coordinate include odd luma distances
   // at the right edge of subsampled planes. Use exact, unaligned allocations
@@ -764,15 +794,23 @@ void native_weighted_gather_tests() {
       std::vector<std::int16_t> grain(width,0);
       std::vector<double> output(width+1);
       const std::array<double,3> thresholds{2047,4093,8191};
+      std::vector<std::int32_t> vertical_offsets(width),horizontal_offsets(width);
       for(std::size_t y=0;y<height;++y) {
         const auto vlimit=std::min(y,height-1-y);
         for(std::size_t x=0;x<width;++x) {
           const auto hlimit=std::min(x,width-1-x);
           distances[x<<sx].first=std::uint8_t(std::min({std::size_t{255},((vlimit+1)<<sy)-1,((hlimit+1)<<sx)-1}));
+          vertical_offsets[x]=std::int32_t((distances[x<<sx].first>>sy)*stride);
+          horizontal_offsets[x]=std::int32_t((distances[x<<sx].first>>sx)*bytes);
         }
-        for(bool validated : {false,true}) {
+        for(int variant : {0,1,2}) {
+        const bool validated=variant!=0;
         simd::IntegerRow row{nullptr,distances.data(),grain.data(),output.data(),width,vlimit,y*stride,sx,sy};
         row.validated_distances=validated;
+        if(variant==2) {
+          row.vertical_offsets=vertical_offsets.data();
+          row.horizontal_offsets=horizontal_offsets.data();
+        }
         row.native=data.data()+1;row.native_stride=stride;row.native_extent=extent;row.input_depth=depth;
         std::fill(output.begin(),output.end(),-999999);
         const auto count=simd::process_integer_row(row,6,thresholds.data(),true);
@@ -924,7 +962,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); cached_reference_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

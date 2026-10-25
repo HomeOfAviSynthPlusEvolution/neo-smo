@@ -195,6 +195,29 @@ Filter::Filter(const Format& format, const Options& options) : params_(normalize
         rng.next(o.random_algo_grain, o.random_param_grain);
       }
     }
+  if (o.sample_mode == 6 && f.sample == Sample::integer) {
+    const auto bytes = bytes_per_sample(f);
+    for (std::size_t plane = 0; plane < (f.color == Color::gray ? 1u : 3u); ++plane) {
+      const auto& thresholds = params_.thresholds[plane];
+      if (!std::all_of(thresholds.begin(), thresholds.end(), [](double t) {
+            return t >= 1 && t <= 65535 && t == std::floor(t);
+          }))
+        continue;
+      const int sx = plane ? f.sub_x : 0, sy = plane ? f.sub_y : 0;
+      const auto w = f.width >> sx, h = f.height >> sy, stride = mul(w, bytes), n = mul(w, h);
+      if (sx > 1 || sy > 1 || stride < 4 || mul(stride, h) > std::size_t(std::numeric_limits<std::int32_t>::max()))
+        continue;
+      capacity<std::int32_t>(mul(n, 2));
+      auto& offsets = reference_offsets_[plane];
+      offsets.resize(mul(n, 2));
+      for (std::size_t y = 0; y < h; ++y)
+        for (std::size_t x = 0; x < w; ++x) {
+          const auto distance = distances_[(y << sy) * f.width + (x << sx)].first;
+          offsets[y * w + x] = static_cast<std::int32_t>((distance >> sy) * stride);
+          offsets[n + y * w + x] = static_cast<std::int32_t>((distance >> sx) * bytes);
+        }
+    }
+  }
   auto fill = [&](auto& table, double amplitude) {
     for (auto& stored : table) {
       const double value = rng.next(o.random_algo_grain, o.random_param_grain) * amplitude;
