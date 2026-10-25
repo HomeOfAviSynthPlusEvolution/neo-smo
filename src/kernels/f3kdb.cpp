@@ -382,6 +382,63 @@ HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* threshold
                         hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, center), f, center), hn::Set(d, 0.5))));
 }
 template <class DI>
+HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
+                                     const hn::VFromD<DI>* refs, const float* thresholds,
+                                     const float* slopes) {
+  const hn::Rebind<float, DI> d;
+  const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
+  const auto s = hn::ConvertTo(d, center);
+  hn::VFromD<decltype(d)> r[4];
+  auto sum = zero, maximum = zero;
+  for (int j = 0; j < 4; ++j) {
+    r[j] = hn::ConvertTo(d, refs[j]);
+    sum = hn::Add(sum, r[j]);
+    maximum = hn::Max(maximum, hn::Abs(hn::Sub(r[j], s)));
+  }
+  const auto average = hn::Mul(sum, hn::Set(d, 0.25f));
+  const auto twice = hn::Add(s, s);
+  const hn::VFromD<decltype(d)> delta[4] = {
+      hn::Abs(hn::Sub(average, s)), maximum,
+      hn::Abs(hn::Sub(hn::Add(r[0], r[1]), twice)),
+      hn::Abs(hn::Sub(hn::Add(r[2], r[3]), twice))};
+  auto product = one;
+  for (int j = 0; j < 4; ++j) {
+    const int k = j < 2 ? j : 2;
+    // Subtract before scaling: near the upper endpoint this difference is
+    // exact, whereas 1 - delta / threshold loses relative accuracy.
+    const auto c = hn::Min(one, hn::Max(zero, hn::Mul(
+        hn::Sub(hn::Set(d, thresholds[k]), delta[j]), hn::Set(d, slopes[k]))));
+    product = hn::Mul(product, c);
+  }
+  // Integral thresholds in [1,65535] and quarter-integral differences make
+  // every positive response >= 0.75/65535. Their product is normal binary32.
+  const auto positive = hn::Gt(product, zero);
+  const auto bits = hn::BitCast(di, hn::IfThenElse(positive, product, one));
+  const auto exponent = hn::Sub(hn::ShiftRight<23>(bits), hn::Set(di, 127));
+  const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1f))));
+  const auto remainder = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
+  constexpr float powers[11] = {1.0f, 0x1.125fbep0f, 0x1.261118p0f, 0x1.3b2c48p0f,
+      0x1.51cb46p0f, 0x1.6a09e6p0f, 0x1.840600p0f, 0x1.9fdf8cp0f,
+      0x1.bdb8cep0f, 0x1.ddb680p0f, 2.0f};
+  const auto lower = hn::GatherIndex(d, powers, remainder);
+  const auto upper = hn::GatherIndex(d, powers, hn::Add(remainder, hn::Set(di, 1)));
+  const auto scale = hn::BitCast(d, hn::ShiftLeft<23>(hn::Add(q, hn::Set(di, 127))));
+  const auto mantissa = hn::BitCast(d, hn::Or(hn::And(bits, hn::Set(di, 0x007fffff)),
+                                             hn::Set(di, 0x3f800000)));
+  const auto t = hn::Sub(mantissa, one), z = hn::Sub(t, hn::Set(d, 0.5f));
+  constexpr float coefficients[9] = {
+      0x1.67fd762703c62p-6f, -0x1.33c6958706f00p-7f, 0x1.2c02b1c129546p-8f,
+      -0x1.3a011bb834600p-9f, 0x1.57944156155c1p-10f, -0x1.7d3b21ee12484p-11f,
+      0x1.b4f8b68efa72ep-12f, -0x1.431b83c280ea9p-12f, 0x1.8b15e6f1fa946p-13f};
+  auto polynomial = hn::Set(d, coefficients[8]);
+  for (int j = 7; j >= 0; --j)
+    polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
+  const auto correction = hn::Mul(hn::Sub(one, t), polynomial);
+  const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
+  const auto f = hn::IfThenElseZero(positive, hn::Mul(scale, hn::Min(upper, hn::Max(lower, root))));
+  return hn::ConvertTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
+}
+template <class DI>
 HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
   const D dd;
   const hn::Half<DI> half;
@@ -645,6 +702,16 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   };
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
+  bool fast_weights = Mode == 6;
+  float weight_thresholds[3]{}, weight_slopes[3]{};
+  if constexpr (Mode == 6) {
+    for (int j = 0; j < 3; ++j) {
+      fast_weights &= thresholds[j] >= 1 && thresholds[j] <= 65535 &&
+                      thresholds[j] == std::floor(thresholds[j]);
+      weight_thresholds[j] = static_cast<float>(thresholds[j]);
+      weight_slopes[j] = thresholds[j] > 0 ? static_cast<float>(3.0 / thresholds[j]) : 0.0f;
+    }
+  }
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
     const auto value = load_center(x);
     auto debanded = value;
@@ -739,7 +806,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
       }
       if constexpr (Mode == 6) {
-        mean = weighted_integer(d, value, refs, thresholds);
+        mean = fast_weights ? weighted_integer_fast(d, value, refs, weight_thresholds, weight_slopes)
+                            : weighted_integer(d, value, refs, thresholds);
         accept = hn::Eq(value, value);
       }
       debanded = hn::IfThenElse(accept, mean, value);

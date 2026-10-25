@@ -352,7 +352,7 @@ void integer_cross_tests() {
       for (std::size_t x=0;x<width;++x)
         distances[x<<sx]={static_cast<std::uint8_t>(std::min({std::size_t{255},vlimit<<sy,std::min(x,width-1-x)<<sx})),255};
       const simd::IntegerRow row{source.data()+y*width,distances.data(),grain.data(),output.data(),width,vlimit,y*width,sx,sy};
-      for (bool blur : {false,true}) for (double threshold : {0.0,0.5,1500.25,65535.0,131070.5}) {
+      for (bool blur : {false,true}) for (double threshold : {0.0,0.5,4.0,2048.0,1500.25,65532.0,65535.0,131070.5}) {
         const std::array<double,3> thresholds{threshold,threshold*0.75,threshold*0.5};
         std::fill(output.begin(),output.end(),-999999);
         const auto count=simd::process_integer_row(row,mode,thresholds.data(),blur);
@@ -367,6 +367,43 @@ void integer_cross_tests() {
         for (std::size_t x=count;x<output.size();++x) check(output[x]==-999999,"integer cross tail untouched");
       }
     }
+}
+void integer_weight_boundary_tests() {
+  // Smooth and full-range neighbours exercise interior weights, quarter-code
+  // response distances, integral thresholds, and the fractional fallback.
+  constexpr std::size_t width=1027;
+  std::vector<std::int32_t> source(3*width);
+  std::vector<ref::Distance> distances(width,{1,0});
+  distances.front().first=distances.back().first=0;
+  std::vector<std::int16_t> grain(width,0);
+  std::vector<double> output(width+1);
+  std::mt19937 rng(0x6f32);
+  for(double threshold : {1.0,2.0,3.0,4.0,108.0,2048.0,32768.0,65535.0,
+                         std::nextafter(108.0,109.0),2048.25}) {
+    const std::array<double,3> thresholds{threshold,threshold,threshold};
+    for(int pattern=0;pattern<12;++pattern) {
+      for(auto& value:source) {
+        if(pattern<8) {
+          const int radius=std::min(32767,int(threshold));
+          value=32768+int(rng()%unsigned(2*radius+1))-radius;
+        } else value=int(rng()%65536);
+      }
+      const simd::IntegerRow row{source.data()+width,distances.data(),grain.data(),output.data(),width,1,width,0,0};
+      std::fill(output.begin(),output.end(),-999999);
+      const auto count=simd::process_integer_row(row,6,thresholds.data(),true);
+      for(std::size_t x=0;x<count;++x) {
+        const auto offset=distances[x].first;
+        const std::array<double,4> refs{double(source[(1+offset)*width+x]),
+          double(source[(1-offset)*width+x]),double(source[width+x+offset]),double(source[width+x-offset])};
+        const double expected=ref::deband(source[width+x],refs,6,thresholds,true,true);
+        const double error=std::abs(output[x]-expected);
+        max_integer=std::max(max_integer,error);
+        check(error<=1,"integer weighted boundary oracle");
+      }
+      for(std::size_t x=count;x<output.size();++x)
+        check(output[x]==-999999,"integer weighted boundary tail");
+    }
+  }
 }
 void horizontal_table_tests() {
   std::mt19937 rng(0x7ab1e);
@@ -809,7 +846,7 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
