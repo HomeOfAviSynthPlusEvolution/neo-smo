@@ -728,6 +728,17 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     }
   }
   const std::uint64_t* weight_roots = FastWeights ? integer_weight_table().data() : nullptr;
+  // The Bayer matrix repeats every 16 columns. Compute the exact integer
+  // bias once per row: floor((2*bayer+1)*step/512).
+  std::int32_t bayer_bias[16]{};
+  if ((PackedDither >= 0 ? PackedDither : row.dither) == 2 && output_depth < 16) {
+    for (int column = 0; column < 16; ++column) {
+      int value = 0;
+      for (int bit = 0; bit < 4; ++bit)
+        value |= ((2 * ((column >> bit) & 1)) ^ (3 * ((row.y >> bit) & 1))) << (2 * (3 - bit));
+      bayer_bias[column] = ((2 * value + 1) << (16 - output_depth)) >> 9;
+    }
+  }
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
     const auto value = load_center(x);
     auto debanded = value;
@@ -850,16 +861,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       const int shift = 16 - output_depth;
       auto code = result;
       if (shift && (PackedDither >= 0 ? PackedDither : row.dither) == 2) {
-        const auto positions = hn::Iota(d, static_cast<std::int32_t>(x));
-        auto bayer = hn::Zero(d);
-        for (int bit = 0; bit < 4; ++bit) {
-          const auto xb = hn::And(hn::ShiftRightSame(positions, bit), hn::Set(d, 1));
-          const auto digit = hn::Xor(hn::ShiftLeft<1>(xb), hn::Set(d, 3 * ((row.y >> bit) & 1)));
-          bayer = hn::Or(bayer, hn::ShiftLeftSame(digit, 2 * (3 - bit)));
-        }
-        // floor(result/step + (bayer+0.5)/256) is exactly
-        // floor((result + floor((2*bayer+1)*step/512))/step).
-        const auto bias = hn::ShiftRight<9>(hn::ShiftLeftSame(hn::Add(hn::ShiftLeft<1>(bayer), hn::Set(d, 1)), shift));
+        const auto positions = hn::And(hn::Iota(d, static_cast<std::int32_t>(x)), hn::Set(d, 15));
+        const auto bias = hn::GatherIndex(d, bayer_bias, positions);
         code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       } else if (shift) {
         const auto quotient = hn::ShiftRightSame(result, shift);
