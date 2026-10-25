@@ -279,6 +279,12 @@ void gradient_sampling_tests() {
         if (pattern==2) { source[i]=(i%2?-1:1)*double(std::numeric_limits<float>::max());gx[i]*=1e30;gy[i]*=1e30; }
         if (pattern==3) { source[i]=std::numeric_limits<float>::denorm_min()*(1+i%3);gx[i]=0;gy[i]=0; }
       }
+      std::vector<std::int32_t> compact_source, compact_gx, compact_gy;
+      if (integer) {
+        compact_source.assign(source.begin(), source.end());
+        compact_gx.assign(gx.begin(), gx.end());
+        compact_gy.assign(gy.begin(), gy.end());
+      }
       for (int sx : {0,1,2}) for (int sy : {0,1}) for (std::size_t y : {std::size_t{0},h/2,h-1}) {
         std::vector<ref::Distance> distances(w<<sx);
         const auto vlimit=std::min(y,h-1-y);
@@ -303,9 +309,15 @@ void gradient_sampling_tests() {
           for (std::size_t x=count;x<=w;++x) check(v[x]==-999999,"gradient collection tail");
         simd::Row batch{};batch.center=row.sampling.center;batch.output=output.data();batch.count=w;
         batch.grain=grain.data();batch.integer_grain=integer_grain.data();
-        for (bool known : {false,true}) {
+        // Exercise both wide-coordinate contracts and the bounded compact
+        // planes against the same independent coordinate/direction oracle.
+        for (int storage : {0,1,2}) {
+          const bool known=storage!=0;
           if (known && !integer) continue;
           row.bounded_integer_gradients=known;
+          row.compact_source=storage==2?compact_source.data():nullptr;
+          row.compact_gx=storage==2?compact_gx.data():nullptr;
+          row.compact_gy=storage==2?compact_gy.data():nullptr;
         for (double angle : {0.0,0.15,0.25,0.5}) for (double boost : {0.0,1.5,4.0}) {
           const double threshold=pattern==5?256:integer?65535:0.5;
           const std::array<double,3> t{threshold,threshold*0.75,threshold*0.5};

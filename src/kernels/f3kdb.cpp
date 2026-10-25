@@ -234,25 +234,31 @@ HWY_INLINE M aligned_integer(D d, V gx, V gy, V hx, V hy, double angle, V cosine
     accept = hn::Le(hn::Mul(cross, cosine), hn::Mul(dot, sine));
   return hn::Or(bothzero, hn::And(nonzero, accept));
 }
-template <int SX, int SY, bool Fused = false, bool Integer = false>
+template <bool Compact, class Index>
+HWY_INLINE V cross_gather(D d, const double* wide, const std::int32_t* compact, Index index) {
+  const hn::Rebind<std::int32_t, D> d32;
+  if constexpr (Compact)
+    return hn::PromoteTo(d, hn::GatherIndex(d32, compact, index));
+  else
+    return compact ? hn::PromoteTo(d, hn::GatherIndex(d32, compact, hn::DemoteTo(d32, index)))
+                   : hn::GatherIndex(d, wide, index);
+}
+template <int SX, int SY, bool Fused = false, bool Integer = false, bool Compact = false>
 std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nullptr,
                           const double* thresholds = nullptr, double angle = 0, double boost = 1) {
   const auto& row = cross.sampling;
   const D d;
-  const hn::Rebind<std::int64_t, D> di;
+  const hn::Rebind<std::conditional_t<Compact, std::int32_t, std::int64_t>, D> di;
   const hn::Rebind<std::int32_t, D> d32;
   const hn::Rebind<std::uint8_t, D> db;
   const auto lanes = hn::Lanes(d), full = row.width / lanes * lanes;
   const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
-  const auto index = hn::Iota(di, 0), last = hn::Set(di, std::int64_t(row.width - 1));
-  const auto vlimit = hn::Set(di, std::int64_t(row.vertical_limit)), pitch = hn::Set(di, std::int64_t(row.width));
+  const auto index = hn::Iota(di, 0), last = hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(row.width - 1));
+  const auto vlimit = hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(row.vertical_limit)),
+             pitch = hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(row.width));
   const auto* source = cross.compact_source ? nullptr : row.center - cross.row_offset;
   const auto* gx = cross.compact_gx ? nullptr : cross.gx - cross.row_offset;
   const auto* gy = cross.compact_gy ? nullptr : cross.gy - cross.row_offset;
-  const auto gather = [&](const double* wide, const std::int32_t* compact, auto index) {
-    return compact ? hn::PromoteTo(d, hn::GatherIndex(d32, compact, hn::DemoteTo(d32, index)))
-                   : hn::GatherIndex(d, wide, index);
-  };
   constexpr double pi = 3.1415926535897932384626433832795;
   const bool trig = Fused && angle != 0 && angle != 0.25 && angle < 0.5;
   const auto cosine = hn::Set(d, trig ? std::cos(pi * angle) : 0), sine = hn::Set(d, trig ? std::sin(pi * angle) : 0);
@@ -265,23 +271,28 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       hn::VFromD<decltype(db)> skip1, skip2;
       hn::LoadInterleaved4(db, distances, first, second, skip1, skip2);
     }
-    const auto distance = hn::PromoteTo(di, hn::PromoteTo(d32, first));
+    const auto small_distance = hn::PromoteTo(d32, first);
+    auto distance = hn::Zero(di);
+    if constexpr (Compact)
+      distance = small_distance;
+    else
+      distance = hn::PromoteTo(di, small_distance);
     const auto h = hn::ShiftRightSame(distance, SX), v = hn::ShiftRightSame(distance, SY);
-    const auto position = hn::Add(index, hn::Set(di, std::int64_t(x))),
+    const auto position = hn::Add(index, hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(x))),
                hlimit = hn::Min(position, hn::Sub(last, position));
     if (!hn::AllTrue(di, hn::And(hn::Le(h, hlimit), hn::Le(v, vlimit))))
       throw std::logic_error("reference outside plane");
-    const auto absolute = hn::Add(position, hn::Set(di, std::int64_t(cross.row_offset)));
+    const auto absolute = hn::Add(position, hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(cross.row_offset)));
     const auto vertical = hn::Mul(v, pitch);
     const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(absolute, vertical), hn::Sub(absolute, vertical),
                                                  hn::Add(absolute, h), hn::Sub(absolute, h)};
     V r[4];
     for (int j = 0; j < 4; ++j) {
-      r[j] = gather(source, cross.compact_source, offsets[j]);
+      r[j] = cross_gather<Compact>(d, source, cross.compact_source, offsets[j]);
       if constexpr (!Fused) {
         hn::StoreU(r[j], d, row.samples[j] + x);
-        hn::StoreU(gather(gx, cross.compact_gx, offsets[j]), d, cross.grad_x[j] + x);
-        hn::StoreU(gather(gy, cross.compact_gy, offsets[j]), d, cross.grad_y[j] + x);
+        hn::StoreU(cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]), d, cross.grad_x[j] + x);
+        hn::StoreU(cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]), d, cross.grad_y[j] + x);
       }
     }
     if constexpr (Fused) {
@@ -308,7 +319,8 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       auto directions = hn::Eq(zero, zero);
       const auto cgx = hn::LoadU(d, cross.gx + x), cgy = hn::LoadU(d, cross.gy + x);
       for (int j = 0; j < 4; ++j) {
-        const auto hx = gather(gx, cross.compact_gx, offsets[j]), hy = gather(gy, cross.compact_gy, offsets[j]);
+        const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
+                   hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
         const auto direction = cross.bounded_integer_gradients
                                    ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
                                    : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
@@ -346,19 +358,30 @@ std::size_t collect_cross_target(const CrossSamplingRow& row) {
     return row.sampling.sub_y == 0 ? collect_cross<0, 0>(row) : collect_cross<0, 1>(row);
   return row.sampling.sub_y == 0 ? collect_cross<1, 0>(row) : collect_cross<1, 1>(row);
 }
-template <bool Integer>
+template <bool Integer, bool Compact = false>
 std::size_t cross_dispatch(const CrossSamplingRow& row, const Row& output, const double* t, double angle,
                            double boost) {
   if (row.sampling.sub_x > 1 || row.sampling.sub_y > 1 || row.sampling.width == 0)
     return 0;
   if (row.sampling.sub_x == 0)
-    return row.sampling.sub_y == 0 ? collect_cross<0, 0, true, Integer>(row, &output, t, angle, boost)
-                                   : collect_cross<0, 1, true, Integer>(row, &output, t, angle, boost);
-  return row.sampling.sub_y == 0 ? collect_cross<1, 0, true, Integer>(row, &output, t, angle, boost)
-                                 : collect_cross<1, 1, true, Integer>(row, &output, t, angle, boost);
+    return row.sampling.sub_y == 0 ? collect_cross<0, 0, true, Integer, Compact>(row, &output, t, angle, boost)
+                                   : collect_cross<0, 1, true, Integer, Compact>(row, &output, t, angle, boost);
+  return row.sampling.sub_y == 0 ? collect_cross<1, 0, true, Integer, Compact>(row, &output, t, angle, boost)
+                                 : collect_cross<1, 1, true, Integer, Compact>(row, &output, t, angle, boost);
 }
 SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& output, const double* t, bool integer,
                                     double angle, double boost) {
+  // Compact planes fit signed 32-bit indices. Prove the whole possible
+  // reference interval before selecting narrow coordinate arithmetic.
+  const auto width = row.sampling.width;
+  constexpr auto limit = std::size_t(std::numeric_limits<std::int32_t>::max());
+  if (integer && row.compact_source && row.compact_gx && row.compact_gy && width && width <= limit &&
+      row.row_offset <= limit - (width - 1) &&
+      row.sampling.vertical_limit <= row.row_offset / width &&
+      row.sampling.vertical_limit <= (limit - (width - 1) - row.row_offset) / width) {
+    const auto n = cross_dispatch<true, true>(row, output, t, angle, boost);
+    return {n, n};
+  }
   const auto n = integer ? cross_dispatch<true>(row, output, t, angle, boost)
                          : cross_dispatch<false>(row, output, t, angle, boost);
   return {n, n};
