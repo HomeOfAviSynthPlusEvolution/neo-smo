@@ -415,13 +415,23 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto positive = hn::Gt(product, zero);
   const auto bits = hn::BitCast(di, hn::IfThenElse(positive, product, one));
   const auto exponent = hn::Sub(hn::ShiftRight<23>(bits), hn::Set(di, 127));
-  const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1f))));
+  const auto q = hn::ConvertInRangeTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1f))));
   const auto remainder = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
-  constexpr float powers[11] = {1.0f, 0x1.125fbep0f, 0x1.261118p0f, 0x1.3b2c48p0f,
+  static constexpr float powers[16] = {1.0f, 0x1.125fbep0f, 0x1.261118p0f, 0x1.3b2c48p0f,
       0x1.51cb46p0f, 0x1.6a09e6p0f, 0x1.840600p0f, 0x1.9fdf8cp0f,
       0x1.bdb8cep0f, 0x1.ddb680p0f, 2.0f};
-  const auto lower = hn::GatherIndex(d, powers, remainder);
-  const auto upper = hn::GatherIndex(d, powers, hn::Add(remainder, hn::Set(di, 1)));
+  const auto lookup = [&](auto index) {
+    // The eleven powers fit in one or two registers on wide targets. Avoid
+    // copying an automatic array to the stack and gathering it for each block.
+    if (hn::Lanes(d) == 16)
+      return hn::TableLookupLanes(hn::LoadU(d, powers), hn::IndicesFromVec(d, index));
+    if (hn::Lanes(d) == 8)
+      return hn::TwoTablesLookupLanes(hn::LoadU(d, powers), hn::LoadU(d, powers + 8),
+                                      hn::IndicesFromVec(d, index));
+    return hn::GatherIndex(d, powers, index);
+  };
+  const auto lower = lookup(remainder);
+  const auto upper = lookup(hn::Add(remainder, hn::Set(di, 1)));
   const auto scale = hn::BitCast(d, hn::ShiftLeft<23>(hn::Add(q, hn::Set(di, 127))));
   const auto mantissa = hn::BitCast(d, hn::Or(hn::And(bits, hn::Set(di, 0x007fffff)),
                                              hn::Set(di, 0x3f800000)));
@@ -436,7 +446,9 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   const auto correction = hn::Mul(hn::Sub(one, t), polynomial);
   const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
   const auto f = hn::IfThenElseZero(positive, hn::Mul(scale, hn::Min(upper, hn::Max(lower, root))));
-  return hn::ConvertTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
+  // Both the exponent quotient above and the rounded 16-bit blend are proven
+  // to fit int32; the saturating conversion would add redundant comparisons.
+  return hn::ConvertInRangeTo(di, hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5f))));
 }
 template <class DI>
 HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
@@ -907,7 +919,7 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   // followed by floor gives floor(e/10) exactly throughout [-1022, 0].
   const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1))));
   const auto r = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
-  constexpr double powers[11] = {
+  static constexpr double powers[11] = {
       0x1.0000000000000p+0, 0x1.125fbee250664p+0, 0x1.2611186bae675p+0,
       0x1.3b2c47bff8329p+0, 0x1.51cb453b9536cp+0, 0x1.6a09e667f3bcdp+0,
       0x1.8406003b2ae5cp+0, 0x1.9fdf8bcce533dp+0, 0x1.bdb8cdadbe120p+0,
