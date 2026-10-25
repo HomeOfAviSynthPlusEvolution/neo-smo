@@ -995,8 +995,15 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       const int shift = 16 - output_depth;
       auto code = result;
       if (shift && (PackedDither >= 0 ? PackedDither : row.dither) == 2) {
-        const auto positions = hn::And(hn::Iota(d, static_cast<std::int32_t>(x)), hn::Set(d, 15));
-        const auto bias = hn::GatherIndex(d, bayer_bias, positions);
+        hn::VFromD<decltype(d)> bias;
+        // Fixed-width blocks divide the 16-column period and never wrap
+        // within a block. Wider/scalable blocks retain the indexed lookup.
+        if (lanes <= 16 && 16 % lanes == 0)
+          bias = hn::LoadU(d, bayer_bias + (x & 15));
+        else {
+          const auto positions = hn::And(hn::Iota(d, static_cast<std::int32_t>(x)), hn::Set(d, 15));
+          bias = hn::GatherIndex(d, bayer_bias, positions);
+        }
         code = hn::ShiftRightSame(hn::Add(result, bias), shift);
       } else if (shift) {
         const auto quotient = hn::ShiftRightSame(result, shift);
