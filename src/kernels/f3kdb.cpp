@@ -828,6 +828,45 @@ std::size_t integer_target(const IntegerRow& row, int mode, const double* thresh
   return row.sub_y == 0 ? integer_dispatch<1, 0>(row, mode, thresholds, blur)
                         : integer_dispatch<1, 1>(row, mode, thresholds, blur);
 }
+// x is a positive normal binary64 value in (0, 1]. Split x = m * 2^(10q+r),
+// where m is in [1,2) and r in [0,9]. Only m needs a polynomial; powers of two
+// are exact and the eleven-entry table joins adjacent exponent intervals.
+HWY_INLINE V tenth_root_normal(D d, V x) {
+  const hn::Rebind<std::int64_t, D> di;
+  const auto bits = hn::BitCast(di, x);
+  const auto exponent = hn::Sub(hn::ShiftRight<52>(bits), hn::Set(di, 1023));
+  // There are only 1023 possible exponents. Multiplication by binary64 0.1
+  // followed by floor gives floor(e/10) exactly throughout [-1022, 0].
+  const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1))));
+  const auto r = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
+  constexpr double powers[11] = {
+      0x1.0000000000000p+0, 0x1.125fbee250664p+0, 0x1.2611186bae675p+0,
+      0x1.3b2c47bff8329p+0, 0x1.51cb453b9536cp+0, 0x1.6a09e667f3bcdp+0,
+      0x1.8406003b2ae5cp+0, 0x1.9fdf8bcce533dp+0, 0x1.bdb8cdadbe120p+0,
+      0x1.ddb680117ab12p+0, 0x1.0000000000000p+1};
+  const auto lower = hn::GatherIndex(d, powers, r);
+  const auto upper = hn::GatherIndex(d, powers, hn::Add(r, hn::Set(di, 1)));
+  const auto scale = hn::BitCast(d, hn::ShiftLeft<52>(hn::Add(q, hn::Set(di, 1023))));
+  const auto mantissa = hn::BitCast(
+      d, hn::Or(hn::And(bits, hn::Set(di, 0x000fffffffffffffLL)), hn::Set(di, 0x3ff0000000000000LL)));
+  const auto t = hn::Sub(mantissa, hn::Set(d, 1.0));
+  const auto z = hn::Sub(t, hn::Set(d, 0.5));
+  // Endpoint-factored Chebyshev approximation on t in [0,1]:
+  // (1+t)^0.1 = 1 + t * (2^0.1-1 + (1-t) * P(t-0.5)).
+  // Max measured error < 2.2e-10; a coefficient interval bound gives a
+  // derivative > 0.039. Endpoint factoring keeps exponent joins continuous.
+  constexpr double coefficients[9] = {
+      0x1.67fd762703c62p-6, -0x1.33c6958706f00p-7, 0x1.2c02b1c129546p-8,
+      -0x1.3a011bb834600p-9, 0x1.57944156155c1p-10, -0x1.7d3b21ee12484p-11,
+      0x1.b4f8b68efa72ep-12, -0x1.431b83c280ea9p-12, 0x1.8b15e6f1fa946p-13};
+  auto polynomial = hn::Set(d, coefficients[8]);
+  for (int j = 7; j >= 0; --j)
+    polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
+  const auto correction = hn::Mul(hn::Sub(hn::Set(d, 1.0), t), polynomial);
+  const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
+  return hn::Mul(scale, hn::Min(upper, hn::Max(lower, root)));
+}
+
 HWY_INLINE V weight(D d, const V* c) {
   auto all_positive = hn::Gt(c[0], hn::Zero(d));
   auto all_one = hn::Eq(c[0], hn::Set(d, 1.0));
@@ -838,14 +877,14 @@ HWY_INLINE V weight(D d, const V* c) {
   // Each lane can independently be an exact zero or one endpoint.
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive), all_one)))
     return hn::IfThenElseZero(all_positive, hn::Set(d, 1.0));
-  // Products of ordinary responses need only one logarithm. A normal final
+  // Ordinary products use a bounded tenth-root approximation. A normal final
   // product guarantees normal intermediate products because every response is
   // in [0, 1]. Preserve the logarithmic sum below for underflow/subnormal cases.
   const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive),
                            hn::Ge(product, hn::Set(d, std::numeric_limits<double>::min()))))) {
     const auto argument = hn::IfThenElse(all_positive, product, hn::Set(d, 1.0));
-    const auto result = hn::Min(hn::Set(d, 1.0), hn::Exp(d, hn::Mul(hn::Log(d, argument), hn::Set(d, 0.1))));
+    const auto result = hn::Min(hn::Set(d, 1.0), tenth_root_normal(d, argument));
     return hn::IfThenElseZero(all_positive, result);
   }
   auto sum = hn::Zero(d);

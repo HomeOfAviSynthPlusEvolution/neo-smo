@@ -133,6 +133,34 @@ void weight_tests() {
     }
   }
 }
+void normal_weight_tests() {
+  // Exercise every normal exponent, mantissa interiors, and adjacent doubles
+  // at exponent joins. The reference uses libm, not the production polynomial.
+  constexpr std::size_t n=260;
+  std::array<std::vector<double>,4> c;
+  for (auto& v:c) v.assign(n,1.0);
+  std::vector<double> output(n);
+  const double* ptr[4]={c[0].data(),c[1].data(),c[2].data(),c[3].data()};
+  for (int e=-1022;e<=0;++e) {
+    const double base=std::ldexp(1.0,e);
+    c[0][0]=std::nextafter(base,0.0);
+    c[0][1]=base;
+    c[0][2]=std::min(1.0,std::nextafter(base,1.0));
+    for (std::size_t i=3;i<n;++i)
+      c[0][i]=std::min(1.0,std::ldexp(1.0+double(i-3)/256,e));
+    std::sort(c[0].begin(),c[0].end());
+    simd::weights(ptr,output.data(),n);
+    for (std::size_t i=0;i<n;++i) {
+      const auto expected=std::pow(c[0][i],0.1);
+      const auto error=std::abs(output[i]-expected);
+      max_weight=std::max(max_weight,error);
+      check(std::isfinite(output[i]) && output[i]>=0 && output[i]<=1,"normal weight range");
+      check(error<=0x1p-20,"normal weight accuracy");
+      if (i) check(output[i]>=output[i-1],"normal weight exponent-join monotonicity");
+      if (c[0][i]==1) check(output[i]==1,"normal weight exact one");
+    }
+  }
+}
 void sampling_tests() {
   // Unique source values expose wrong neighbours even when a later threshold
   // would reject them. Keep the distance buffer exact-sized for ASan.
@@ -776,12 +804,12 @@ int main() {
       // Normal x86 builds retain the reduced SIMD selection. Dedicated
       // builds exercise SCALAR and EMU128 without duplicating them here.
 #if HWY_ARCH_X86 && !defined(HWY_COMPILE_ONLY_SCALAR) && !defined(HWY_COMPILE_ONLY_EMU128)
-      if (target != HWY_SSE4 && target != HWY_AVX2 && target != HWY_AVX3)
+      if (target != HWY_SSE4 && target != HWY_AVX2 && target != HWY_AVX3 && target != HWY_AVX3_SPR)
         continue;
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
+      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); byte_frame_tests(); frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }
