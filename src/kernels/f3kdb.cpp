@@ -321,9 +321,13 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       for (int j = 0; j < 4; ++j) {
         const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
                    hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
-        const auto direction = cross.bounded_integer_gradients
-                                   ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
-                                   : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
+        M direction;
+        if constexpr (Compact)
+          direction = aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine);
+        else
+          direction = cross.bounded_integer_gradients
+                          ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
+                          : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
         directions = hn::And(directions, direction);
       }
       auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]), twice = hn::Add(s, s);
@@ -375,7 +379,8 @@ SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& outp
   // reference interval before selecting narrow coordinate arithmetic.
   const auto width = row.sampling.width;
   constexpr auto limit = std::size_t(std::numeric_limits<std::int32_t>::max());
-  if (integer && row.compact_source && row.compact_gx && row.compact_gy && width && width <= limit &&
+  if (integer && row.bounded_integer_gradients && row.compact_source && row.compact_gx && row.compact_gy &&
+      width && width <= limit &&
       row.row_offset <= limit - (width - 1) &&
       row.sampling.vertical_limit <= row.row_offset / width &&
       row.sampling.vertical_limit <= (limit - (width - 1) - row.row_offset) / width) {
