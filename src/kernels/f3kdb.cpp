@@ -165,6 +165,11 @@ HWY_INLINE void store_row(D d, V v, double* p, std::size_t n) {
 HWY_INLINE V fp(D d, V v) {
   const hn::Rebind<float, D> df;
   const auto finite = hn::Le(hn::Abs(v), hn::Set(d, double(std::numeric_limits<float>::max())));
+#if HWY_TARGET == HWY_AVX2
+  // AVX2 benefits from avoiding per-lane overflow selection for full blocks.
+  if (hn::AllTrue(d, finite))
+    return hn::PromoteTo(d, hn::DemoteTo(df, v));
+#endif
   const auto safe = hn::IfThenElseZero(finite, v);
   return hn::IfThenElse(finite, hn::PromoteTo(d, hn::DemoteTo(df, safe)), v);
 }
