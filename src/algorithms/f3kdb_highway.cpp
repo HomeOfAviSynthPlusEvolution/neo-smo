@@ -413,15 +413,16 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
     const auto pitch = mul(add(w, 15) / 16, 16);
     const auto& grain = plane ? filter.grain_c() : filter.grain_y();
     const auto& grain_integer = plane ? filter.grain_c_integer() : filter.grain_y_integer();
-    std::vector<T> gx, gy;
+    std::unique_ptr<T[]> gx, gy;
     bool normalized_float_gradients = false;
     if (o.sample_mode == 7) {
-      gx.resize(n);
-      gy.resize(n);
-      sobel_plane(source.data(), gx.data(), gy.data(), w, h);
+      // Sobel writes every element, including the clipped borders.
+      gx.reset(new T[n]);
+      gy.reset(new T[n]);
+      sobel_plane(source.data(), gx.get(), gy.get(), w, h);
       if constexpr (std::is_same_v<T, double>) {
         if (!integer)
-          normalized_float_gradients = normalize_float_gradients(gx.data(), gy.data(), n);
+          normalized_float_gradients = normalize_float_gradients(gx.get(), gy.get(), n);
       }
     }
     std::array<std::vector<double>, 4> samples, grad_x, grad_y;
@@ -442,9 +443,9 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
     }
     const auto source_view = plane_view(static_cast<const T*>(source.data()), w, h);
     const auto gx_view =
-        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gx.data()), w, h) : span2d::Plane<const T>{};
+        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gx.get()), w, h) : span2d::Plane<const T>{};
     const auto gy_view =
-        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gy.data()), w, h) : span2d::Plane<const T>{};
+        o.sample_mode == 7 ? plane_view(static_cast<const T*>(gy.get()), w, h) : span2d::Plane<const T>{};
     const auto distance_view = plane_view(filter.distances().data(), f.width, f.height);
     const auto processed_view = plane_view(processed.data(), w, stripe_height);
     const auto output_view = plane_view(output_data, output.stride, h, output.stride);
@@ -546,8 +547,8 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
                                      integer};
         if constexpr (std::is_same_v<T, std::int32_t>) {
           cross.compact_source = source.data();
-          cross.compact_gx = gx.data();
-          cross.compact_gy = gy.data();
+          cross.compact_gx = gx.get();
+          cross.compact_gy = gy.get();
         }
         cross.normalized_float_gradients = normalized_float_gradients;
         const auto prefix = process_cross_row(cross, batch, filter.parameters().thresholds[plane].data(), integer,
@@ -673,13 +674,14 @@ Frame process_float_frame(const Filter& filter, std::size_t frame, const std::ve
     const auto* source = static_cast<const float*>(view.data);
     const auto stride = view.stride / sizeof(float);
     const bool bounded = bounded_planes[p];
-    std::vector<double> gx, gy;
+    std::unique_ptr<double[]> gx, gy;
     bool normalized_gradients = false;
     if (mode == 7) {
-      gx.resize(mul(w, h));
-      gy.resize(gx.size());
-      sobel_plane(source, gx.data(), gy.data(), w, h, stride);
-      normalized_gradients = normalize_float_gradients(gx.data(), gy.data(), gx.size());
+      // Sobel writes every element, including the clipped borders.
+      gx.reset(new double[mul(w, h)]);
+      gy.reset(new double[mul(w, h)]);
+      sobel_plane(source, gx.get(), gy.get(), w, h, stride);
+      normalized_gradients = normalize_float_gradients(gx.get(), gy.get(), mul(w, h));
     }
     Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
     std::uint8_t* dest;
@@ -713,7 +715,7 @@ Frame process_float_frame(const Filter& filter, std::size_t frame, const std::ve
       const auto* noise = grain.data() + filter.offsets()[frame] + y * pitch;
       const auto count =
           process_float_row({source, distances, noise, processed_row, w, stride, y * stride, sx, sy, bounded,
-                             direct ? dest + y * output.stride : nullptr, p != 0, o.keep_tv_range, gx.data(), gy.data(),
+                             direct ? dest + y * output.stride : nullptr, p != 0, o.keep_tv_range, gx.get(), gy.get(),
                              normalized_gradients, o.max_angle, o.angle_boost},
                             mode, params.thresholds[p].data(), o.blur_first);
       for (std::size_t x = count; x < w; ++x) {
@@ -758,8 +760,8 @@ Frame process_float_frame(const Filter& filter, std::size_t frame, const std::ve
         for (int j = 0; j < 4; ++j)
           batch.refs[j] = refs[j].data() + count;
         if (mode == 7) {
-          batch.gx[0] = gx.data() + y * w + count;
-          batch.gy[0] = gy.data() + y * w + count;
+          batch.gx[0] = gx.get() + y * w + count;
+          batch.gy[0] = gy.get() + y * w + count;
           for (int j = 0; j < 4; ++j) {
             batch.gx[j + 1] = grad_x[j].data() + count;
             batch.gy[j + 1] = grad_y[j].data() + count;
