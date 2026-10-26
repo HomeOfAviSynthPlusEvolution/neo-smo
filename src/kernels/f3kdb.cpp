@@ -290,11 +290,21 @@ HWY_INLINE V cross_gather(D d, const double* wide, const std::int32_t* compact, 
   const hn::Rebind<std::int32_t, D> d32;
   if constexpr (Compact)
     return hn::PromoteTo(d, hn::GatherIndex(d32, compact, index));
-  else
-    return compact ? hn::PromoteTo(d, hn::GatherIndex(d32, compact, hn::DemoteTo(d32, index)))
-                   : hn::GatherIndex(d, wide, index);
+  else {
+    const hn::Rebind<std::int64_t, D> di64;
+    if (compact) {
+      if constexpr (sizeof(hn::TFromV<Index>) == 4)
+        return hn::PromoteTo(d, hn::GatherIndex(d32, compact, index));
+      else
+        return hn::PromoteTo(d, hn::GatherIndex(d32, compact, hn::DemoteTo(d32, index)));
+    }
+    if constexpr (sizeof(hn::TFromV<Index>) == 4)
+      return hn::GatherIndex(d, wide, hn::PromoteTo(di64, index));
+    else
+      return hn::GatherIndex(d, wide, index);
+  }
 }
-template <int SX, int SY, bool Fused = false, bool Integer = false, bool Compact = false>
+template <int SX, int SY, bool Fused = false, bool Integer = false, bool Compact = false, bool Narrow = Compact>
 std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nullptr,
                           const double* thresholds = nullptr, double angle = 0, double boost = 1) {
   // Output doubles may alias caller-owned thresholds. Snapshot the immutable
@@ -307,7 +317,7 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
   }
   const auto& row = cross.sampling;
   const D d;
-  const hn::Rebind<std::conditional_t<Compact, std::int32_t, std::int64_t>, D> di;
+  const hn::Rebind<std::conditional_t<Narrow, std::int32_t, std::int64_t>, D> di;
   const hn::Rebind<std::int32_t, D> d32;
   const hn::Rebind<std::uint8_t, D> db;
   const auto lanes = hn::Lanes(d), full = row.width / lanes * lanes;
@@ -332,7 +342,7 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
     }
     const auto small_distance = hn::PromoteTo(d32, first);
     auto distance = hn::Zero(di);
-    if constexpr (Compact)
+    if constexpr (Narrow)
       distance = small_distance;
     else
       distance = hn::PromoteTo(di, small_distance);
@@ -430,16 +440,16 @@ std::size_t collect_cross_target(const CrossSamplingRow& row) {
     return row.sampling.sub_y == 0 ? collect_cross<0, 0>(row) : collect_cross<0, 1>(row);
   return row.sampling.sub_y == 0 ? collect_cross<1, 0>(row) : collect_cross<1, 1>(row);
 }
-template <bool Integer, bool Compact = false>
+template <bool Integer, bool Compact = false, bool Narrow = Compact>
 std::size_t cross_dispatch(const CrossSamplingRow& row, const Row& output, const double* t, double angle,
                            double boost) {
   if (row.sampling.sub_x > 1 || row.sampling.sub_y > 1 || row.sampling.width == 0)
     return 0;
   if (row.sampling.sub_x == 0)
-    return row.sampling.sub_y == 0 ? collect_cross<0, 0, true, Integer, Compact>(row, &output, t, angle, boost)
-                                   : collect_cross<0, 1, true, Integer, Compact>(row, &output, t, angle, boost);
-  return row.sampling.sub_y == 0 ? collect_cross<1, 0, true, Integer, Compact>(row, &output, t, angle, boost)
-                                 : collect_cross<1, 1, true, Integer, Compact>(row, &output, t, angle, boost);
+    return row.sampling.sub_y == 0 ? collect_cross<0, 0, true, Integer, Compact, Narrow>(row, &output, t, angle, boost)
+                                   : collect_cross<0, 1, true, Integer, Compact, Narrow>(row, &output, t, angle, boost);
+  return row.sampling.sub_y == 0 ? collect_cross<1, 0, true, Integer, Compact, Narrow>(row, &output, t, angle, boost)
+                                 : collect_cross<1, 1, true, Integer, Compact, Narrow>(row, &output, t, angle, boost);
 }
 SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& output, const double* t, bool integer,
                                     double angle, double boost) {
@@ -455,6 +465,14 @@ SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& outp
     const auto n = cross_dispatch<true, true>(row, output, t, angle, boost);
     return {n, n};
   }
+#if HWY_TARGET == HWY_AVX3_SPR
+  if (!integer && width && width <= limit && row.row_offset <= limit - (width - 1) &&
+      row.sampling.vertical_limit <= row.row_offset / width &&
+      row.sampling.vertical_limit <= (limit - (width - 1) - row.row_offset) / width) {
+    const auto n = cross_dispatch<false, false, true>(row, output, t, angle, boost);
+    return {n, n};
+  }
+#endif
   const auto n = integer ? cross_dispatch<true>(row, output, t, angle, boost)
                          : cross_dispatch<false>(row, output, t, angle, boost);
   return {n, n};
