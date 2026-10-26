@@ -316,6 +316,14 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       row_thresholds[j] = thresholds[j];
     thresholds = row_thresholds;
   }
+  double inverse_thresholds[3]{}, inverse_boosted[3]{};
+  if constexpr (Fused && !Integer) {
+    for (int j = 0; j < 3; ++j) {
+      inverse_thresholds[j] = thresholds[j] == 0 ? 1 : 1 / thresholds[j];
+      const double boosted = thresholds[j] * boost;
+      inverse_boosted[j] = boosted == 0 ? 1 : 1 / boosted;
+    }
+  }
   const auto& row = cross.sampling;
   const D d;
   const hn::Rebind<std::conditional_t<Narrow, std::int32_t, std::int64_t>, D> di;
@@ -417,10 +425,21 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       }
       const auto qv = hn::Abs(diff(d, vertical, twice, Integer)), qh = hn::Abs(diff(d, horizontal, twice, Integer));
       const auto k = hn::IfThenElse(directions, hn::Set(d, boost), one);
-      const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
-                      response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))),
-                      response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))),
-                      response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])))};
+      V c[4];
+      if constexpr (!Integer) {
+        V inverse[3];
+        for (int j = 0; j < 3; ++j)
+          inverse[j] = hn::IfThenElse(directions, hn::Set(d, inverse_boosted[j]), hn::Set(d, inverse_thresholds[j]));
+        c[0] = response_with_inverse(d, da, hn::Mul(k, hn::Set(d, thresholds[0])), inverse[0]);
+        c[1] = response_with_inverse(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])), inverse[1]);
+        c[2] = response_with_inverse(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])), inverse[2]);
+        c[3] = response_with_inverse(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])), inverse[2]);
+      } else {
+        c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
+        c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
+        c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
+        c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+      }
       const auto f = weight(d, c);
       const auto blend = Integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5)))
                                  : fp(d, hn::Add(s, fp(d, hn::Mul(diff(d, average, s, false), f))));
