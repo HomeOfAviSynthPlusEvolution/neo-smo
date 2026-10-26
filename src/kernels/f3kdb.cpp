@@ -835,9 +835,53 @@ std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresho
 }
 #endif
 
+// Keep SIMD operations in the per-target namespace so their target attributes
+// apply to every instantiation, including clang-cl builds.
+template <bool DirectNative, bool FastWeights, bool RelativeGather, class D32, class Index>
+HWY_INLINE hn::VFromD<D32> integer_gather(D32 d, const IntegerRow& row, Index position, int input_depth, int bytes) {
+  const hn::Rebind<std::int32_t, D32> di;
+  const hn::Rebind<std::uint32_t, D32> du;
+  if constexpr (DirectNative) {
+    // The row dispatcher proved that these four-byte reads fit the plane.
+    // Coordinate validation below still precedes every reference read.
+    auto bits = hn::GatherOffset(
+        du, reinterpret_cast<const std::uint32_t*>(row.native + (RelativeGather ? row.row_offset : 0)), position);
+    if constexpr (!HWY_IS_LITTLE_ENDIAN)
+      bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
+    const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
+    if constexpr (FastWeights)
+      return hn::BitCast(d, code);
+    return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
+  }
+  if (!row.native)
+    return hn::GatherIndex(d, row.center - row.row_offset, position);
+  const auto start = hn::Min(position, hn::Set(di, std::int32_t(row.native_extent - 4)));
+  const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(position, start)));
+  const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
+  const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
+  const auto code = hn::And(hn::Shr(bits, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
+  return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
+}
+template <bool DirectNative, bool FastWeights, class D32>
+HWY_INLINE hn::VFromD<D32> integer_center(D32 d, const IntegerRow& row, std::size_t x, int input_depth, int bytes) {
+  const hn::Rebind<std::uint8_t, D32> db;
+  if constexpr (!DirectNative) {
+    if (!row.native)
+      return hn::LoadU(d, row.center + x);
+  }
+  const auto* source = row.native + row.row_offset + x * bytes;
+  const hn::Rebind<std::uint16_t, D32> dw;
+  const hn::Repartition<std::uint8_t, decltype(dw)> dwb;
+  const auto code =
+      bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source)) : hn::PromoteTo(d, hn::BitCast(dw, hn::LoadU(dwb, source)));
+  if constexpr (FastWeights && DirectNative)
+    return code;
+  return hn::ShiftLeftSame(code, 16 - input_depth);
+}
+
 template <int Mode, bool Blur, int SX, int SY, bool DirectNative = false, bool FastWeights = false,
-          int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false,
-          int NativeDepth = 0, int OutputDepth = 0>
+          int PackedDither = -1, bool ValidatedDistances = false, bool CachedOffsets = false, int NativeDepth = 0,
+          int OutputDepth = 0>
 std::size_t integer_samples(const IntegerRow& input_row, const double* thresholds) {
   // Output byte stores may alias caller-owned metadata. Keep the immutable
   // descriptor local so the sampling loop can retain its invariants.
@@ -857,45 +901,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
   // These 512-bit targets use native gathers with signed byte offsets.
   // Generic Highway gathers require nonnegative offsets, so all other
   // targets retain the plane origin even when reference offsets are cached.
-  constexpr bool relative_gather = CachedOffsets &&
-      (HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL ||
-       HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR);
-  const auto gather = [&](auto position) {
-    const hn::Rebind<std::uint32_t, decltype(d)> du;
-    if constexpr (DirectNative) {
-      // The row dispatcher proved that these four-byte reads fit the plane.
-      // Coordinate validation below still precedes every reference read.
-      auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native + (relative_gather ? row.row_offset : 0)), position);
-      if constexpr (!HWY_IS_LITTLE_ENDIAN)
-        bits = hn::ShiftRightSame(bits, 32 - 8 * bytes);
-      const auto code = hn::And(bits, hn::Set(du, bytes == 1 ? 255u : 65535u));
-      if constexpr (FastWeights)
-        return hn::BitCast(d, code);
-      return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
-    }
-    if (!row.native)
-      return hn::GatherIndex(d, row.center - row.row_offset, position);
-    const auto start = hn::Min(position, hn::Set(di, std::int32_t(row.native_extent - 4)));
-    const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(position, start)));
-    const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
-    const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
-    const auto code = hn::And(hn::Shr(bits, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
-    return hn::ShiftLeftSame(hn::BitCast(d, code), 16 - input_depth);
-  };
-  const auto load_center = [&](std::size_t x) {
-    if constexpr (!DirectNative) {
-      if (!row.native)
-        return hn::LoadU(d, row.center + x);
-    }
-    const auto* source = row.native + row.row_offset + x * bytes;
-    const hn::Rebind<std::uint16_t, decltype(d)> dw;
-    const hn::Repartition<std::uint8_t, decltype(dw)> dwb;
-    const auto code = bytes == 1 ? hn::PromoteTo(d, hn::LoadU(db, source))
-                                : hn::PromoteTo(d, hn::BitCast(dw, hn::LoadU(dwb, source)));
-    if constexpr (FastWeights && DirectNative)
-      return code;
-    return hn::ShiftLeftSame(code, 16 - input_depth);
-  };
+  constexpr bool relative_gather = CachedOffsets && (HWY_TARGET == HWY_AVX3 || HWY_TARGET == HWY_AVX3_DL ||
+                                                     HWY_TARGET == HWY_AVX3_ZEN4 || HWY_TARGET == HWY_AVX3_SPR);
   // Integer differences satisfy delta < t exactly when delta < ceil(t).
   const auto limit = hn::Set(d, std::int32_t(std::ceil(thresholds[0])));
   auto maximum_limit = hn::Zero(d), pair_limit = hn::Zero(d);
@@ -926,7 +933,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     }
   }
   for (std::size_t x = 0; x < full; x += lanes, distances += 2 * step * lanes) {
-    const auto value = load_center(x);
+    const auto value = integer_center<DirectNative, FastWeights>(d, row, x, input_depth, bytes);
     auto debanded = value;
     if constexpr (Mode != 0) {
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
@@ -934,14 +941,18 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
       if constexpr (CachedOffsets) {
         static_assert(Mode == 6 && DirectNative && ValidatedDistances);
         const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x)));
-        const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)),
-                                      hn::Set(di, relative_gather ? 0 : std::int32_t(row.row_offset)));
+        const auto absolute =
+            hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, relative_gather ? 0 : std::int32_t(row.row_offset)));
         const auto vertical = hn::LoadU(d, row.vertical_offsets + x);
         const auto horizontal = hn::LoadU(d, row.horizontal_offsets + x);
-        refs[0] = gather(hn::Add(absolute, vertical));
-        refs[1] = gather(hn::Sub(absolute, vertical));
-        refs[2] = gather(hn::Add(absolute, horizontal));
-        refs[3] = gather(hn::Sub(absolute, horizontal));
+        refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, vertical),
+                                                                             input_depth, bytes);
+        refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, vertical),
+                                                                             input_depth, bytes);
+        refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, horizontal),
+                                                                             input_depth, bytes);
+        refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, horizontal),
+                                                                             input_depth, bytes);
       } else {
         hn::VFromD<decltype(db)> first, second;
         if (SX == 0)
@@ -970,7 +981,8 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
             // vector. Loads stay inside this row, including at image borders.
             if (lanes >= 16 && x >= lanes && row.width - x >= 2 * lanes &&
                 hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
-              const auto left = load_center(x - lanes), right = load_center(x + lanes);
+              const auto left = integer_center<DirectNative, FastWeights>(d, row, x - lanes, input_depth, bytes),
+                         right = integer_center<DirectNative, FastWeights>(d, row, x + lanes, input_depth, bytes);
               refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
               refs[1] = hn::TwoTablesLookupLanes(
                   left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
@@ -979,8 +991,10 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
           }
           if (!tabled) {
             const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
-            refs[0] = gather(hn::Add(absolute, off));
-            refs[1] = gather(hn::Sub(absolute, off));
+            refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, off),
+                                                                                 input_depth, bytes);
+            refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, off),
+                                                                                 input_depth, bytes);
           }
         } else if constexpr (Mode == 2) {
           const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
@@ -989,17 +1003,25 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
             throw std::logic_error("reference outside plane");
           const auto a = hn::Add(hn::Mul(v2, pitch), hn::Mul(h1, hn::Set(di, bytes))),
                      b = hn::Sub(hn::Mul(h2, hn::Set(di, bytes)), hn::Mul(v1, pitch));
-          refs[0] = gather(hn::Add(absolute, a));
-          refs[1] = gather(hn::Add(absolute, b));
-          refs[2] = gather(hn::Sub(absolute, a));
-          refs[3] = gather(hn::Sub(absolute, b));
+          refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, a),
+                                                                               input_depth, bytes);
+          refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, b),
+                                                                               input_depth, bytes);
+          refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, a),
+                                                                               input_depth, bytes);
+          refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, b),
+                                                                               input_depth, bytes);
         }
         if constexpr (Mode >= 4) {
           const auto vertical = hn::Mul(v1, pitch);
-          refs[0] = gather(hn::Add(absolute, vertical));
-          refs[1] = gather(hn::Sub(absolute, vertical));
-          refs[2] = gather(hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))));
-          refs[3] = gather(hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))));
+          refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, vertical),
+                                                                               input_depth, bytes);
+          refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, vertical),
+                                                                               input_depth, bytes);
+          refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(
+              d, row, hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes);
+          refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(
+              d, row, hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes);
         }
       }
       auto sum = hn::Zero(d);
