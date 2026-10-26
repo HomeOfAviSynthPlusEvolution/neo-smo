@@ -249,11 +249,12 @@ void pack_float32_row(const OutputRow& row) {
   }
 }
 
-void pack_row_target(const OutputRow& row) {
-  if (!row.integer_input && !row.integer_output && !row.limited && row.depth == 32) {
-    pack_float32_row(row);
+void pack_row_target(const OutputRow& descriptor) {
+  if (!descriptor.integer_input && !descriptor.integer_output && !descriptor.limited && descriptor.depth == 32) {
+    pack_float32_row(descriptor);
     return;
   }
+  const OutputRow row = descriptor;
   const IoD d;
   const hn::Rebind<float, IoD> df;
   const hn::Rebind<std::int32_t, IoD> di32;
