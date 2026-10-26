@@ -1324,13 +1324,24 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1))));
   const auto r = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
 #endif
+#if HWY_TARGET == HWY_AVX3_SPR
+  alignas(64) static constexpr double powers[16] = {
+#else
   static constexpr double powers[11] = {
+#endif
       0x1.0000000000000p+0, 0x1.125fbee250664p+0, 0x1.2611186bae675p+0,
       0x1.3b2c47bff8329p+0, 0x1.51cb453b9536cp+0, 0x1.6a09e667f3bcdp+0,
       0x1.8406003b2ae5cp+0, 0x1.9fdf8bcce533dp+0, 0x1.bdb8cdadbe120p+0,
       0x1.ddb680117ab12p+0, 0x1.0000000000000p+1};
+#if HWY_TARGET == HWY_AVX3_SPR
+  const auto table_lo = hn::Load(d, powers), table_hi = hn::Load(d, powers + 8);
+  const auto lower = hn::TwoTablesLookupLanes(table_lo, table_hi, hn::IndicesFromVec(d, r));
+  const auto upper = hn::TwoTablesLookupLanes(table_lo, table_hi,
+      hn::IndicesFromVec(d, hn::Add(r, hn::Set(di, 1))));
+#else
   const auto lower = hn::GatherIndex(d, powers, r);
   const auto upper = hn::GatherIndex(d, powers, hn::Add(r, hn::Set(di, 1)));
+#endif
   const auto scale = hn::BitCast(d, hn::ShiftLeft<52>(hn::Add(q, hn::Set(di, 1023))));
   const auto mantissa = hn::BitCast(
       d, hn::Or(hn::And(bits, hn::Set(di, 0x000fffffffffffffLL)), hn::Set(di, 0x3ff0000000000000LL)));
