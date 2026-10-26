@@ -201,6 +201,15 @@ void pack_row_target(const OutputRow& row) {
   const auto integer_scale = hn::Set(d, std::ldexp(1.0, row.depth - 16));
   const double lo = row.limited ? 16 * tvscale : 0;
   const double hi = row.limited ? (row.chroma ? 240 : 235) * tvscale : scale - 1;
+  double bayer_thresholds[32]{};
+  if (row.integer_output && row.dither != 1 && hn::Lanes(d) <= 16) {
+    for (int column = 0; column < 16; ++column) {
+      int value = 0;
+      for (int bit = 0; bit < 4; ++bit)
+        value |= ((2 * ((column >> bit) & 1)) ^ (3 * ((row.y >> bit) & 1))) << (2 * (3 - bit));
+      bayer_thresholds[column] = bayer_thresholds[column + 16] = (value + 0.5) / 256;
+    }
+  }
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto n = std::min(hn::Lanes(d), row.count - x);
     auto value = n == hn::Lanes(d) ? hn::LoadU(d, row.input + x) : hn::LoadN(d, row.input + x, n);
@@ -227,6 +236,10 @@ void pack_row_target(const OutputRow& row) {
       if (row.dither == 1)
         value = hn::Round(value);
       else {
+        auto threshold = hn::Zero(d);
+        if (hn::Lanes(d) <= 16) {
+          threshold = hn::LoadU(d, bayer_thresholds + ((x + row.x) & 15));
+        } else {
         const auto positions = hn::Iota(du64, static_cast<std::uint64_t>(x + row.x));
         auto bayer = hn::Zero(du64);
         // b[ybit][xbit] = (2*xbit) XOR (3*ybit), most significant
@@ -236,8 +249,9 @@ void pack_row_target(const OutputRow& row) {
           const auto digit = hn::Xor(hn::ShiftLeft<1>(xb), hn::Set(du64, 3 * ((row.y >> bit) & 1)));
           bayer = hn::Or(bayer, hn::ShiftLeftSame(digit, 2 * (3 - bit)));
         }
-        const auto threshold =
+        threshold =
             hn::Mul(hn::Add(hn::PromoteTo(d, hn::TruncateTo(du32, bayer)), hn::Set(d, 0.5)), hn::Set(d, 1.0 / 256));
+        }
         value = hn::Floor(hn::Add(value, threshold));
       }
       value = hn::Min(hn::Set(d, hi), hn::Max(hn::Set(d, lo), value));
