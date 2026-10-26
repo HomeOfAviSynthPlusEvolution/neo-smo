@@ -337,6 +337,19 @@ void sobel_tests() {
           data[i] = (pattern == 4 ? i % width >= width / 2 : i / width >= height / 2) ? 65535 : 0;
       }
       simd::sobel_plane(data, gx.data() + 1, gy.data() + 1, width, height);
+      // Borrowed F32 input has padding but no extra allocation tail. Its Sobel
+      // must retain the widened arithmetic even for extreme finite values.
+      const auto stride = width + 3;
+      std::vector<float> native((height - 1) * stride + width, std::numeric_limits<float>::quiet_NaN());
+      std::vector<double> nx(count + 2, 12345.5), ny(count + 2, 12345.5);
+      for (std::size_t y = 0; y < height; ++y)
+        for (std::size_t x = 0; x < width; ++x)
+          native[y * stride + x] = static_cast<float>(data[y * width + x]);
+      simd::sobel_plane(native.data(), nx.data() + 1, ny.data() + 1, width, height, stride);
+      for (std::size_t i = 0; i < count; ++i)
+        check(nx[i + 1] == gx[i + 1] && ny[i + 1] == gy[i + 1], "native float Sobel exact");
+      check(nx.front() == 12345.5 && nx.back() == 12345.5 && ny.front() == 12345.5 && ny.back() == 12345.5,
+            "native float Sobel guards");
       if (pattern == 0 || pattern >= 4) {
         std::vector<std::int32_t> compact(data, data + count), cx(count + 2, -999999), cy(count + 2, -999999);
         simd::sobel_plane(compact.data(), cx.data() + 1, cy.data() + 1, width, height);
@@ -376,6 +389,28 @@ void sobel_tests() {
             "Sobel output guards");
     }
 }
+void normalized_gradient_tests() {
+  std::vector<double> gx{0.0, -0.0, 0.1, 0.75, 1e-30, 0x1p-149, 0.1, -0.5, 262141.0};
+  std::vector<double> gy{-0.0, -0.0, 0.3, -0.5, -1e30, 0x1p-148, 0.1, 0.75, 1.0};
+  const auto original_x = gx, original_y = gy;
+  check(simd::normalize_float_gradients(gx.data(), gy.data(), gx.size()), "gradient normalization eligible");
+  for (std::size_t i = 0; i < gx.size(); ++i) {
+    const double magnitude = std::max(std::abs(original_x[i]), std::abs(original_y[i]));
+    const double divisor = magnitude == 0 ? 1 : magnitude;
+    const double x = original_x[i] / divisor, y = original_y[i] / divisor;
+    check(std::memcmp(&gx[i], &x, sizeof(x)) == 0 && std::memcmp(&gy[i], &y, sizeof(y)) == 0,
+          "gradient normalization exact including signed zero");
+  }
+  gx = original_x;
+  gy = original_y;
+  gx.back() = 1;
+  gy.back() = 2;
+  const auto integral_x = gx, integral_y = gy;
+  check(!simd::normalize_float_gradients(gx.data(), gy.data(), gx.size()), "integral gradient preserves plane");
+  check(std::memcmp(gx.data(), integral_x.data(), gx.size() * sizeof(double)) == 0 &&
+            std::memcmp(gy.data(), integral_y.data(), gy.size() * sizeof(double)) == 0,
+        "ineligible gradient arrays remain unchanged");
+}
 } // namespace
 
 int main() {
@@ -397,6 +432,7 @@ int main() {
       unpack_tests();
       pack_tests();
       sobel_tests();
+      normalized_gradient_tests();
       std::cout << hwy::TargetName(target) << ": checks=" << checks << " converted=" << converted
                 << " gradients=" << gradients << " gradient_differences=" << gradient_differences
                 << " gradient_max_error=" << gradient_max_error << std::endl;

@@ -945,6 +945,119 @@ void byte_frame_tests() {
       ++variant;
     }
 }
+void native_float_frame_tests() {
+  // Aligned F32 sources exercise the borrowed-plane path. Existing integration
+  // fixtures deliberately use odd addresses, so they cover its fallback only.
+  for (int mode = 1; mode <= 7; ++mode)
+    for (bool blur : {false, true})
+      for (int variant = 0; variant < 7; ++variant) {
+        ref::Format f;
+        f.width = 130;
+        f.height = 38;
+        f.frames = 3;
+        f.depth = 32;
+        f.sample = ref::Sample::floating;
+        f.color = ref::Color::yuv;
+        f.sub_x = variant & 1;
+        f.sub_y = (variant >> 1) & 1;
+        ref::Options o;
+        o.sample_mode = mode;
+        o.blur_first = blur;
+        o.range = 255;
+        o.scale = true;
+        o.threshold.fill(variant == 3   ? 0
+                         : variant == 4 ? std::nextafter(2048.0, 0.0)
+                         : variant == 5 ? std::nextafter(2048.0, 4096.0)
+                                        : 2048.25);
+        o.threshold1.fill(1234.5);
+        o.threshold2.fill(3456.75);
+        const double angles[] = {0.15, 0, 0.25, 0.5, std::nextafter(0.25, 0.0), std::nextafter(0.25, 1.0), 0.15};
+        o.max_angle = angles[variant];
+        if (variant == 6) {
+          o.threshold.fill(65535);
+          o.threshold1.fill(65535);
+          o.threshold2.fill(65535);
+        }
+        o.grain_y = variant == 2 ? 0 : 3.25;
+        o.grain_c = variant == 2 ? 0 : 2.5;
+        o.dynamic_grain = true;
+        o.keep_tv_range = variant == 3;
+        std::array<std::vector<float>, 3> storage;
+        std::vector<ref::PlaneView> views;
+        for (std::size_t p = 0; p < 3; ++p) {
+          const auto w = f.width >> (p ? f.sub_x : 0), h = f.height >> (p ? f.sub_y : 0), stride = w + 3;
+          storage[p].assign((h - 1) * stride + w, std::numeric_limits<float>::quiet_NaN());
+          for (std::size_t y = 0; y < h; ++y)
+            for (std::size_t x = 0; x < w; ++x) {
+              const auto hash = std::uint32_t(x * 1664525u + y * 1013904223u);
+              float value = float(hash >> 8) / 16777216.0f * 0.08f - 0.04f + (p ? 0.0f : 0.5f);
+              if (variant >= 4)
+                value = float((x * 13 + y * 7) % 3) / 32.0f;
+              if (variant == 6)
+                value = float((x * 3 + y * 7) % 5) * 0.5f;
+              if (variant == 1 && (x + y) % 11 == 0)
+                value = (x % 2 ? -1.0f : 1.0f) * std::numeric_limits<float>::max();
+              if (variant == 2)
+                value = float(int((x * 3 + y) % 17) - 8) * std::numeric_limits<float>::denorm_min();
+              storage[p][y * stride + x] = value;
+            }
+          views.push_back({storage[p].data(), storage[p].size() * 4, stride * 4});
+        }
+        const simd::Filter filter(f, o);
+        const auto expected = ScalarFilter(f, o).process(2, views);
+        compare(expected, filter.process(2, views), o);
+        if (mode == 7) {
+          auto unit_boost = o;
+          unit_boost.angle_boost = 1;
+          compare(ScalarFilter(f, unit_boost).process(2, views), simd::Filter(f, unit_boost).process(2, views),
+                  unit_boost);
+        }
+        std::array<std::vector<std::uint8_t>, 3> outputs;
+        std::vector<ref::MutablePlaneView> targets;
+        for (std::size_t p = 0; p < 3; ++p) {
+          const auto w = expected.planes[p].width, h = expected.planes[p].height, stride = w * 4 + 7,
+                     extent = (h - 1) * stride + w * 4;
+          outputs[p].assign(extent + 2, 0xa5);
+          targets.push_back({outputs[p].data() + 1, extent, stride});
+        }
+        filter.process_into(2, views, targets);
+        for (std::size_t p = 0; p < 3; ++p) {
+          const auto& e = expected.planes[p];
+          auto actual = e;
+          for (std::size_t y = 0; y < e.height; ++y) {
+            std::memcpy(actual.data.data() + y * e.stride, outputs[p].data() + 1 + y * targets[p].stride, e.stride);
+            if (y + 1 < e.height)
+              for (std::size_t x = e.stride; x < targets[p].stride; ++x)
+                check(outputs[p][1 + y * targets[p].stride + x] == 0xa5, "native float output padding");
+          }
+          compare(ref::Frame{expected.format, {e}}, ref::Frame{expected.format, {actual}}, o);
+          check(outputs[p].front() == 0xa5 && outputs[p].back() == 0xa5, "native float output guards");
+        }
+        if (variant == 0 || variant == 4 || variant == 5) {
+          for (int output_depth : {8, 16})
+            for (int dither : {1, 2, 3}) {
+              auto converted = o;
+              converted.output_sample_type = ref::OutputSample::integer;
+              converted.output_depth = output_depth;
+              converted.dither_algo = dither;
+              compare(ScalarFilter(f, converted).process(2, views), simd::Filter(f, converted).process(2, views),
+                      converted);
+            }
+          auto half = o;
+          half.output_sample_type = ref::OutputSample::floating;
+          half.output_depth = 16;
+          compare(ScalarFilter(f, half).process(2, views), simd::Filter(f, half).process(2, views), half);
+        }
+        storage[2].back() = std::numeric_limits<float>::infinity();
+        bool rejected = false;
+        try {
+          filter.process(0, views);
+        } catch (const std::invalid_argument&) {
+          rejected = true;
+        }
+        check(rejected, "native float nonfinite tail rejection");
+      }
+}
 void frame_tests() {
   // Integer-output FS must be exercised explicitly; floating output bypasses
   // dithering even when dither_algo=3. These frames also cross the 32-row buffer.
@@ -1034,7 +1147,27 @@ int main() {
 #endif
       hwy::SetSupportedTargetsForTest(target);
       std::cout<<"Testing "<<hwy::TargetName(target)<<std::endl;
-      weight_tests(); normal_weight_tests(); sampling_tests(); gradient_sampling_tests(); integer_cross_tests(); integer_weight_table_tests(); integer_weight_boundary_tests(); horizontal_table_tests(); integer_pack_tests(); row_tests(); fs_tests(); identity_frame_tests(); external_output_tests(); byte_minimum_extent_tests(); native_integer_frame_tests(); native_pair_frame_tests(); cached_reference_frame_tests(); native_weighted_gather_tests(); byte_frame_tests(); frame_tests();
+      weight_tests();
+      normal_weight_tests();
+      sampling_tests();
+      gradient_sampling_tests();
+      integer_cross_tests();
+      integer_weight_table_tests();
+      integer_weight_boundary_tests();
+      horizontal_table_tests();
+      integer_pack_tests();
+      row_tests();
+      fs_tests();
+      identity_frame_tests();
+      external_output_tests();
+      byte_minimum_extent_tests();
+      native_integer_frame_tests();
+      native_pair_frame_tests();
+      cached_reference_frame_tests();
+      native_weighted_gather_tests();
+      byte_frame_tests();
+      native_float_frame_tests();
+      frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
     }

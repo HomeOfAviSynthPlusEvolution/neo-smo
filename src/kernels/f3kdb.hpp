@@ -49,6 +49,8 @@ struct CrossSamplingRow {
   const std::int32_t* compact_source = nullptr;
   const std::int32_t* compact_gx = nullptr;
   const std::int32_t* compact_gy = nullptr;
+  // Every nonzero gradient was nonintegral before plane-wide normalization.
+  bool normalized_float_gradients = false;
 };
 std::size_t collect_cross_row(const CrossSamplingRow&);
 struct SamplingResult {
@@ -104,6 +106,26 @@ struct IntegerRow {
   const std::int32_t* horizontal_offsets = nullptr;
 };
 std::size_t process_integer_row(const IntegerRow&, int mode, const double* thresholds, bool blur);
+// Borrowed, aligned F32 plane; Filter-owned distances are already bounded.
+// bounded certifies zeros or magnitudes in [2^-90, 2^90] for the full plane.
+// All plane indices and strides fit int32. Grain magnitude is at most 0.25.
+struct FloatRow {
+  const float* source;
+  const Distance* distances;
+  const float* grain;
+  double* output;
+  std::size_t width, stride, row_offset;
+  int sub_x, sub_y;
+  bool bounded = false;
+  std::uint8_t* packed_output = nullptr;
+  bool chroma = false, limited = false;
+  const double* gx = nullptr;
+  const double* gy = nullptr;
+  bool normalized_gradients = false;
+  double angle = 0.15, boost = 1.5;
+};
+std::size_t process_float_row(const FloatRow&, int mode, const double*, bool blur);
+bool validate_float_plane(const float*, std::size_t width, std::size_t height, std::size_t stride, bool& bounded);
 struct IntegerInputPlane {
   const std::uint8_t* input;
   std::int32_t* output;
@@ -142,7 +164,12 @@ struct InputPlane {
 };
 // False means an out-of-depth integer or a nonfinite float was encountered.
 bool unpack_plane(const InputPlane&);
+// Normalize in place only when no nonzero bounded-integral gradient exists.
+// False leaves both arrays unchanged, preserving exact integral directions.
+bool normalize_float_gradients(double* gx, double* gy, std::size_t count);
 void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height);
+void sobel_plane(const float* source, double* gx, double* gy, std::size_t width, std::size_t height,
+                 std::size_t stride);
 // Integer source samples are processing codes in [0, 65535].
 void sobel_plane(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy, std::size_t width,
                  std::size_t height);

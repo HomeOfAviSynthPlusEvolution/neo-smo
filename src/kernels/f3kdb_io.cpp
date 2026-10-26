@@ -19,6 +19,59 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
 namespace hn = hwy::HWY_NAMESPACE;
+bool normalize_float_gradients_target(double* gx, double* gy, std::size_t count) {
+  const hn::ScalableTag<double> d;
+  const auto zero = hn::Zero(d), one = hn::Set(d, 1.0), limit = hn::Set(d, 262140.0);
+  // A pair of bounded integral gradients uses exact unnormalized products.
+  // Preserve that path for the entire plane if any nonzero integral vector
+  // exists. Otherwise every pair takes the existing normalization branch.
+  for (std::size_t x = 0; x < count; x += hn::Lanes(d)) {
+    const auto n = std::min(hn::Lanes(d), count - x);
+    const auto vx = hn::LoadN(d, gx + x, n), vy = hn::LoadN(d, gy + x, n);
+    const auto magnitude = hn::Max(hn::Abs(vx), hn::Abs(vy));
+    auto integral = hn::And(hn::Gt(magnitude, zero), hn::Le(magnitude, limit));
+    integral = hn::And(integral, hn::And(hn::Eq(hn::Trunc(vx), vx), hn::Eq(hn::Trunc(vy), vy)));
+    if (!hn::AllFalse(d, integral))
+      return false;
+  }
+  for (std::size_t x = 0; x < count; x += hn::Lanes(d)) {
+    const auto n = std::min(hn::Lanes(d), count - x);
+    const auto vx = hn::LoadN(d, gx + x, n), vy = hn::LoadN(d, gy + x, n);
+    const auto ax = hn::Abs(vx), ay = hn::Abs(vy);
+    const auto magnitude = hn::Max(ax, ay);
+    const auto iszero = hn::Eq(magnitude, zero), x_major = hn::Ge(ax, ay);
+    const auto divisor = hn::IfThenElse(iszero, one, magnitude);
+    // The dominant component divided by its magnitude is exactly +/-1.
+    // Only the other component needs division; retain signed zero at (0, 0).
+    const auto minor = hn::Div(hn::IfThenElse(x_major, vy, vx), divisor);
+    const auto nx = hn::IfThenElse(x_major, hn::CopySign(one, vx), minor);
+    const auto ny = hn::IfThenElse(x_major, minor, hn::CopySign(one, vy));
+    hn::StoreN(hn::IfThenElse(iszero, vx, nx), d, gx + x, n);
+    hn::StoreN(hn::IfThenElse(iszero, vy, ny), d, gy + x, n);
+  }
+  return true;
+}
+bool validate_float_plane_target(const float* source, std::size_t width, std::size_t height, std::size_t stride,
+                                 bool& bounded) {
+  const hn::ScalableTag<float> d;
+  const auto limit = hn::Set(d, std::numeric_limits<float>::max());
+  // Leave headroom for sums/differences, and keep nonzero input quanta far
+  // above F32 underflow even after quarter-weight means and cancellation.
+  // Extreme finite values and subnormals retain the widened pipeline.
+  const auto zero = hn::Zero(d), lower = hn::Set(d, 0x1p-90f), upper = hn::Set(d, 0x1p90f);
+  auto finite = hn::Eq(zero, zero), ordinary = finite;
+  for (std::size_t y = 0; y < height; ++y) {
+    for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
+      const auto n = std::min(hn::Lanes(d), width - x);
+      const auto v =
+          hn::Abs(n == hn::Lanes(d) ? hn::LoadU(d, source + y * stride + x) : hn::LoadN(d, source + y * stride + x, n));
+      finite = hn::And(finite, hn::Le(v, limit));
+      ordinary = hn::And(ordinary, hn::Or(hn::Eq(v, zero), hn::And(hn::Ge(v, lower), hn::Le(v, upper))));
+    }
+  }
+  bounded = hn::AllTrue(d, ordinary);
+  return hn::AllTrue(d, finite);
+}
 bool validate_integer_plane_target(const IntegerInputPlane& plane) {
   if (plane.depth == 8 || plane.depth == 16)
     return true;
@@ -333,6 +386,60 @@ void pack_row_target(const OutputRow& descriptor) {
 
 #endif
 
+template <int Offset>
+HWY_INLINE hn::VFromD<hn::ScalableTag<double>> sobel_float_load(const float* row, std::size_t width, std::size_t x,
+                                                                std::size_t count) {
+  const hn::ScalableTag<double> d;
+  const hn::Rebind<float, decltype(d)> df;
+  if constexpr (Offset == 0)
+    return hn::PromoteTo(d, hn::LoadN(df, row + x, count));
+  if constexpr (Offset < 0) {
+    if (x >= 20)
+      return hn::PromoteTo(d, hn::LoadN(df, row + x - 20, count));
+  } else {
+    if (width - x >= 20 + count)
+      return hn::PromoteTo(d, hn::LoadN(df, row + x + 20, count));
+  }
+  const hn::Rebind<std::int32_t, decltype(d)> di;
+  const auto last = hn::Set(di, static_cast<std::int32_t>(width - 1));
+  const auto center = hn::Min(last, hn::Iota(di, static_cast<std::int32_t>(x)));
+  const auto distance = hn::Set(di, 20);
+  const auto index = Offset < 0 ? hn::Max(hn::Zero(di), hn::Sub(center, distance))
+                                : hn::Add(center, hn::Min(distance, hn::Sub(last, center)));
+  return hn::PromoteTo(d, hn::GatherIndex(df, row, index));
+}
+void sobel_float_target(const float* source, double* gx, double* gy, std::size_t width, std::size_t height,
+                        std::size_t stride) {
+  if (!width || !height)
+    return;
+  const hn::ScalableTag<double> d;
+  const auto twice = hn::Set(d, 2.0);
+  for (std::size_t y = 0; y < height; ++y) {
+    const auto* top = source + (y > 20 ? y - 20 : 0) * stride;
+    const auto* middle = source + y * stride;
+    const auto* bottom = source + (y + std::min<std::size_t>(20, height - 1 - y)) * stride;
+    for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
+      const auto n = std::min(hn::Lanes(d), width - x);
+      const auto tl = sobel_float_load<-20>(top, width, x, n), tr = sobel_float_load<20>(top, width, x, n);
+      const auto ml = sobel_float_load<-20>(middle, width, x, n), mr = sobel_float_load<20>(middle, width, x, n);
+      const auto bl = sobel_float_load<-20>(bottom, width, x, n), br = sobel_float_load<20>(bottom, width, x, n);
+      const auto tc = sobel_float_load<0>(top, width, x, n), bc = sobel_float_load<0>(bottom, width, x, n);
+      // Widen before arithmetic and retain the established accumulation order.
+      auto horizontal = hn::Add(tr, hn::Mul(twice, mr));
+      horizontal = hn::Add(horizontal, br);
+      horizontal = hn::Sub(horizontal, tl);
+      horizontal = hn::Sub(horizontal, hn::Mul(twice, ml));
+      horizontal = hn::Sub(horizontal, bl);
+      auto vertical = hn::Add(tl, hn::Mul(twice, tc));
+      vertical = hn::Add(vertical, tr);
+      vertical = hn::Sub(vertical, bl);
+      vertical = hn::Sub(vertical, hn::Mul(twice, bc));
+      vertical = hn::Sub(vertical, br);
+      hn::StoreN(horizontal, d, gx + y * width + x, n);
+      hn::StoreN(vertical, d, gy + y * width + x, n);
+    }
+  }
+}
 template <class T>
 void sobel_typed(const T* source, T* gx, T* gy, std::size_t width, std::size_t height) {
   if (!width || !height)
@@ -401,6 +508,14 @@ HWY_AFTER_NAMESPACE();
 
 #if HWY_ONCE
 namespace neo_smo::f3kdb {
+HWY_EXPORT(normalize_float_gradients_target);
+bool normalize_float_gradients(double* gx, double* gy, std::size_t n) {
+  return HWY_DYNAMIC_DISPATCH(normalize_float_gradients_target)(gx, gy, n);
+}
+HWY_EXPORT(validate_float_plane_target);
+bool validate_float_plane(const float* source, std::size_t w, std::size_t h, std::size_t stride, bool& bounded) {
+  return HWY_DYNAMIC_DISPATCH(validate_float_plane_target)(source, w, h, stride, bounded);
+}
 HWY_EXPORT(unpack_integer_plane_target);
 HWY_EXPORT(validate_integer_plane_target);
 bool validate_integer_plane(const IntegerInputPlane& plane) {
@@ -412,6 +527,7 @@ bool unpack_integer_plane(const IntegerInputPlane& plane) {
 HWY_EXPORT(unpack_plane_target);
 HWY_EXPORT(pack_row_target);
 HWY_EXPORT(sobel_plane_target);
+HWY_EXPORT(sobel_float_target);
 HWY_EXPORT(sobel_integer_target);
 bool unpack_plane(const InputPlane& plane) {
   return HWY_DYNAMIC_DISPATCH(unpack_plane_target)(plane);
@@ -424,6 +540,10 @@ void sobel_plane(const std::int32_t* source, std::int32_t* gx, std::int32_t* gy,
 }
 void sobel_plane(const double* source, double* gx, double* gy, std::size_t width, std::size_t height) {
   HWY_DYNAMIC_DISPATCH(sobel_plane_target)(source, gx, gy, width, height);
+}
+void sobel_plane(const float* source, double* gx, double* gy, std::size_t width, std::size_t height,
+                 std::size_t stride) {
+  HWY_DYNAMIC_DISPATCH(sobel_float_target)(source, gx, gy, width, height, stride);
 }
 } // namespace neo_smo::f3kdb
 #endif

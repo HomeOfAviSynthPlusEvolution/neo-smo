@@ -414,10 +414,15 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
     const auto& grain = plane ? filter.grain_c() : filter.grain_y();
     const auto& grain_integer = plane ? filter.grain_c_integer() : filter.grain_y_integer();
     std::vector<T> gx, gy;
+    bool normalized_float_gradients = false;
     if (o.sample_mode == 7) {
       gx.resize(n);
       gy.resize(n);
       sobel_plane(source.data(), gx.data(), gy.data(), w, h);
+      if constexpr (std::is_same_v<T, double>) {
+        if (!integer)
+          normalized_float_gradients = normalize_float_gradients(gx.data(), gy.data(), n);
+      }
     }
     std::array<std::vector<double>, 4> samples, grad_x, grad_y;
     const int references = o.sample_mode == 1 || o.sample_mode == 3 ? 2 : 4;
@@ -544,6 +549,7 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
           cross.compact_gx = gx.data();
           cross.compact_gy = gy.data();
         }
+        cross.normalized_float_gradients = normalized_float_gradients;
         const auto prefix = process_cross_row(cross, batch, filter.parameters().thresholds[plane].data(), integer,
                                               o.max_angle, o.angle_boost);
         collected = prefix.collected;
@@ -650,9 +656,162 @@ Frame process_highway_typed(const Filter& filter, std::size_t frame, const std::
   }
   return result;
 }
+// Direct F32 sampling retains the existing arithmetic and output conversion.
+Frame process_float_frame(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
+                          const std::vector<MutablePlaneView>* external, const std::array<bool, 3>& bounded_planes) {
+  const auto& params = filter.parameters();
+  const auto& f = params.input;
+  const auto& out = params.output;
+  const auto& o = params.options;
+  // Unit boost makes the directional and ordinary weighted modes identical.
+  const int mode = o.sample_mode == 7 && o.angle_boost == 1 ? 6 : o.sample_mode;
+  Frame result{out, {}};
+  for (std::size_t p = 0; p < input.size(); ++p) {
+    const int sx = p ? f.sub_x : 0, sy = p ? f.sub_y : 0;
+    const auto w = f.width >> sx, h = f.height >> sy;
+    const auto& view = input[p];
+    const auto* source = static_cast<const float*>(view.data);
+    const auto stride = view.stride / sizeof(float);
+    const bool bounded = bounded_planes[p];
+    std::vector<double> gx, gy;
+    bool normalized_gradients = false;
+    if (mode == 7) {
+      gx.resize(mul(w, h));
+      gy.resize(gx.size());
+      sobel_plane(source, gx.data(), gy.data(), w, h, stride);
+      normalized_gradients = normalize_float_gradients(gx.data(), gy.data(), gx.size());
+    }
+    Plane output{w, h, mul(w, bytes_per_sample(out)), {}};
+    std::uint8_t* dest;
+    if (external) {
+      output.stride = (*external)[p].stride;
+      dest = static_cast<std::uint8_t*>((*external)[p].data);
+    } else {
+      output.data.resize(mul(output.stride, h));
+      dest = output.data.data();
+    }
+    const bool direct = out.sample == Sample::floating && out.depth == 32;
+    const bool use_fs = out.sample == Sample::integer && o.dither_algo == 3;
+    const auto stripe_height = use_fs ? std::min<std::size_t>(32, h) : 1;
+    std::vector<double> processed(mul(w, stripe_height)), center(w);
+    std::vector<float> boundary(use_fs ? w : 0, 0);
+    std::array<std::vector<double>, 4> refs;
+    for (auto& r : refs)
+      r.resize(w);
+    std::array<std::vector<double>, 4> grad_x, grad_y;
+    if (mode == 7)
+      for (int j = 0; j < 4; ++j) {
+        grad_x[j].resize(w);
+        grad_y[j].resize(w);
+      }
+    const auto& grain = p ? filter.grain_c() : filter.grain_y();
+    const auto pitch = mul(add(w, 15) / 16, 16);
+    for (std::size_t y = 0; y < h; ++y) {
+      const auto stripe_row = y % stripe_height;
+      auto* processed_row = processed.data() + stripe_row * w;
+      const auto* distances = filter.distances().data() + (y << sy) * f.width;
+      const auto* noise = grain.data() + filter.offsets()[frame] + y * pitch;
+      const auto count =
+          process_float_row({source, distances, noise, processed_row, w, stride, y * stride, sx, sy, bounded,
+                             direct ? dest + y * output.stride : nullptr, p != 0, o.keep_tv_range, gx.data(), gy.data(),
+                             normalized_gradients, o.max_angle, o.angle_boost},
+                            mode, params.thresholds[p].data(), o.blur_first);
+      for (std::size_t x = count; x < w; ++x) {
+        const auto dist = distances[x << sx];
+        const auto v = std::ptrdiff_t(dist.first >> sy) * std::ptrdiff_t(stride), a = std::ptrdiff_t(dist.first >> sx);
+        std::ptrdiff_t offsets[4] = {v, -v, a, -a};
+        if (mode == 1 || mode == 3) {
+          offsets[0] = mode == 1 ? v : a;
+          offsets[1] = -offsets[0];
+          offsets[2] = offsets[3] = 0;
+        } else if (mode == 2) {
+          offsets[0] = std::ptrdiff_t(dist.second >> sy) * std::ptrdiff_t(stride) + a;
+          offsets[1] = std::ptrdiff_t(dist.second >> sx) - v;
+          offsets[2] = -offsets[0];
+          offsets[3] = -offsets[1];
+        }
+        const auto* at = source + y * stride + x;
+        auto load = [&](std::ptrdiff_t offset) {
+          float value;
+          std::memcpy(&value, at + offset, sizeof(value));
+          return double(value);
+        };
+        center[x] = load(0);
+        for (int j = 0; j < 4; ++j)
+          refs[j][x] = load(offsets[j]);
+        if (mode == 7) {
+          const auto vertical = std::ptrdiff_t(dist.first >> sy) * std::ptrdiff_t(w);
+          const std::ptrdiff_t grad_offsets[4] = {vertical, -vertical, a, -a};
+          for (int j = 0; j < 4; ++j) {
+            const auto index = std::ptrdiff_t(y * w + x) + grad_offsets[j];
+            grad_x[j][x] = gx[index];
+            grad_y[j][x] = gy[index];
+          }
+        }
+      }
+      if (count < w) {
+        Row batch{};
+        batch.center = center.data() + count;
+        batch.grain = noise + count;
+        batch.output = processed_row + count;
+        batch.count = w - count;
+        for (int j = 0; j < 4; ++j)
+          batch.refs[j] = refs[j].data() + count;
+        if (mode == 7) {
+          batch.gx[0] = gx.data() + y * w + count;
+          batch.gy[0] = gy.data() + y * w + count;
+          for (int j = 0; j < 4; ++j) {
+            batch.gx[j + 1] = grad_x[j].data() + count;
+            batch.gy[j + 1] = grad_y[j].data() + count;
+          }
+        }
+        process_row(batch, mode, params.thresholds[p].data(), false, o.blur_first, o.max_angle, o.angle_boost);
+      }
+      if (use_fs) {
+        if (stripe_row + 1 == stripe_height || y + 1 == h)
+          diffuse_stripe({processed.data(), dest + (y - stripe_row) * output.stride, boundary.data(), w, stripe_row + 1,
+                          output.stride, out.depth, false, p != 0, o.keep_tv_range});
+      } else {
+        const auto start = direct ? count : 0;
+        if (start < w)
+          pack_row({processed_row + start, dest + y * output.stride + start * bytes_per_sample(out), w - start, y,
+                    out.depth, o.dither_algo, false, out.sample == Sample::integer, p != 0, o.keep_tv_range, start});
+      }
+    }
+    if (!external)
+      result.planes.push_back(std::move(output));
+  }
+  return result;
+}
 Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
                            const std::vector<MutablePlaneView>* external) {
   const auto& p = filter.parameters();
+  if (p.input.sample == Sample::floating && p.input.depth == 32 && p.options.sample_mode <= 7 && p.input.sub_x <= 1 &&
+      p.input.sub_y <= 1 && frame < p.input.frames && input.size() == (p.input.color == Color::gray ? 1u : 3u)) {
+    bool eligible = true;
+    for (std::size_t plane = 0; plane < input.size(); ++plane) {
+      const auto& v = input[plane];
+      const auto w = p.input.width >> (plane ? p.input.sub_x : 0), h = p.input.height >> (plane ? p.input.sub_y : 0);
+      const auto row = mul(w, 4), extent = add(mul(h - 1, v.stride), row);
+      eligible = eligible && v.data && reinterpret_cast<std::uintptr_t>(v.data) % alignof(float) == 0 &&
+                 v.stride % 4 == 0 && v.stride >= row && v.bytes >= extent &&
+                 v.stride / 4 <= std::size_t(std::numeric_limits<std::int32_t>::max()) &&
+                 extent / 4 <= std::size_t(std::numeric_limits<std::int32_t>::max());
+    }
+    if (eligible) {
+      std::array<bool, 3> bounded{};
+      bool all_bounded = true;
+      for (std::size_t plane = 0; plane < input.size(); ++plane) {
+        const auto w = p.input.width >> (plane ? p.input.sub_x : 0), h = p.input.height >> (plane ? p.input.sub_y : 0);
+        if (!validate_float_plane(static_cast<const float*>(input[plane].data), w, h, input[plane].stride / 4,
+                                  bounded[plane]))
+          invalid("nonfinite input pixel");
+        all_bounded = all_bounded && bounded[plane];
+      }
+      if (all_bounded)
+        return process_float_frame(filter, frame, input, external, bounded);
+    }
+  }
   // Integer Sobel components are bounded by 4*65535, so their full planes
   // need only signed 32-bit storage. Direction products still use double.
   if (p.input.sample == Sample::integer && p.options.sample_mode == 7 &&

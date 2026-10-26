@@ -19,6 +19,9 @@ HWY_BEFORE_NAMESPACE();
 namespace neo_smo::f3kdb {
 namespace HWY_NAMESPACE {
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
+std::size_t float_target(const FloatRow&, int, const double*, bool) {
+  return 0;
+}
 std::size_t collect_cross_target(const CrossSamplingRow&) {
   return 0;
 }
@@ -400,7 +403,8 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
                  cgy = cross_center<Compact>(d, cross.gy, cross.compact_gy, cross.row_offset, x);
       DirectionCenter prepared{};
       if constexpr (!Integer)
-        prepared = prepare_direction(d, cgx, cgy);
+        if (!cross.normalized_float_gradients)
+          prepared = prepare_direction(d, cgx, cgy);
       for (int j = 0; j < 4; ++j) {
         const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
                    hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
@@ -408,11 +412,11 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
         if constexpr (Compact)
           direction = aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine);
         else if constexpr (!Integer)
-          direction = cross.bounded_integer_gradients
+          direction = (cross.bounded_integer_gradients || cross.normalized_float_gradients)
                           ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
                           : aligned_prepared(d, prepared, hx, hy, angle, cosine, sine);
         else
-          direction = cross.bounded_integer_gradients
+          direction = (cross.bounded_integer_gradients || cross.normalized_float_gradients)
                           ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
                           : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
         directions = hn::And(directions, direction);
@@ -1750,6 +1754,255 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
     store_row(d, result, row.output + x, count);
   }
 }
+// Each mean retains the established double accumulation order. Other F32
+// operations are safe without widening after the plane-wide exponent check.
+using FD = hn::ScalableTag<float>;
+using FV = hn::VFromD<FD>;
+template <int N>
+HWY_INLINE FV float_mean(FD df, const FV* refs) {
+  const D d;
+  const hn::Half<FD> half;
+  auto lo = hn::Zero(d), hi = hn::Zero(d);
+  const auto scale = hn::Set(d, 1.0 / N);
+  for (int j = 0; j < N; ++j) {
+    lo = hn::Add(lo, hn::Mul(hn::PromoteTo(d, hn::LowerHalf(half, refs[j])), scale));
+    hi = hn::Add(hi, hn::Mul(hn::PromoteTo(d, hn::UpperHalf(half, refs[j])), scale));
+  }
+  return hn::Combine(df, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
+}
+template <int N, bool Blur>
+HWY_INLINE FV float_pass(FD df, FV center, const FV* refs, FV threshold) {
+  const auto average = float_mean<N>(df, refs);
+  auto accepted = hn::Lt(hn::Abs(hn::Sub(average, center)), threshold);
+  if constexpr (!Blur) {
+    accepted = hn::Eq(center, center);
+    for (int j = 0; j < N; ++j)
+      accepted = hn::And(accepted, hn::Lt(hn::Abs(hn::Sub(refs[j], center)), threshold));
+  }
+  return hn::IfThenElse(accepted, average, center);
+}
+HWY_INLINE V float_weighted_half(D d, V center, V delta, V maximum, V qv, V qh, const V* t, const V* inverse) {
+  const V c[4] = {response_with_inverse(d, hn::Abs(delta), t[0], inverse[0]),
+                  response_with_inverse(d, maximum, t[1], inverse[1]), response_with_inverse(d, qv, t[2], inverse[2]),
+                  response_with_inverse(d, qh, t[2], inverse[2])};
+  const auto f = weight(d, c);
+  return hn::IfThenElse(hn::Eq(f, hn::Zero(d)), center, fp(d, hn::Add(center, fp(d, hn::Mul(delta, f)))));
+}
+template <class Index>
+HWY_INLINE M float_directions(D d, const FloatRow& row, std::size_t center, const Index* offsets, V cosine, V sine) {
+  const hn::Rebind<std::int64_t, D> di;
+  const auto gx = hn::LoadU(d, row.gx + center), gy = hn::LoadU(d, row.gy + center);
+  auto directions = hn::Eq(gx, gx);
+  DirectionCenter prepared{};
+  if (!row.normalized_gradients)
+    prepared = prepare_direction(d, gx, gy);
+  for (int j = 0; j < 4; ++j) {
+    const auto hx = hn::GatherIndex(d, row.gx, hn::PromoteTo(di, offsets[j])),
+               hy = hn::GatherIndex(d, row.gy, hn::PromoteTo(di, offsets[j]));
+    const auto accepted = row.normalized_gradients ? aligned_integer(d, gx, gy, hx, hy, row.angle, cosine, sine)
+                                                   : aligned_prepared(d, prepared, hx, hy, row.angle, cosine, sine);
+    directions = hn::And(directions, accepted);
+  }
+  return directions;
+}
+HWY_INLINE V float_lower(FV value) {
+  const D d;
+  const hn::Half<FD> half;
+  return hn::PromoteTo(d, hn::LowerHalf(half, value));
+}
+HWY_INLINE V float_upper(FV value) {
+  const D d;
+  const hn::Half<FD> half;
+  return hn::PromoteTo(d, hn::UpperHalf(half, value));
+}
+template <int Mode>
+HWY_INLINE FV float_blend(const FloatRow& row, std::size_t x, FV center, FV delta, FV maximum, FV qv, FV qh, const V* t,
+                          const V* inverse, const V* boosted_t, const V* boosted_inverse,
+                          hn::VFromD<hn::Rebind<std::uint8_t, FD>> first, hn::VFromD<hn::Rebind<std::int32_t, FD>> h,
+                          V cosine, V sine) {
+  const D d;
+  const FD df;
+  const hn::Half<FD> half;
+  const hn::Rebind<std::int32_t, FD> di;
+  const auto lane = hn::Iota(di, 0);
+  V lower_t[3], upper_t[3], lower_inverse[3], upper_inverse[3];
+  for (int j = 0; j < 3; ++j) {
+    lower_t[j] = upper_t[j] = t[j];
+    lower_inverse[j] = upper_inverse[j] = inverse[j];
+  }
+  if constexpr (Mode == 7) {
+    const auto grad_at =
+        hn::Add(lane, hn::Set(di, static_cast<std::int32_t>((row.row_offset / row.stride) * row.width + x)));
+    const auto grad_v = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_y),
+                                hn::Set(di, static_cast<std::int32_t>(row.width)));
+    const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(grad_at, grad_v), hn::Sub(grad_at, grad_v),
+                                                 hn::Add(grad_at, h), hn::Sub(grad_at, h)};
+    const hn::Half<decltype(di)> index_half;
+    hn::VFromD<decltype(index_half)> low_offsets[4], high_offsets[4];
+    for (int j = 0; j < 4; ++j) {
+      low_offsets[j] = hn::LowerHalf(index_half, offsets[j]);
+      high_offsets[j] = hn::UpperHalf(index_half, offsets[j]);
+    }
+    const auto center_offset = (row.row_offset / row.stride) * row.width + x;
+    const auto low_directions = float_directions(d, row, center_offset, low_offsets, cosine, sine);
+    const auto high_directions = float_directions(d, row, center_offset + hn::Lanes(d), high_offsets, cosine, sine);
+    for (int j = 0; j < 3; ++j) {
+      lower_t[j] = hn::IfThenElse(low_directions, boosted_t[j], t[j]);
+      upper_t[j] = hn::IfThenElse(high_directions, boosted_t[j], t[j]);
+      lower_inverse[j] = hn::IfThenElse(low_directions, boosted_inverse[j], inverse[j]);
+      upper_inverse[j] = hn::IfThenElse(high_directions, boosted_inverse[j], inverse[j]);
+    }
+  }
+  const auto lo = float_weighted_half(d, float_lower(center), float_lower(delta), float_lower(maximum), float_lower(qv),
+                                      float_lower(qh), lower_t, lower_inverse);
+  const auto hi = float_weighted_half(d, float_upper(center), float_upper(delta), float_upper(maximum), float_upper(qv),
+                                      float_upper(qh), upper_t, upper_inverse);
+  return hn::Combine(df, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
+}
+template <int Mode, bool Blur>
+std::size_t bounded_float_row(const FloatRow& row, const double* thresholds) {
+  const FD df;
+  const D d;
+  const hn::Half<FD> half;
+  const hn::Rebind<std::int32_t, FD> di;
+  const hn::Rebind<std::uint8_t, FD> db;
+  const auto lanes = hn::Lanes(df), full = row.width / lanes * lanes;
+  const auto lane = hn::Iota(di, 0), stride = hn::Set(di, static_cast<std::int32_t>(row.stride));
+  const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
+  FV threshold[3];
+  V t[3], inverse[3], boosted_t[3], boosted_inverse[3];
+  constexpr double pi = 3.1415926535897932384626433832795;
+  const bool trig = Mode == 7 && row.angle != 0 && row.angle != 0.25 && row.angle < 0.5;
+  const auto cosine = hn::Set(d, trig ? std::cos(pi * row.angle) : 0),
+             sine = hn::Set(d, trig ? std::sin(pi * row.angle) : 0);
+  for (int j = 0; j < 3; ++j) {
+    // F32 delta < double threshold is exactly delta < ceil_F32(threshold).
+    float ceiling = static_cast<float>(thresholds[j]);
+    if (double(ceiling) < thresholds[j])
+      ceiling = std::nextafter(ceiling, std::numeric_limits<float>::infinity());
+    threshold[j] = hn::Set(df, ceiling);
+    t[j] = hn::Set(d, thresholds[j]);
+    inverse[j] = hn::Set(d, thresholds[j] == 0 ? 1 : 1 / thresholds[j]);
+    if constexpr (Mode == 7) {
+      const double t = thresholds[j] * row.boost;
+      boosted_t[j] = hn::Set(d, t);
+      boosted_inverse[j] = hn::Set(d, t == 0 ? 1 : 1 / t);
+    }
+  }
+  double reject_threshold = thresholds[1];
+  if constexpr (Mode == 7)
+    reject_threshold = std::max(reject_threshold, reject_threshold * row.boost);
+  float reject_ceiling = std::numeric_limits<float>::infinity();
+  if (reject_threshold <= double(std::numeric_limits<float>::max())) {
+    reject_ceiling = static_cast<float>(reject_threshold);
+    if (double(reject_ceiling) < reject_threshold)
+      reject_ceiling = std::nextafter(reject_ceiling, std::numeric_limits<float>::infinity());
+  }
+  const auto reject_limit = hn::Set(df, reject_ceiling);
+  for (std::size_t x = 0; x < full; x += lanes) {
+    hn::VFromD<decltype(db)> first, second;
+    const auto* dp = distances + (x << row.sub_x) * 2;
+    if (row.sub_x == 0)
+      hn::LoadInterleaved2(db, dp, first, second);
+    else {
+      hn::VFromD<decltype(db)> a, b;
+      hn::LoadInterleaved4(db, dp, first, second, a, b);
+    }
+    const auto v = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_y), stride);
+    const auto h = hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_x);
+    const auto at = hn::Add(lane, hn::Set(di, static_cast<std::int32_t>(row.row_offset + x)));
+    FV refs[4];
+    if constexpr (Mode == 1 || Mode == 3) {
+      const auto a = Mode == 1 ? v : h;
+      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, a));
+      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a)));
+    } else if constexpr (Mode == 2) {
+      const auto v2 = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, second), row.sub_y), stride);
+      const auto h2 = hn::ShiftRightSame(hn::PromoteTo(di, second), row.sub_x);
+      const auto a = hn::Add(v2, h), b = hn::Sub(h2, v);
+      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, a));
+      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, b));
+      refs[2] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a)));
+      refs[3] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(b)));
+    } else {
+      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, v));
+      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(v)));
+      refs[2] = hn::GatherIndex(df, row.source, hn::Add(at, h));
+      refs[3] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(h)));
+    }
+    const auto center = hn::LoadU(df, row.source + row.row_offset + x);
+    FV result;
+    if constexpr (Mode <= 3)
+      result = float_pass<Mode == 2 ? 4 : 2, Blur>(df, center, refs, threshold[0]);
+    else if constexpr (Mode == 4) {
+      const FV pair[2] = {float_pass<2, Blur>(df, center, refs, threshold[0]),
+                          float_pass<2, Blur>(df, center, refs + 2, threshold[0])};
+      result = float_mean<2>(df, pair);
+    } else {
+      const auto average = float_mean<4>(df, refs), delta = hn::Sub(average, center);
+      auto maximum = hn::Zero(df);
+      for (int j = 0; j < 4; ++j)
+        maximum = hn::Max(maximum, hn::Abs(hn::Sub(refs[j], center)));
+      const auto twice = hn::Add(center, center);
+      const auto qv = hn::Abs(hn::Sub(hn::Add(refs[0], refs[1]), twice)),
+                 qh = hn::Abs(hn::Sub(hn::Add(refs[2], refs[3]), twice));
+      if constexpr (Mode == 5) {
+        const auto accepted = hn::And(hn::And(hn::Lt(hn::Abs(delta), threshold[0]), hn::Lt(maximum, threshold[1])),
+                                      hn::And(hn::Lt(qv, threshold[2]), hn::Lt(qh, threshold[2])));
+        result = hn::IfThenElse(accepted, average, center);
+      } else {
+
+        if constexpr (Mode == 7) {
+          // Both possible maximum-difference responses are zero. Preserve the
+          // original block rejection before any gradient gather or division.
+          const auto rejected = hn::And(hn::Gt(maximum, hn::Zero(df)), hn::Ge(maximum, reject_limit));
+          result = hn::AllTrue(df, rejected) ? center
+                                             : float_blend<Mode>(row, x, center, delta, maximum, qv, qh, t, inverse,
+                                                                 boosted_t, boosted_inverse, first, h, cosine, sine);
+        } else
+          result = float_blend<Mode>(row, x, center, delta, maximum, qv, qh, t, inverse, boosted_t, boosted_inverse,
+                                     first, h, cosine, sine);
+      }
+    }
+    result = hn::Add(result, hn::LoadU(df, row.grain + x));
+    if (row.packed_output) {
+      if (row.limited) {
+        const float offset = row.chroma ? 0.5f : 0.0f;
+        result = hn::Min(hn::Set(df, (row.chroma ? 240.0f : 235.0f) / 256 - offset),
+                         hn::Max(hn::Set(df, 16.0f / 256 - offset), result));
+      }
+      const hn::Repartition<std::uint8_t, FD> bytes;
+      hn::StoreU(hn::BitCast(bytes, result), bytes, row.packed_output + 4 * x);
+    } else {
+      hn::StoreU(hn::PromoteTo(d, hn::LowerHalf(half, result)), d, row.output + x);
+      hn::StoreU(hn::PromoteTo(d, hn::UpperHalf(half, result)), d, row.output + x + hn::Lanes(d));
+    }
+  }
+  return full;
+}
+std::size_t float_target(const FloatRow& row, int mode, const double* thresholds, bool blur) {
+  if (row.bounded) {
+    switch (mode) {
+      case 1:
+        return blur ? bounded_float_row<1, true>(row, thresholds) : bounded_float_row<1, false>(row, thresholds);
+      case 2:
+        return blur ? bounded_float_row<2, true>(row, thresholds) : bounded_float_row<2, false>(row, thresholds);
+      case 3:
+        return blur ? bounded_float_row<3, true>(row, thresholds) : bounded_float_row<3, false>(row, thresholds);
+      case 4:
+        return blur ? bounded_float_row<4, true>(row, thresholds) : bounded_float_row<4, false>(row, thresholds);
+      case 5:
+        return blur ? bounded_float_row<5, true>(row, thresholds) : bounded_float_row<5, false>(row, thresholds);
+      case 6:
+        return blur ? bounded_float_row<6, true>(row, thresholds) : bounded_float_row<6, false>(row, thresholds);
+      case 7:
+        return bounded_float_row<7, true>(row, thresholds);
+      default:
+        return 0;
+    }
+  }
+  return 0;
+}
 void weights_target(const double* c[4], double* output, std::size_t count) {
   const D d;
   for (std::size_t x = 0; x < count; x += hn::Lanes(d)) {
@@ -1807,6 +2060,10 @@ std::size_t collect_cross_row(const CrossSamplingRow& row) {
 HWY_EXPORT(byte_target);
 std::size_t process_byte_row(const ByteRow& row, int mode, const double* thresholds, bool blur) {
   return HWY_DYNAMIC_DISPATCH(byte_target)(row, mode, thresholds, blur);
+}
+HWY_EXPORT(float_target);
+std::size_t process_float_row(const FloatRow& row, int mode, const double* thresholds, bool blur) {
+  return HWY_DYNAMIC_DISPATCH(float_target)(row, mode, thresholds, blur);
 }
 HWY_EXPORT(integer_target);
 std::size_t process_integer_row(const IntegerRow& row, int mode, const double* thresholds, bool blur) {
