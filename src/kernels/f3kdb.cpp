@@ -1329,6 +1329,16 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   const auto z = hn::Sub(t, hn::Set(d, 0.5));
   // Endpoint-factored Chebyshev approximation on t in [0,1]:
   // (1+t)^0.1 = 1 + t * (2^0.1-1 + (1-t) * P(t-0.5)).
+#if HWY_TARGET == HWY_AVX3_SPR
+  // Degree-five endpoint-factored fit; max measured error < 7e-8.
+  // A coefficient interval bound keeps the derivative positive.
+  constexpr double coefficients[6] = {
+      0x1.67fe7bd9c4501p-6, -0x1.33cb006754197p-7, 0x1.2ae1af7536712p-8,
+      -0x1.37cbab919fdb6p-9, 0x1.85f25f1bcbafcp-10, -0x1.c3e926c09fdb9p-11};
+  auto polynomial = hn::Set(d, coefficients[5]);
+  for (int j = 4; j >= 0; --j)
+    polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
+#else
   // Max measured error < 2.2e-10; a coefficient interval bound gives a
   // derivative > 0.039. Endpoint factoring keeps exponent joins continuous.
   constexpr double coefficients[9] = {
@@ -1338,6 +1348,7 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   auto polynomial = hn::Set(d, coefficients[8]);
   for (int j = 7; j >= 0; --j)
     polynomial = hn::MulAdd(polynomial, z, hn::Set(d, coefficients[j]));
+#endif
   const auto correction = hn::Mul(hn::Sub(hn::Set(d, 1.0), t), polynomial);
   const auto root = hn::MulAdd(t, hn::MulAdd(lower, correction, hn::Sub(upper, lower)), lower);
   return hn::Mul(scale, hn::Min(upper, hn::Max(lower, root)));
