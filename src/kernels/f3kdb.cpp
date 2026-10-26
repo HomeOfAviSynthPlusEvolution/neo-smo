@@ -206,8 +206,8 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
   if (hn::Lanes(D{}) < 4 || sampling.sub_x > 1 || sampling.width == 0 || (hn::Lanes(D{}) == 4 && mode == 2))
     return {collect_simple_target(sampling, mode), 0};
   if (!integer) {
-    constexpr bool fused_float_pair = HWY_TARGET == HWY_AVX3_SPR;
-    if (!fused_float_pair)
+    constexpr bool fused_float_sampling = HWY_TARGET == HWY_AVX3_SPR;
+    if (!fused_float_sampling)
       return {collect_simple_target(sampling, mode), 0};
     std::size_t n = 0;
     if (mode == 1)
@@ -216,6 +216,9 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
     else if (mode == 3)
       n = blur ? collect_simple<3, true, true, false>(sampling, &row, threshold)
                : collect_simple<3, true, false, false>(sampling, &row, threshold);
+    else if (mode == 2)
+      n = blur ? collect_simple<2, true, true, false>(sampling, &row, threshold)
+               : collect_simple<2, true, false, false>(sampling, &row, threshold);
     else
       return {collect_simple_target(sampling, mode), 0};
     return {n, n};
