@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <type_traits>
 #include <vector>
 
 #ifndef HWY_COMPILE_ALL_ATTAINABLE
@@ -30,6 +31,8 @@ namespace hn = hwy::HWY_NAMESPACE;
 // dependencies then belong to t-1, t-2 and t-3 respectively. Unlike the old
 // unsigned-remainder algorithm, N07 uses signed F32 residuals and ties-to-even.
 void diffuse_stripe_target(const FsStripe& stripe) {
+  if (!stripe.width || !stripe.height)
+    return;
   const hn::ScalableTag<double> d;
   const hn::Rebind<float, decltype(d)> df;
   const std::size_t lanes = hn::Lanes(d);
@@ -79,35 +82,47 @@ void diffuse_stripe_target(const FsStripe& stripe) {
     }
     auto prev1 = zero, prev2 = zero, prev3 = zero;
     const auto end = stripe.width + 2 * (rows - 1);
-    for (std::size_t t = 0; t < end; ++t) {
+    const hn::Rebind<std::int64_t, decltype(d)> di;
+    const auto offsets = hn::Mul(hn::Iota(di, 0), hn::Set(di, std::int64_t(stripe.width) - 2));
+    const auto step = [&](std::size_t t, auto interior_tag) {
+      constexpr bool interior = decltype(interior_tag)::value;
       auto left_up = hn::Slide1Up(d, prev3);
       auto up = hn::Slide1Up(d, prev2);
       auto right_up = hn::Slide1Up(d, prev1);
       // Keep bridge contributions separate: pre-summing them would change the
       // mandated order left, left-up, up, right-up at every stripe boundary.
-      left_up = hn::InsertLane(left_up, 0, t > 0 && t <= stripe.width ? stripe.boundary[t - 1] : 0.0);
-      up = hn::InsertLane(up, 0, t < stripe.width ? stripe.boundary[t] : 0.0);
-      right_up = hn::InsertLane(right_up, 0, t + 1 < stripe.width ? stripe.boundary[t + 1] : 0.0);
+      left_up = hn::InsertLane(left_up, 0, interior || (t > 0 && t <= stripe.width) ? stripe.boundary[t - 1] : 0.0);
+      up = hn::InsertLane(up, 0, interior || t < stripe.width ? stripe.boundary[t] : 0.0);
+      right_up = hn::InsertLane(right_up, 0, interior || t + 1 < stripe.width ? stripe.boundary[t + 1] : 0.0);
       auto error = f32(hn::Mul(prev1, w_left));
       error = f32(hn::Add(error, f32(hn::Mul(left_up, w_left_up))));
       error = f32(hn::Add(error, f32(hn::Mul(up, w_up))));
       error = f32(hn::Add(error, f32(hn::Mul(right_up, w_right_up))));
 
-      for (std::size_t k = 0; k < lanes; ++k) {
-        const bool active = k < rows && t >= 2 * k && t - 2 * k < stripe.width;
-        source[k] = active ? inputs[k][t - 2 * k] : 0;
-        valid[k] = active ? 1 : 0;
+      auto samples = zero;
+      auto active = hn::Eq(zero, zero);
+      if constexpr (interior) {
+        samples = hn::GatherIndex(d, inputs[0] + t, offsets);
+      } else {
+        for (std::size_t k = 0; k < lanes; ++k) {
+          const bool enabled = k < rows && t >= 2 * k && t - 2 * k < stripe.width;
+          source[k] = enabled ? inputs[k][t - 2 * k] : 0;
+          valid[k] = enabled ? 1 : 0;
+        }
+        active = hn::Gt(hn::LoadU(d, valid), zero);
+        samples = hn::LoadU(d, source);
       }
-      const auto active = hn::Gt(hn::LoadU(d, valid), zero);
-      const auto value = hn::Mul(hn::Add(hn::LoadU(d, source), offset), factor);
+      const auto value = hn::Mul(hn::Add(samples, offset), factor);
       const auto v = clip(f32(hn::Add(clip(value), error)));
       const auto quantized = hn::Round(v);
       const auto next = hn::IfThenElseZero(active, f32(hn::Sub(v, quantized)));
       hn::StoreU(quantized, d, output);
       hn::StoreU(next, d, residual);
       for (std::size_t k = 0; k < rows; ++k) {
-        if (t < 2 * k || t - 2 * k >= stripe.width)
-          continue;
+        if constexpr (!interior) {
+          if (t < 2 * k || t - 2 * k >= stripe.width)
+            continue;
+        }
         const auto x = t - 2 * k;
         auto* dst = outputs[k];
         if (stripe.output_depth == 8) {
@@ -122,6 +137,21 @@ void diffuse_stripe_target(const FsStripe& stripe) {
       prev3 = prev2;
       prev2 = prev1;
       prev1 = next;
+    };
+    // AVX2 benefits from gathering full interior stripes; wider targets retain
+    // the scalar collection schedule to avoid a gather throughput regression.
+    const auto first = std::max<std::size_t>(1, 2 * (rows - 1));
+    const auto last = stripe.width - 1;
+    if (HWY_TARGET == HWY_AVX2 && rows == lanes && first < last) {
+      for (std::size_t t = 0; t < first; ++t)
+        step(t, std::false_type{});
+      for (std::size_t t = first; t < last; ++t)
+        step(t, std::true_type{});
+      for (std::size_t t = last; t < end; ++t)
+        step(t, std::false_type{});
+    } else {
+      for (std::size_t t = 0; t < end; ++t)
+        step(t, std::false_type{});
     }
     std::copy(next_boundary.begin(), next_boundary.end(), stripe.boundary);
   }
