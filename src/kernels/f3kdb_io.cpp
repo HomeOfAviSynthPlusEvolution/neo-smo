@@ -228,7 +228,32 @@ HWY_INLINE auto encode_half_vector(IoD d, hn::VFromD<IoD> value) {
   return hn::TruncateTo(du16, hn::Or(sign, bits));
 }
 
+void pack_float32_row(const OutputRow& row) {
+  const IoD d;
+  const hn::ScalableTag<float> df;
+  const hn::Rebind<float, IoD> half;
+  const auto lanes = hn::Lanes(d);
+  const auto maximum = hn::Set(d, double(std::numeric_limits<float>::max()));
+  const auto minimum = hn::Neg(maximum);
+  std::size_t x = 0;
+  for (; row.count - x >= 2 * lanes; x += 2 * lanes) {
+    const auto lo = hn::Min(maximum, hn::Max(minimum, hn::LoadU(d, row.input + x)));
+    const auto hi = hn::Min(maximum, hn::Max(minimum, hn::LoadU(d, row.input + x + lanes)));
+    const auto combined = hn::Combine(df, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
+    store_bytes(df, combined, row.output + x * 4, 2 * lanes);
+  }
+  for (; x < row.count; x += lanes) {
+    const auto n = std::min(lanes, row.count - x);
+    const auto value = n == lanes ? hn::LoadU(d, row.input + x) : hn::LoadN(d, row.input + x, n);
+    store_bytes(half, hn::DemoteTo(half, hn::Min(maximum, hn::Max(minimum, value))), row.output + x * 4, n);
+  }
+}
+
 void pack_row_target(const OutputRow& row) {
+  if (!row.integer_input && !row.integer_output && !row.limited && row.depth == 32) {
+    pack_float32_row(row);
+    return;
+  }
   const IoD d;
   const hn::Rebind<float, IoD> df;
   const hn::Rebind<std::int32_t, IoD> di32;
