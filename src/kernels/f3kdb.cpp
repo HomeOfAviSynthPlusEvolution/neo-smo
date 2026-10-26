@@ -244,6 +244,7 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
 }
 HWY_INLINE V weight(D d, const V* c);
 HWY_INLINE V response(D d, V delta, V threshold);
+HWY_INLINE V response_with_inverse(D d, V delta, V threshold, V inverse);
 HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine);
 struct DirectionCenter {
   V x, y, magnitude, normalized_x, normalized_y;
@@ -1367,6 +1368,20 @@ HWY_INLINE V response(D d, V delta, V threshold) {
   return hn::IfThenElse(iszero, hn::IfThenElse(hn::Eq(delta, zero), one, zero),
                         hn::Max(zero, hn::Min(one, hn::Mul(hn::Set(d, 3.0), hn::Sub(one, ratio)))));
 }
+HWY_INLINE V response_with_inverse(D d, V delta, V threshold, V inverse) {
+  const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
+  if (!hn::AllTrue(d, hn::Le(hn::Abs(inverse), hn::Set(d, std::numeric_limits<double>::max()))))
+    return response(d, delta, threshold);
+  const auto iszero = hn::Eq(threshold, zero);
+  auto ratio = hn::Mul(delta, inverse);
+  // Preserve division at the zero-response boundary, where a tiny absolute
+  // ratio error can become a visible difference after the tenth root.
+  const auto boundary = hn::Lt(hn::Abs(hn::Sub(one, ratio)), hn::Set(d, 0x1p-40));
+  if (!hn::AllFalse(d, boundary))
+    ratio = hn::IfThenElse(boundary, hn::Div(delta, hn::IfThenElse(iszero, one, threshold)), ratio);
+  return hn::IfThenElse(iszero, hn::IfThenElse(hn::Eq(delta, zero), one, zero),
+                        hn::Max(zero, hn::Min(one, hn::Mul(hn::Set(d, 3.0), hn::Sub(one, ratio)))));
+}
 HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine) {
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
   const auto gm = hn::Max(hn::Abs(gx), hn::Abs(gy)), hm = hn::Max(hn::Abs(hx), hn::Abs(hy));
@@ -1500,6 +1515,10 @@ void row_specialized(const Row& row, const double* thresholds, bool blur, double
       simple_row_dispatch<2>(row, thresholds[0], integer, blur);
     return;
   }
+  double inverse_thresholds[3]{};
+  if (!integer && mode == 6)
+    for (int j = 0; j < 3; ++j)
+      inverse_thresholds[j] = thresholds[j] == 0 ? 1 : 1 / thresholds[j];
   const D d;
   const auto zero = hn::Zero(d), half = hn::Set(d, 0.5), one = hn::Set(d, 1.0);
   // The direction limit is uniform across the row and all four neighbours.
@@ -1539,10 +1558,18 @@ void row_specialized(const Row& row, const double* thresholds, bool blur, double
                                                      load_row(d, row.gy[j] + x, count), angle, cosine, sine));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
-        const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
-                        response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))),
-                        response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))),
-                        response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])))};
+        V c[4];
+        if (!integer && mode == 6) {
+          c[0] = response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0]));
+          c[1] = response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1]));
+          c[2] = response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+          c[3] = response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+        } else {
+          c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
+          c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
+          c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
+          c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+        }
         const auto f = weight(d, c);
         // FMA in the integer blend is permitted; final integer error is tested.
         const auto blend = integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(a, s), f, s), half))
@@ -1575,6 +1602,10 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
       simple_row_dispatch<2>(row, thresholds[0], integer, blur);
     return;
   }
+  double inverse_thresholds[3]{};
+  if (!integer && mode == 6)
+    for (int j = 0; j < 3; ++j)
+      inverse_thresholds[j] = thresholds[j] == 0 ? 1 : 1 / thresholds[j];
   const D d;
   const auto zero = hn::Zero(d), half = hn::Set(d, 0.5), one = hn::Set(d, 1.0);
   // The direction limit is uniform across the row and all four neighbours.
@@ -1632,10 +1663,18 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
                                                      load_row(d, row.gy[j] + x, count), angle, cosine, sine));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
-        const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
-                        response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))),
-                        response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))),
-                        response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])))};
+        V c[4];
+        if (!integer && mode == 6) {
+          c[0] = response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0]));
+          c[1] = response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1]));
+          c[2] = response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+          c[3] = response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+        } else {
+          c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
+          c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
+          c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
+          c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+        }
         const auto f = weight(d, c);
         // FMA in the integer blend is permitted; final integer error is tested.
         const auto blend = integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(a, s), f, s), half))
