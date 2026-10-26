@@ -1469,8 +1469,105 @@ void simple_row_dispatch(const Row& row, double threshold, bool integer, bool bl
       simple_row<N, false, false>(row, threshold);
   }
 }
+#if HWY_TARGET == HWY_AVX2
+HWY_INLINE V row_pass(D d, V s, const V* values, int n, double threshold, bool integer, bool blur) {
+  const auto a = mean(d, values, n, integer), zero = hn::Zero(d);
+  auto accepted = hn::Lt(hn::Abs(diff(d, a, s, integer)), hn::Set(d, threshold));
+  if (!blur) {
+    accepted = hn::Eq(zero, zero);
+    for (int j = 0; j < n; ++j)
+      accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, values[j], s, integer)), hn::Set(d, threshold)));
+  }
+  return hn::IfThenElse(accepted, a, s);
+}
+HWY_INLINE V row_pair(D d, V s, V v, V w, bool integer) {
+  auto sum = hn::Add(v, w), twice = hn::Add(s, s);
+  if (!integer) {
+    sum = fp(d, sum);
+    twice = fp(d, twice);
+  }
+  return hn::Abs(diff(d, sum, twice, integer));
+}
+template <int Mode, bool Integer>
+void row_specialized(const Row& row, const double* thresholds, bool blur, double angle,
+                     double boost) {
+  constexpr bool integer = Integer;
+  constexpr int mode = Mode;
+  if (mode <= 3) {
+    if (mode == 2)
+      simple_row_dispatch<4>(row, thresholds[0], integer, blur);
+    else
+      simple_row_dispatch<2>(row, thresholds[0], integer, blur);
+    return;
+  }
+  const D d;
+  const auto zero = hn::Zero(d), half = hn::Set(d, 0.5), one = hn::Set(d, 1.0);
+  // The direction limit is uniform across the row and all four neighbours.
+  constexpr double pi = 3.1415926535897932384626433832795;
+  const bool trig = mode == 7 && angle != 0 && angle != 0.25 && angle < 0.5;
+  const auto cosine = hn::Set(d, trig ? std::cos(pi * angle) : 0);
+  const auto sine = hn::Set(d, trig ? std::sin(pi * angle) : 0);
+  for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
+    const auto count = std::min(hn::Lanes(d), row.count - x);
+    const auto s = load_row(d, row.center + x, count);
+    V r[4];
+    for (int j = 0; j < 4; ++j)
+      r[j] = load_row(d, row.refs[j] + x, count);
+    auto result = s;
+    if (mode == 4) {
+      const V results[2] = {row_pass(d, s, r, 2, thresholds[0], integer, blur), row_pass(d, s, r + 2, 2, thresholds[0], integer, blur)};
+      result = mean(d, results, 2, integer);
+    } else {
+      const auto a = mean(d, r, 4, mode == 5 && integer);
+      const auto da = hn::Abs(diff(d, a, s, integer));
+      auto maximum = zero;
+      for (int j = 0; j < 4; ++j)
+        maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, integer)));
+      const auto qv = row_pair(d, s, r[0], r[1], integer), qh = row_pair(d, s, r[2], r[3], integer);
+      if (mode == 5) {
+        auto accepted = hn::And(hn::Lt(da, hn::Set(d, thresholds[0])), hn::Lt(maximum, hn::Set(d, thresholds[1])));
+        accepted =
+            hn::And(accepted, hn::And(hn::Lt(qv, hn::Set(d, thresholds[2])), hn::Lt(qh, hn::Set(d, thresholds[2]))));
+        result = hn::IfThenElse(accepted, a, s);
+      } else {
+        auto k = one;
+        if (mode == 7) {
+          auto directions = hn::Eq(zero, zero);
+          const auto gx = load_row(d, row.gx[0] + x, count), gy = load_row(d, row.gy[0] + x, count);
+          for (int j = 1; j < 5; ++j)
+            directions = hn::And(directions, aligned(d, gx, gy, load_row(d, row.gx[j] + x, count),
+                                                     load_row(d, row.gy[j] + x, count), angle, cosine, sine));
+          k = hn::IfThenElse(directions, hn::Set(d, boost), one);
+        }
+        const V c[4] = {response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))),
+                        response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))),
+                        response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))),
+                        response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])))};
+        const auto f = weight(d, c);
+        // FMA in the integer blend is permitted; final integer error is tested.
+        const auto blend = integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(a, s), f, s), half))
+                                   : fp(d, hn::Add(s, fp(d, hn::Mul(diff(d, a, s, false), f))));
+        result = hn::IfThenElse(hn::Eq(f, zero), s, blend);
+      }
+    }
+    result = hn::Add(
+        result, (integer ? load_integer_grain(d, row.integer_grain + x, count) : load_grain(d, row.grain + x, count)));
+    if (!integer)
+      result = fp(d, result);
+    store_row(d, result, row.output + x, count);
+  }
+}
+#endif
 void row_target(const Row& row, int mode, const double* thresholds, bool integer, bool blur, double angle,
                 double boost) {
+#if HWY_TARGET == HWY_AVX2
+  if (!integer && (mode == 5 || mode == 6)) {
+    if (mode == 5) row_specialized<5, false>(row, thresholds, blur, angle, boost);
+    else row_specialized<6, false>(row, thresholds, blur, angle, boost);
+    return;
+  }
+#endif
+
   if (mode <= 3) {
     if (mode == 2)
       simple_row_dispatch<4>(row, thresholds[0], integer, blur);
