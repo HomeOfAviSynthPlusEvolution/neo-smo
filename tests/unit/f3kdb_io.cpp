@@ -217,14 +217,12 @@ void check_pack(const std::vector<double>& values, int depth, bool integer_input
 void pack_tests() {
   for (std::size_t origin = 1; origin < 16; ++origin)
     check_pack({-17.0, 0.0, 127.0, 128.0, 255.0, 256.0, 32767.0, 65535.0}, 8, true, true, false, false, 2, 7, origin);
-  // Representative exponent/mantissa transitions, even/odd ties and both
-  // neighbouring F64 values catch F64->F32->F16 double rounding without enumeration.
+  // Every finite half interval: exact values, ties and adjacent F64 values catch
+  // subnormal/normal carries and F64->F32->F16 double rounding.
   std::vector<double> halves = {0.0, -0.0, 65504, -65504, 1e300, -1e300};
-  for (unsigned exponent : {0u, 1u, 2u, 14u, 15u, 16u, 29u, 30u})
-    for (unsigned mantissa : {0u, 1u, 511u, 512u, 1022u, 1023u}) {
-      const unsigned h = (exponent << 10) | mantissa;
-      if (h == 0x7bff)
-        continue; // Saturation is covered separately.
+    for (unsigned h = 0; h < 0x7bff; ++h) {
+      halves.push_back(double(ref::decode_half(static_cast<std::uint16_t>(h))));
+      halves.push_back(-halves.back());
       const double midpoint = (double(ref::decode_half(static_cast<std::uint16_t>(h))) +
                                double(ref::decode_half(static_cast<std::uint16_t>(h + 1)))) *
                               0.5;

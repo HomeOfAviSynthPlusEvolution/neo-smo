@@ -268,17 +268,18 @@ bool unpack_integer_plane_target(const IntegerInputPlane& plane) {
 // the largest finite half and preserve signed zero, including underflow to zero.
 HWY_INLINE auto encode_half_vector(IoD d, hn::VFromD<IoD> value) {
   const hn::Rebind<std::uint64_t, IoD> du64;
-  const hn::Rebind<std::int64_t, IoD> di64;
+  const hn::Rebind<std::int32_t, IoD> di32;
   const hn::Rebind<std::uint16_t, IoD> du16;
   const auto sign = hn::And(hn::ShiftRight<48>(hn::BitCast(du64, value)), hn::Set(du64, 0x8000));
   const auto magnitude = hn::Min(hn::Abs(value), hn::Set(d, 65504.0));
   const auto field = hn::Max(hn::ShiftRight<52>(hn::BitCast(du64, magnitude)), hn::Set(du64, 1009));
   const auto factor = hn::BitCast(d, hn::ShiftLeft<52>(hn::Sub(hn::Set(du64, 2056), field)));
-  const auto significant = hn::BitCast(du64, hn::ConvertTo(di64, hn::Round(hn::Mul(magnitude, factor))));
+  // The rounded significand is at most 2048, including a carry into the exponent.
+  const auto significant = hn::PromoteTo(
+      du64, hn::BitCast(hn::Rebind<std::uint32_t, IoD>{}, hn::DemoteTo(di32, hn::Round(hn::Mul(magnitude, factor)))));
   const auto normal = hn::Add(hn::ShiftLeft<10>(hn::Sub(field, hn::Set(du64, 1009))), significant);
-  const auto subnormal = hn::BitCast(du64, hn::ConvertTo(di64, hn::Round(hn::Mul(magnitude, hn::Set(d, 0x1p24)))));
-  const auto bits = hn::IfThenElse(hn::RebindMask(du64, hn::Lt(magnitude, hn::Set(d, 0x1p-14))), subnormal, normal);
-  return hn::TruncateTo(du16, hn::Or(sign, bits));
+  // For subnormals field == 1009: factor is 2^24 and the exponent contribution is zero.
+  return hn::TruncateTo(du16, hn::Or(sign, normal));
 }
 
 void pack_float32_row(const OutputRow& row) {
