@@ -1311,10 +1311,19 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   const hn::Rebind<std::int64_t, D> di;
   const auto bits = hn::BitCast(di, x);
   const auto exponent = hn::Sub(hn::ShiftRight<52>(bits), hn::Set(di, 1023));
+#if HWY_TARGET == HWY_AVX2
+  // Exact floor(e/10) for every normal exponent e in [-1022, 0].
+  const hn::Rebind<std::int32_t, D> di32;
+  const auto e32 = hn::DemoteTo(di32, exponent);
+  const auto q32 = hn::Neg(hn::ShiftRight<15>(hn::Mul(hn::Sub(hn::Set(di32, 9), e32), hn::Set(di32, 3277))));
+  const auto q = hn::PromoteTo(di, q32);
+  const auto r = hn::PromoteTo(di, hn::Sub(e32, hn::Mul(q32, hn::Set(di32, 10))));
+#else
   // There are only 1023 possible exponents. Multiplication by binary64 0.1
   // followed by floor gives floor(e/10) exactly throughout [-1022, 0].
   const auto q = hn::ConvertTo(di, hn::Floor(hn::Mul(hn::ConvertTo(d, exponent), hn::Set(d, 0.1))));
   const auto r = hn::Sub(exponent, hn::Mul(q, hn::Set(di, 10)));
+#endif
   static constexpr double powers[11] = {
       0x1.0000000000000p+0, 0x1.125fbee250664p+0, 0x1.2611186bae675p+0,
       0x1.3b2c47bff8329p+0, 0x1.51cb453b9536cp+0, 0x1.6a09e667f3bcdp+0,
