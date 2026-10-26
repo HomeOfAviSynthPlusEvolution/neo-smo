@@ -245,6 +245,20 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
 HWY_INLINE V weight(D d, const V* c);
 HWY_INLINE V response(D d, V delta, V threshold);
 HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine);
+struct DirectionCenter {
+  V x, y, magnitude, normalized_x, normalized_y;
+  M integral;
+};
+HWY_INLINE DirectionCenter prepare_direction(D d, V x, V y) {
+  const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
+  const auto magnitude = hn::Max(hn::Abs(x), hn::Abs(y));
+  const auto integral = hn::And(hn::Le(magnitude, hn::Set(d, 262140.0)),
+                                hn::And(hn::Eq(hn::Trunc(x), x), hn::Eq(hn::Trunc(y), y)));
+  const auto divisor = hn::IfThenElse(hn::Eq(magnitude, zero), one, magnitude);
+  return {x, y, magnitude, hn::Div(x, divisor), hn::Div(y, divisor), integral};
+}
+HWY_INLINE M aligned_prepared(D d, const DirectionCenter& g, V hx, V hy,
+                              double angle, V cosine, V sine);
 // Bounded integer Sobel components need no per-lane integrality/range checks.
 HWY_INLINE M aligned_integer(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine) {
   const auto zero = hn::Zero(d);
@@ -365,12 +379,19 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       auto directions = hn::Eq(zero, zero);
       const auto cgx = cross_center<Compact>(d, cross.gx, cross.compact_gx, cross.row_offset, x),
                  cgy = cross_center<Compact>(d, cross.gy, cross.compact_gy, cross.row_offset, x);
+      DirectionCenter prepared{};
+      if constexpr (!Integer)
+        prepared = prepare_direction(d, cgx, cgy);
       for (int j = 0; j < 4; ++j) {
         const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
                    hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
         M direction;
         if constexpr (Compact)
           direction = aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine);
+        else if constexpr (!Integer)
+          direction = cross.bounded_integer_gradients
+                          ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
+                          : aligned_prepared(d, prepared, hx, hy, angle, cosine, sine);
         else
           direction = cross.bounded_integer_gradients
                           ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
@@ -1345,6 +1366,35 @@ HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine
     const auto hs = hn::IfThenElse(hn::Or(integral, hn::Eq(hm, zero)), one, hm);
     gx = hn::Div(gx, gs);
     gy = hn::Div(gy, gs);
+    hx = hn::Div(hx, hs);
+    hy = hn::Div(hy, hs);
+  }
+  const auto cross = hn::Abs(hn::Sub(hn::Mul(gx, hy), hn::Mul(gy, hx)));
+  const auto dot = hn::Abs(hn::Add(hn::Mul(gx, hx), hn::Mul(gy, hy)));
+  auto accept = hn::Eq(cross, zero);
+  if (angle == 0.25)
+    accept = hn::Le(cross, dot);
+  else if (angle != 0) {
+    accept = hn::Le(hn::Mul(cross, cosine), hn::Mul(dot, sine));
+  }
+  return hn::Or(bothzero, hn::And(nonzero, accept));
+}
+HWY_INLINE M aligned_prepared(D d, const DirectionCenter& g, V hx, V hy, double angle, V cosine, V sine) {
+  const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
+  const auto gm = g.magnitude, hm = hn::Max(hn::Abs(hx), hn::Abs(hy));
+  auto gx = g.x, gy = g.y;
+  const auto bothzero = hn::And(hn::Eq(gm, zero), hn::Eq(hm, zero));
+  const auto nonzero = hn::And(hn::Gt(gm, zero), hn::Gt(hm, zero));
+  if (angle >= 0.5)
+    return hn::Or(bothzero, nonzero);
+  auto integral = hn::And(g.integral, hn::Le(hm, hn::Set(d, 262140.0)));
+  integral = hn::And(integral, hn::And(hn::Eq(hn::Trunc(hx), hx), hn::Eq(hn::Trunc(hy), hy)));
+  // These bounded integer products and sums are exact in double. Their
+  // normalization factors are one, so the four divisions have no effect.
+  if (!hn::AllTrue(d, integral)) {
+    const auto hs = hn::IfThenElse(hn::Or(integral, hn::Eq(hm, zero)), one, hm);
+    gx = hn::IfThenElse(integral, gx, g.normalized_x);
+    gy = hn::IfThenElse(integral, gy, g.normalized_y);
     hx = hn::Div(hx, hs);
     hy = hn::Div(hy, hs);
   }
