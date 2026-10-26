@@ -85,7 +85,48 @@ HWY_INLINE void store_bytes(D d, hn::VFromD<D> v, std::uint8_t* p, std::size_t n
     hn::StoreN(hn::BitCast(bytes, v), bytes, p, n * sizeof(hn::TFromD<D>));
 }
 
+#if HWY_TARGET == HWY_AVX2
+bool unpack_float32_plane(const InputPlane& plane) {
+  const IoD d;
+  const hn::ScalableTag<float> df;
+  const hn::Rebind<float, IoD> half;
+  const hn::Rebind<std::uint32_t, decltype(df)> du;
+  const hn::Rebind<std::uint32_t, IoD> duh;
+  const auto lanes = hn::Lanes(d);
+  auto source = detail::plane_view(plane.input, detail::mul(plane.width, 4), plane.height, plane.stride).cursor();
+  auto destination = detail::plane_view(plane.output, plane.width, plane.height).cursor();
+  for (std::size_t y = 0; y < plane.height; ++y) {
+    if (y) { ++source; ++destination; }
+    const auto* input = source.ptr();
+    auto* output = destination.ptr();
+    std::size_t x = 0;
+    for (; plane.width - x >= 2 * lanes; x += 2 * lanes) {
+      const auto bits = load_bytes(du, input + 4 * x, 2 * lanes);
+      if (!hn::AllFalse(du, hn::Eq(hn::And(bits, hn::Set(du, 0x7f800000u)), hn::Set(du, 0x7f800000u))))
+        return false;
+      const auto value = hn::BitCast(df, bits);
+      hn::StoreU(hn::PromoteTo(d, hn::LowerHalf(half, value)), d, output + x);
+      hn::StoreU(hn::PromoteTo(d, hn::UpperHalf(half, value)), d, output + x + lanes);
+    }
+    for (; x < plane.width; x += lanes) {
+      const auto n = std::min(lanes, plane.width - x);
+      const auto bits = load_bytes(duh, input + 4 * x, n);
+      if (!hn::AllFalse(duh, hn::Eq(hn::And(bits, hn::Set(duh, 0x7f800000u)), hn::Set(duh, 0x7f800000u))))
+        return false;
+      const auto value = hn::PromoteTo(d, hn::BitCast(half, bits));
+      if (n == lanes) hn::StoreU(value, d, output + x);
+      else hn::StoreN(value, d, output + x, n);
+    }
+  }
+  return true;
+}
+
+#endif
 bool unpack_plane_target(const InputPlane& plane) {
+#if HWY_TARGET == HWY_AVX2
+  if (!plane.integer && plane.depth == 32)
+    return unpack_float32_plane(plane);
+#endif
   const IoD d;
   const hn::Rebind<std::uint8_t, IoD> du8;
   const hn::Rebind<std::uint16_t, IoD> du16;
