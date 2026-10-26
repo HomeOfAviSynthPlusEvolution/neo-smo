@@ -1375,19 +1375,30 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
 }
 
 HWY_INLINE V weight(D d, const V* c) {
+#if HWY_TARGET == HWY_AVX2
+  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
+  auto all_positive = hn::Gt(c[0], hn::Zero(d));
+  for (int j = 1; j < 4; ++j)
+    all_positive = hn::And(all_positive, hn::Gt(c[j], hn::Zero(d)));
+  // Responses are in [0, 1], so a unit product identifies the unit endpoint.
+  const auto all_one = hn::Eq(product, hn::Set(d, 1.0));
+#else
   auto all_positive = hn::Gt(c[0], hn::Zero(d));
   auto all_one = hn::Eq(c[0], hn::Set(d, 1.0));
   for (int j = 1; j < 4; ++j) {
     all_positive = hn::And(all_positive, hn::Gt(c[j], hn::Zero(d)));
     all_one = hn::And(all_one, hn::Eq(c[j], hn::Set(d, 1.0)));
   }
+#endif
   // Each lane can independently be an exact zero or one endpoint.
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive), all_one)))
     return hn::IfThenElseZero(all_positive, hn::Set(d, 1.0));
   // Ordinary products use a bounded tenth-root approximation. A normal final
   // product guarantees normal intermediate products because every response is
   // in [0, 1]. Preserve the logarithmic sum below for underflow/subnormal cases.
+#if HWY_TARGET != HWY_AVX2
   const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
+#endif
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive),
                            hn::Ge(product, hn::Set(d, std::numeric_limits<double>::min()))))) {
     const auto argument = hn::IfThenElse(all_positive, product, hn::Set(d, 1.0));
