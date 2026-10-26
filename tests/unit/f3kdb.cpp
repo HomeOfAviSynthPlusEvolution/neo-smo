@@ -221,7 +221,19 @@ void sampling_tests() {
             check(output[x] == expected, "fused sampling value");
           }
           for (std::size_t x = processed; x <= width; ++x) check(output[x] == -999, "fused sampling tail");
-          check(simd::process_sampled_row(row, batch, mode, threshold, false, blur).processed == 0, "fused floating fallback");
+          std::vector<float> floating_grain(width);
+          for (std::size_t x = 0; x < width; ++x) floating_grain[x] = float(grain[x]) / 65536;
+          batch.grain = floating_grain.data();
+          std::fill(output.begin(), output.end(), -999);
+          const auto floating_processed = simd::process_sampled_row(row, batch, mode, threshold, false, blur).processed;
+          check(floating_processed <= count, "fused floating sampling extent");
+          for (std::size_t x = 0; x < floating_processed; ++x) {
+            std::array<double, 4> refs{samples[0][x], samples[1][x], mode == 2 ? samples[2][x] : row.center[x], mode == 2 ? samples[3][x] : row.center[x]};
+            const auto expected = double(float(ref::deband(row.center[x], refs, mode, {threshold, threshold, threshold}, false, blur) + floating_grain[x]));
+            check(output[x] == expected, "fused floating sampling value");
+          }
+          for (std::size_t x = floating_processed; x <= width; ++x)
+            check(output[x] == -999, "fused floating sampling tail");
           std::fill(output.begin(), output.end(), -999);
           const simd::IntegerRow packed{packed_source.data() + y * width, distances.data(), grain.data(), output.data(), width, vlimit, y * width, sx, sy};
           const std::array<double, 3> thresholds{threshold, threshold, threshold};

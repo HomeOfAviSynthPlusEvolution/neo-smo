@@ -57,11 +57,12 @@ HWY_INLINE V load_grain(D d, const float* p, std::size_t n) {
   const hn::Rebind<float, D> df;
   return hn::PromoteTo(d, n == hn::Lanes(d) ? hn::LoadU(df, p) : hn::LoadN(df, p, n));
 }
-template <int N, bool Blur>
+template <int N, bool Blur, bool Integer = true>
 HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold);
+HWY_INLINE V fp(D d, V v);
 // Read the interleaved distance bytes directly. Chroma subsampling by two
 // skips every other pair; wider subsampling uses the existing scalar collector.
-template <int Mode, bool Fused = false, bool Blur = true>
+template <int Mode, bool Fused = false, bool Blur = true, bool Integer = true>
 std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, double threshold = 0) {
   const D d;
   const hn::Rebind<std::int64_t, D> di;
@@ -127,8 +128,11 @@ std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, 
         hn::StoreU(refs[3], d, row.samples[3] + x);
     }
     if constexpr (Fused) {
-      auto result = sampled_value<Mode == 2 ? 4 : 2, Blur>(d, hn::LoadU(d, center), refs, threshold);
-      result = hn::Add(result, load_integer_grain(d, output->integer_grain + x, hn::Lanes(d)));
+      auto result = sampled_value<Mode == 2 ? 4 : 2, Blur, Integer>(d, hn::LoadU(d, center), refs, threshold);
+      if constexpr (Integer)
+        result = hn::Add(result, load_integer_grain(d, output->integer_grain + x, hn::Lanes(d)));
+      else
+        result = fp(d, hn::Add(result, load_grain(d, output->grain + x, hn::Lanes(d))));
       hn::StoreU(result, d, output->output + x);
     }
   }
@@ -184,23 +188,38 @@ HWY_INLINE V mean(D d, const V* r, int n, bool integer) {
     sum = hn::Add(sum, integer ? r[j] : hn::Mul(r[j], inverse));
   return integer ? hn::Floor(hn::Mul(hn::Add(sum, hn::Set(d, n / 2.0)), inverse)) : fp(d, sum);
 }
-template <int N, bool Blur>
+template <int N, bool Blur, bool Integer>
 HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold) {
-  const auto average = mean(d, refs, N, true);
+  const auto average = mean(d, refs, N, Integer);
   const auto limit = hn::Set(d, threshold);
-  auto accept = hn::Lt(hn::Abs(diff(d, average, center, true)), limit);
+  auto accept = hn::Lt(hn::Abs(diff(d, average, center, Integer)), limit);
   if constexpr (!Blur) {
     accept = hn::Eq(center, center);
     for (int j = 0; j < N; ++j)
-      accept = hn::And(accept, hn::Lt(hn::Abs(diff(d, refs[j], center, true)), limit));
+      accept = hn::And(accept, hn::Lt(hn::Abs(diff(d, refs[j], center, Integer)), limit));
   }
   return hn::IfThenElse(accept, average, center);
 }
 SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int mode, double threshold, bool integer,
                               bool blur) {
   // Four-reference fusion is slower than collection on four-double-lane targets.
-  if (!integer || hn::Lanes(D{}) < 4 || sampling.sub_x > 1 || sampling.width == 0 || (hn::Lanes(D{}) == 4 && mode == 2))
+  if (hn::Lanes(D{}) < 4 || sampling.sub_x > 1 || sampling.width == 0 || (hn::Lanes(D{}) == 4 && mode == 2))
     return {collect_simple_target(sampling, mode), 0};
+  if (!integer) {
+    constexpr bool fused_float_pair = HWY_TARGET == HWY_AVX3_SPR;
+    if (!fused_float_pair)
+      return {collect_simple_target(sampling, mode), 0};
+    std::size_t n = 0;
+    if (mode == 1)
+      n = blur ? collect_simple<1, true, true, false>(sampling, &row, threshold)
+               : collect_simple<1, true, false, false>(sampling, &row, threshold);
+    else if (mode == 3)
+      n = blur ? collect_simple<3, true, true, false>(sampling, &row, threshold)
+               : collect_simple<3, true, false, false>(sampling, &row, threshold);
+    else
+      return {collect_simple_target(sampling, mode), 0};
+    return {n, n};
+  }
   std::size_t count = 0;
   switch (mode) {
     case 1:
