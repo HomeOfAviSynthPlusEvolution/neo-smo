@@ -788,6 +788,26 @@ Frame process_float_frame(const Filter& filter, std::size_t frame, const std::ve
 Frame process_highway_impl(const Filter& filter, std::size_t frame, const std::vector<PlaneView>& input,
                            const std::vector<MutablePlaneView>* external) {
   const auto& p = filter.parameters();
+  if (p.input.sample == Sample::floating && p.input.depth == 16 && p.input.sub_x <= 1 && p.input.sub_y <= 1 &&
+      frame < p.input.frames && input.size() == (p.input.color == Color::gray ? 1u : 3u) &&
+      mul(p.input.width, p.input.height) <= std::size_t(std::numeric_limits<std::int32_t>::max())) {
+    std::array<std::unique_ptr<float[]>, 3> decoded;
+    std::vector<PlaneView> views;
+    views.reserve(input.size());
+    for (std::size_t plane = 0; plane < input.size(); ++plane) {
+      const auto w = p.input.width >> (plane ? p.input.sub_x : 0), h = p.input.height >> (plane ? p.input.sub_y : 0);
+      const auto& v = input[plane];
+      const auto row = mul(w, 2), extent = add(mul(h - 1, v.stride), row), count = mul(w, h);
+      if (!v.data || v.stride < row || v.bytes < extent)
+        invalid("invalid half input plane");
+      decoded[plane].reset(new float[count]);
+      if (!unpack_half_float_plane(static_cast<const std::uint8_t*>(v.data), decoded[plane].get(), w, h, v.stride))
+        invalid("nonfinite input pixel");
+      views.push_back({decoded[plane].get(), mul(count, sizeof(float)), mul(w, sizeof(float))});
+    }
+    // Every finite half is exact in F32 and lies inside the bounded native domain.
+    return process_float_frame(filter, frame, views, external, {true, true, true});
+  }
   if (p.input.sample == Sample::floating && p.input.depth == 32 && p.options.sample_mode <= 7 && p.input.sub_x <= 1 &&
       p.input.sub_y <= 1 && frame < p.input.frames && input.size() == (p.input.color == Color::gray ? 1u : 3u)) {
     bool eligible = true;

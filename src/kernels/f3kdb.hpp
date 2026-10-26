@@ -126,6 +126,8 @@ struct FloatRow {
 };
 std::size_t process_float_row(const FloatRow&, int mode, const double*, bool blur);
 bool validate_float_plane(const float*, std::size_t width, std::size_t height, std::size_t stride, bool& bounded);
+// Decode finite binary16 pixels exactly to contiguous F32 storage; accepts odd byte strides.
+bool unpack_half_float_plane(const std::uint8_t*, float*, std::size_t width, std::size_t height, std::size_t stride);
 struct IntegerInputPlane {
   const std::uint8_t* input;
   std::int32_t* output;

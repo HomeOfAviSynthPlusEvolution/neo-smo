@@ -97,6 +97,25 @@ bool validate_integer_plane_target(const IntegerInputPlane& plane) {
   const auto invalid = hn::Set(d, static_cast<std::uint16_t>(0xffffu << plane.depth));
   return hn::AllTrue(d, hn::Eq(hn::And(bits, invalid), hn::Zero(d)));
 }
+bool unpack_half_float_plane_target(const std::uint8_t* input, float* output, std::size_t width, std::size_t height,
+                                    std::size_t stride) {
+  const hn::ScalableTag<float> d;
+  const hn::Rebind<std::uint16_t, decltype(d)> du16;
+  const hn::Rebind<hwy::float16_t, decltype(d)> dh;
+  const auto exponent = hn::Set(du16, 0x7c00);
+  auto finite = hn::Eq(hn::Zero(du16), hn::Zero(du16));
+  HWY_ALIGN std::uint16_t bits[hn::MaxLanes(d)];
+  for (std::size_t y = 0; y < height; ++y) {
+    for (std::size_t x = 0; x < width; x += hn::Lanes(d)) {
+      const auto n = std::min(hn::Lanes(d), width - x);
+      std::memcpy(bits, input + y * stride + 2 * x, n * sizeof(std::uint16_t));
+      const auto raw = hn::LoadN(du16, bits, n);
+      finite = hn::And(finite, hn::Ne(hn::And(raw, exponent), exponent));
+      hn::StoreN(hn::PromoteTo(d, hn::BitCast(dh, raw)), d, output + y * width + x, n);
+    }
+  }
+  return hn::AllTrue(du16, finite);
+}
 #if HWY_TARGET == HWY_SCALAR || HWY_TARGET == HWY_EMU128
 bool unpack_plane_target(const InputPlane& plane) {
   return unpack_plane_scalar(plane);
@@ -514,6 +533,11 @@ bool normalize_float_gradients(double* gx, double* gy, std::size_t n) {
   return HWY_DYNAMIC_DISPATCH(normalize_float_gradients_target)(gx, gy, n);
 }
 HWY_EXPORT(validate_float_plane_target);
+HWY_EXPORT(unpack_half_float_plane_target);
+bool unpack_half_float_plane(const std::uint8_t* input, float* output, std::size_t w, std::size_t h,
+                             std::size_t stride) {
+  return HWY_DYNAMIC_DISPATCH(unpack_half_float_plane_target)(input, output, w, h, stride);
+}
 bool validate_float_plane(const float* source, std::size_t w, std::size_t h, std::size_t stride, bool& bounded) {
   return HWY_DYNAMIC_DISPATCH(validate_float_plane_target)(source, w, h, stride, bounded);
 }

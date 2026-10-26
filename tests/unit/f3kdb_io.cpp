@@ -106,6 +106,28 @@ void check_unpack(const std::vector<std::uint32_t>& bits, int depth, bool intege
   }
 }
 
+void half_float_unpack_tests() {
+  // All half encodings, on odd addresses and bounded tails. Ignore nonfinite
+  // output values, but require rejection of every nonfinite input encoding.
+  for (unsigned start = 0; start < 65536; start += 17) {
+    const auto n = std::min<unsigned>(17, 65536 - start);
+    std::vector<std::uint8_t> source(2 * n + 1);
+    std::vector<float> output(n + 2, 123.0f);
+    bool finite = true;
+    for (unsigned i = 0; i < n; ++i) {
+      store(source.data() + 1 + 2 * i, std::uint16_t(start + i));
+      finite = finite && ((start + i) & 0x7c00) != 0x7c00;
+    }
+    check(simd::unpack_half_float_plane(source.data() + 1, output.data() + 1, n, 1, 2 * n) == finite,
+          "half native finite validation");
+    for (unsigned i = 0; i < n; ++i) {
+      if (((start + i) & 0x7c00) == 0x7c00) continue;
+      const auto expected = ref::decode_half(std::uint16_t(start + i));
+      check(output[i + 1] == expected && std::signbit(output[i + 1]) == std::signbit(expected), "half native exact decode");
+    }
+    check(output.front() == 123.0f && output.back() == 123.0f, "half native output guards");
+  }
+}
 void unpack_tests() {
   std::vector<std::uint32_t> bits;
   for (int depth = 8; depth <= 16; ++depth) {
@@ -428,6 +450,7 @@ int main() {
       hwy::SetSupportedTargetsForTest(target);
       std::cout << "Testing " << hwy::TargetName(target) << std::endl;
       unpack_tests();
+    half_float_unpack_tests();
       pack_tests();
       sobel_tests();
       normalized_gradient_tests();

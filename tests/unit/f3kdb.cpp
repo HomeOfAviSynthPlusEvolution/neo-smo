@@ -1058,6 +1058,75 @@ void native_float_frame_tests() {
         check(rejected, "native float nonfinite tail rejection");
       }
 }
+void native_half_frame_tests() {
+  for (int mode = 1; mode <= 7; ++mode)
+    for (bool blur : {false, true})
+      for (int variant = 0; variant < 5; ++variant) {
+        ref::Format f;
+        f.width = variant == 0 ? 66 : 34;
+        f.height = 34;
+        f.frames = 3;
+        f.depth = 16;
+        f.sample = ref::Sample::floating;
+        f.color = ref::Color::yuv;
+        f.sub_x = variant & 1;
+        f.sub_y = (variant >> 1) & 1;
+        ref::Options o;
+        o.sample_mode = mode;
+        o.blur_first = blur;
+        o.range = 255;
+        o.scale = true;
+        o.threshold.fill(variant == 3 ? 65535 : 2048.25);
+        o.threshold1.fill(1234.5);
+        o.threshold2.fill(3456.75);
+        o.max_angle = variant == 3 ? 0.25 : 0.15;
+        o.grain_y = 3.25;
+        o.grain_c = 2.5;
+        o.dynamic_grain = true;
+        o.keep_tv_range = variant == 4;
+        std::array<std::vector<std::uint8_t>, 3> storage;
+        std::vector<ref::PlaneView> views;
+        for (std::size_t p = 0; p < 3; ++p) {
+          const auto w = f.width >> (p ? f.sub_x : 0), h = f.height >> (p ? f.sub_y : 0);
+          const auto stride = w * 2 + 3, extent = (h - 1) * stride + w * 2;
+          storage[p].assign(extent + 2, 0xff);
+          for (std::size_t y = 0; y < h; ++y)
+            for (std::size_t x = 0; x < w; ++x) {
+              const auto hash = std::uint32_t(x * 1664525u + y * 1013904223u);
+              double v = double(hash >> 8) / 16777216 * .08 - .04 + (p ? 0 : .5);
+              if (variant == 1)
+                v = ((x + y) % 2 ? -1 : 1) * 65504.0;
+              if (variant == 2)
+                v = (int((x * 3 + y) % 17) - 8) * 0x1p-24;
+              if (variant == 3)
+                v = ((x * 3 + y * 7) % 5) * .5;
+              write(storage[p].data() + 1 + y * stride + 2 * x, ref::encode_half(v));
+            }
+          views.push_back({storage[p].data() + 1, extent, stride});
+        }
+        for (int output : {-16, 32, 8, 16}) {
+          const int selected[] = {-16, 32, 16, -16, 8};
+          if (variant != 0 && output != selected[variant])
+            continue;
+          o.output_depth = std::abs(output);
+          o.output_sample_type = output < 0 || output == 32 ? ref::OutputSample::floating : ref::OutputSample::integer;
+          o.dither_algo = variant % 3 + 1;
+          compare(ScalarFilter(f, o).process(2, views), simd::Filter(f, o).process(2, views), o);
+        }
+        if (mode == 1 && !blur && variant == 0)
+          for (std::uint16_t invalid :
+               {std::uint16_t{0x7c00}, std::uint16_t{0xfc00}, std::uint16_t{0x7c01}, std::uint16_t{0x7e00}}) {
+            write(storage[2].data() + storage[2].size() - 3, invalid);
+            bool rejected = false;
+            try {
+              simd::Filter(f, o).process(0, views);
+            } catch (const std::invalid_argument&) {
+              rejected = true;
+            }
+            check(rejected, "native half nonfinite tail rejection");
+          }
+      }
+}
 void frame_tests() {
   // Integer-output FS must be exercised explicitly; floating output bypasses
   // dithering even when dither_algo=3. These frames also cross the 32-row buffer.
@@ -1167,6 +1236,7 @@ int main() {
       native_weighted_gather_tests();
       byte_frame_tests();
       native_float_frame_tests();
+      native_half_frame_tests();
       frame_tests();
       std::cout<<hwy::TargetName(target)<<": checks="<<checks<<" pixels="<<pixels<<" differing="<<different
                <<" fs_pixels="<<fs_pixels<<" max_weight="<<max_weight<<" max_integer_internal="<<max_integer<<" max_float_internal="<<max_float<<" max_pixel="<<max_pixel<<'\n';
