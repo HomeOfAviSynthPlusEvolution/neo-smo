@@ -51,6 +51,46 @@ namespace hn = hwy::HWY_NAMESPACE;
 using D = hn::ScalableTag<double>;
 using V = hn::VFromD<D>;
 using M = hn::MFromD<D>;
+
+// Highway tuples support sizeless SVE vectors without placing them in C++
+// arrays or structures. Only the used elements of two/three-vector groups matter.
+template <class Tag>
+HWY_INLINE auto zero_vectors(Tag d) {
+  const auto zero = hn::Zero(d);
+  return hn::Create4(d, zero, zero, zero, zero);
+}
+template <class Tuple>
+HWY_INLINE auto vector_get(Tuple values, int index) {
+  switch (index) {
+    case 0:
+      return hn::Get4<0>(values);
+    case 1:
+      return hn::Get4<1>(values);
+    case 2:
+      return hn::Get4<2>(values);
+    default:
+      return hn::Get4<3>(values);
+  }
+}
+template <class Tuple, class Vec>
+HWY_INLINE Tuple vector_set(Tuple values, int index, Vec value) {
+  switch (index) {
+    case 0:
+      return hn::Set4<0>(values, value);
+    case 1:
+      return hn::Set4<1>(values, value);
+    case 2:
+      return hn::Set4<2>(values, value);
+    default:
+      return hn::Set4<3>(values, value);
+  }
+}
+template <class Tuple>
+HWY_INLINE Tuple vector_tail(Tuple values) {
+  const hn::DFromV<decltype(hn::Get4<0>(values))> d;
+  return hn::Create4(d, hn::Get4<2>(values), hn::Get4<3>(values), hn::Zero(d), hn::Zero(d));
+}
+
 HWY_INLINE V load_integer_grain(D d, const std::int16_t* p, std::size_t n) {
   const hn::Rebind<std::int16_t, D> di16;
   const hn::Rebind<std::int32_t, D> di32;
@@ -61,7 +101,7 @@ HWY_INLINE V load_grain(D d, const float* p, std::size_t n) {
   return hn::PromoteTo(d, n == hn::Lanes(d) ? hn::LoadU(df, p) : hn::LoadN(df, p, n));
 }
 template <int N, bool Blur, bool Integer = true>
-HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold);
+HWY_INLINE V sampled_value(D d, V center, hn::Vec4<D> refs, double threshold);
 HWY_INLINE V fp(D d, V v);
 // Read the interleaved distance bytes directly. Chroma subsampling by two
 // skips every other pair; wider subsampling uses the existing scalar collector.
@@ -99,15 +139,15 @@ std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, 
     if (!hn::AllTrue(di, valid))
       throw std::logic_error("reference outside plane");
     const auto* center = row.center + x;
-    V refs[Mode == 2 ? 4 : 2];
+    auto refs = zero_vectors(D{});
     if constexpr (Mode == 1 || Mode == 3) {
       const auto offset = Mode == 1 ? hn::GatherIndex(di, row.vertical_offsets, v1) : h1;
-      refs[0] = hn::GatherIndex(d, center, hn::Add(index, offset));
+      refs = hn::Set4<0>(refs, hn::GatherIndex(d, center, hn::Add(index, offset)));
       if constexpr (!Fused)
-        hn::StoreU(refs[0], d, row.samples[0] + x);
-      refs[1] = hn::GatherIndex(d, center, hn::Sub(index, offset));
+        hn::StoreU(hn::Get4<0>(refs), d, row.samples[0] + x);
+      refs = hn::Set4<1>(refs, hn::GatherIndex(d, center, hn::Sub(index, offset)));
       if constexpr (!Fused)
-        hn::StoreU(refs[1], d, row.samples[1] + x);
+        hn::StoreU(hn::Get4<1>(refs), d, row.samples[1] + x);
     } else {
       const auto distance2 = hn::PromoteTo(di, second);
       const auto h2 = hn::ShiftRightSame(distance2, row.sub_x);
@@ -117,18 +157,18 @@ std::size_t collect_simple(const SamplingRow& row, const Row* output = nullptr, 
         throw std::logic_error("reference outside plane");
       const auto a = hn::Add(hn::GatherIndex(di, row.vertical_offsets, v2), h1);
       const auto b = hn::Sub(h2, hn::GatherIndex(di, row.vertical_offsets, v1));
-      refs[0] = hn::GatherIndex(d, center, hn::Add(index, a));
+      refs = hn::Set4<0>(refs, hn::GatherIndex(d, center, hn::Add(index, a)));
       if constexpr (!Fused)
-        hn::StoreU(refs[0], d, row.samples[0] + x);
-      refs[1] = hn::GatherIndex(d, center, hn::Add(index, b));
+        hn::StoreU(hn::Get4<0>(refs), d, row.samples[0] + x);
+      refs = hn::Set4<1>(refs, hn::GatherIndex(d, center, hn::Add(index, b)));
       if constexpr (!Fused)
-        hn::StoreU(refs[1], d, row.samples[1] + x);
-      refs[2] = hn::GatherIndex(d, center, hn::Sub(index, a));
+        hn::StoreU(hn::Get4<1>(refs), d, row.samples[1] + x);
+      refs = hn::Set4<2>(refs, hn::GatherIndex(d, center, hn::Sub(index, a)));
       if constexpr (!Fused)
-        hn::StoreU(refs[2], d, row.samples[2] + x);
-      refs[3] = hn::GatherIndex(d, center, hn::Sub(index, b));
+        hn::StoreU(hn::Get4<2>(refs), d, row.samples[2] + x);
+      refs = hn::Set4<3>(refs, hn::GatherIndex(d, center, hn::Sub(index, b)));
       if constexpr (!Fused)
-        hn::StoreU(refs[3], d, row.samples[3] + x);
+        hn::StoreU(hn::Get4<3>(refs), d, row.samples[3] + x);
     }
     if constexpr (Fused) {
       auto result = sampled_value<Mode == 2 ? 4 : 2, Blur, Integer>(d, hn::LoadU(d, center), refs, threshold);
@@ -184,22 +224,22 @@ HWY_INLINE V diff(D d, V a, V b, bool integer) {
   const auto v = hn::Sub(a, b);
   return integer ? v : fp(d, v);
 }
-HWY_INLINE V mean(D d, const V* r, int n, bool integer) {
+HWY_INLINE V mean(D d, hn::Vec4<D> r, int n, bool integer) {
   auto sum = hn::Zero(d);
   const auto inverse = hn::Set(d, 1.0 / n);
   for (int j = 0; j < n; ++j)
-    sum = hn::Add(sum, integer ? r[j] : hn::Mul(r[j], inverse));
+    sum = hn::Add(sum, integer ? vector_get(r, j) : hn::Mul(vector_get(r, j), inverse));
   return integer ? hn::Floor(hn::Mul(hn::Add(sum, hn::Set(d, n / 2.0)), inverse)) : fp(d, sum);
 }
 template <int N, bool Blur, bool Integer>
-HWY_INLINE V sampled_value(D d, V center, const V* refs, double threshold) {
+HWY_INLINE V sampled_value(D d, V center, hn::Vec4<D> refs, double threshold) {
   const auto average = mean(d, refs, N, Integer);
   const auto limit = hn::Set(d, threshold);
   auto accept = hn::Lt(hn::Abs(diff(d, average, center, Integer)), limit);
   if constexpr (!Blur) {
     accept = hn::Eq(center, center);
     for (int j = 0; j < N; ++j)
-      accept = hn::And(accept, hn::Lt(hn::Abs(diff(d, refs[j], center, Integer)), limit));
+      accept = hn::And(accept, hn::Lt(hn::Abs(diff(d, vector_get(refs, j), center, Integer)), limit));
   }
   return hn::IfThenElse(accept, average, center);
 }
@@ -245,24 +285,21 @@ SamplingResult sampled_target(const SamplingRow& sampling, const Row& row, int m
   }
   return {count, count};
 }
-HWY_INLINE V weight(D d, const V* c);
+HWY_INLINE V weight(D d, hn::Vec4<D> c);
 HWY_INLINE V response(D d, V delta, V threshold);
 HWY_INLINE V response_with_inverse(D d, V delta, V threshold, V inverse);
 HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine);
-struct DirectionCenter {
-  V x, y, magnitude, normalized_x, normalized_y;
-  M integral;
-};
-HWY_INLINE DirectionCenter prepare_direction(D d, V x, V y) {
+HWY_INLINE void prepare_direction(D d, V x, V y, V& magnitude, V& normalized_x, V& normalized_y, M& integral) {
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
-  const auto magnitude = hn::Max(hn::Abs(x), hn::Abs(y));
-  const auto integral = hn::And(hn::Le(magnitude, hn::Set(d, 262140.0)),
-                                hn::And(hn::Eq(hn::Trunc(x), x), hn::Eq(hn::Trunc(y), y)));
+  magnitude = hn::Max(hn::Abs(x), hn::Abs(y));
+  integral =
+      hn::And(hn::Le(magnitude, hn::Set(d, 262140.0)), hn::And(hn::Eq(hn::Trunc(x), x), hn::Eq(hn::Trunc(y), y)));
   const auto divisor = hn::IfThenElse(hn::Eq(magnitude, zero), one, magnitude);
-  return {x, y, magnitude, hn::Div(x, divisor), hn::Div(y, divisor), integral};
+  normalized_x = hn::Div(x, divisor);
+  normalized_y = hn::Div(y, divisor);
 }
-HWY_INLINE M aligned_prepared(D d, const DirectionCenter& g, V hx, V hy,
-                              double angle, V cosine, V sine);
+HWY_INLINE M aligned_prepared(D d, V gx, V gy, V magnitude, V normalized_x, V normalized_y, M center_integral, V hx,
+                              V hy, double angle, V cosine, V sine);
 // Bounded integer Sobel components need no per-lane integrality/range checks.
 HWY_INLINE M aligned_integer(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine) {
   const auto zero = hn::Zero(d);
@@ -365,26 +402,28 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       throw std::logic_error("reference outside plane");
     const auto absolute = hn::Add(position, hn::Set(di, static_cast<hn::TFromD<decltype(di)>>(cross.row_offset)));
     const auto vertical = hn::Mul(v, pitch);
-    const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(absolute, vertical), hn::Sub(absolute, vertical),
-                                                 hn::Add(absolute, h), hn::Sub(absolute, h)};
-    V r[4];
+    const auto offsets = hn::Create4(decltype(di){}, hn::Add(absolute, vertical), hn::Sub(absolute, vertical),
+                                     hn::Add(absolute, h), hn::Sub(absolute, h));
+    auto r = zero_vectors(D{});
     for (int j = 0; j < 4; ++j) {
-      r[j] = cross_gather<Compact>(d, source, cross.compact_source, offsets[j]);
+      r = vector_set(r, j, cross_gather<Compact>(d, source, cross.compact_source, vector_get(offsets, j)));
       if constexpr (!Fused) {
-        hn::StoreU(r[j], d, row.samples[j] + x);
-        hn::StoreU(cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]), d, cross.grad_x[j] + x);
-        hn::StoreU(cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]), d, cross.grad_y[j] + x);
+        hn::StoreU(vector_get(r, j), d, row.samples[j] + x);
+        hn::StoreU(cross_gather<Compact>(d, gx, cross.compact_gx, vector_get(offsets, j)), d, cross.grad_x[j] + x);
+        hn::StoreU(cross_gather<Compact>(d, gy, cross.compact_gy, vector_get(offsets, j)), d, cross.grad_y[j] + x);
       }
     }
     if constexpr (Fused) {
       const auto s = cross_center<Compact>(d, row.center, cross.compact_source, cross.row_offset, x),
                  zero = hn::Zero(d), one = hn::Set(d, 1.0);
       const auto average =
-          Integer ? hn::Mul(hn::Add(hn::Add(r[0], r[1]), hn::Add(r[2], r[3])), hn::Set(d, 0.25)) : mean(d, r, 4, false);
+          Integer ? hn::Mul(hn::Add(hn::Add(hn::Get4<0>(r), hn::Get4<1>(r)), hn::Add(hn::Get4<2>(r), hn::Get4<3>(r))),
+                            hn::Set(d, 0.25))
+                  : mean(d, r, 4, false);
       const auto da = hn::Abs(diff(d, average, s, Integer));
       auto maximum = zero;
       for (int j = 0; j < 4; ++j)
-        maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, Integer)));
+        maximum = hn::Max(maximum, hn::Abs(diff(d, vector_get(r, j), s, Integer)));
       // A zero maximum-difference response rejects both possible boosts.
       // An integer mean equal to the center also makes every blend identical.
       // Neither case needs direction tests or gradient memory accesses.
@@ -401,27 +440,30 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       auto directions = hn::Eq(zero, zero);
       const auto cgx = cross_center<Compact>(d, cross.gx, cross.compact_gx, cross.row_offset, x),
                  cgy = cross_center<Compact>(d, cross.gy, cross.compact_gy, cross.row_offset, x);
-      DirectionCenter prepared{};
+      V magnitude = hn::Zero(d), normalized_x = hn::Zero(d), normalized_y = hn::Zero(d);
+      M center_integral = hn::Eq(magnitude, magnitude);
       if constexpr (!Integer)
         if (!cross.normalized_float_gradients)
-          prepared = prepare_direction(d, cgx, cgy);
+          prepare_direction(d, cgx, cgy, magnitude, normalized_x, normalized_y, center_integral);
       for (int j = 0; j < 4; ++j) {
-        const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, offsets[j]),
-                   hy = cross_gather<Compact>(d, gy, cross.compact_gy, offsets[j]);
+        const auto hx = cross_gather<Compact>(d, gx, cross.compact_gx, vector_get(offsets, j)),
+                   hy = cross_gather<Compact>(d, gy, cross.compact_gy, vector_get(offsets, j));
         M direction;
         if constexpr (Compact)
           direction = aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine);
         else if constexpr (!Integer)
           direction = (cross.bounded_integer_gradients || cross.normalized_float_gradients)
                           ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
-                          : aligned_prepared(d, prepared, hx, hy, angle, cosine, sine);
+                          : aligned_prepared(d, cgx, cgy, magnitude, normalized_x, normalized_y, center_integral, hx,
+                                             hy, angle, cosine, sine);
         else
           direction = (cross.bounded_integer_gradients || cross.normalized_float_gradients)
                           ? aligned_integer(d, cgx, cgy, hx, hy, angle, cosine, sine)
                           : aligned(d, cgx, cgy, hx, hy, angle, cosine, sine);
         directions = hn::And(directions, direction);
       }
-      auto vertical = hn::Add(r[0], r[1]), horizontal = hn::Add(r[2], r[3]), twice = hn::Add(s, s);
+      auto vertical = hn::Add(hn::Get4<0>(r), hn::Get4<1>(r)), horizontal = hn::Add(hn::Get4<2>(r), hn::Get4<3>(r)),
+           twice = hn::Add(s, s);
       if constexpr (!Integer) {
         vertical = fp(d, vertical);
         horizontal = fp(d, horizontal);
@@ -429,20 +471,23 @@ std::size_t collect_cross(const CrossSamplingRow& cross, const Row* output = nul
       }
       const auto qv = hn::Abs(diff(d, vertical, twice, Integer)), qh = hn::Abs(diff(d, horizontal, twice, Integer));
       const auto k = hn::IfThenElse(directions, hn::Set(d, boost), one);
-      V c[4];
+      auto c = zero_vectors(D{});
       if constexpr (!Integer) {
-        V inverse[3];
+        auto inverse = zero_vectors(D{});
         for (int j = 0; j < 3; ++j)
-          inverse[j] = hn::IfThenElse(directions, hn::Set(d, inverse_boosted[j]), hn::Set(d, inverse_thresholds[j]));
-        c[0] = response_with_inverse(d, da, hn::Mul(k, hn::Set(d, thresholds[0])), inverse[0]);
-        c[1] = response_with_inverse(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])), inverse[1]);
-        c[2] = response_with_inverse(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])), inverse[2]);
-        c[3] = response_with_inverse(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])), inverse[2]);
+          inverse =
+              vector_set(inverse, j,
+                         hn::IfThenElse(directions, hn::Set(d, inverse_boosted[j]), hn::Set(d, inverse_thresholds[j])));
+        c = hn::Set4<0>(c, response_with_inverse(d, da, hn::Mul(k, hn::Set(d, thresholds[0])), hn::Get4<0>(inverse)));
+        c = hn::Set4<1>(c,
+                        response_with_inverse(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])), hn::Get4<1>(inverse)));
+        c = hn::Set4<2>(c, response_with_inverse(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])), hn::Get4<2>(inverse)));
+        c = hn::Set4<3>(c, response_with_inverse(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])), hn::Get4<2>(inverse)));
       } else {
-        c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
-        c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
-        c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
-        c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+        c = hn::Set4<0>(c, response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))));
+        c = hn::Set4<1>(c, response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))));
+        c = hn::Set4<2>(c, response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))));
+        c = hn::Set4<3>(c, response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2]))));
       }
       const auto f = weight(d, c);
       const auto blend = Integer ? hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, s), f, s), hn::Set(d, 0.5)))
@@ -501,54 +546,55 @@ SamplingResult cross_sampled_target(const CrossSamplingRow& row, const Row& outp
                          : cross_dispatch<false>(row, output, t, angle, boost);
   return {n, n};
 }
-HWY_INLINE V weight(D d, const V* c);
+HWY_INLINE V weight(D d, hn::Vec4<D> c);
 HWY_INLINE V response(D d, V delta, V threshold);
-HWY_INLINE V weighted_half(D d, V center, const V* refs, const double* thresholds) {
+HWY_INLINE V weighted_half(D d, V center, hn::Vec4<D> refs, const double* thresholds) {
   auto sum = hn::Zero(d), maximum = hn::Zero(d);
   for (int j = 0; j < 4; ++j) {
-    sum = hn::Add(sum, refs[j]);
-    maximum = hn::Max(maximum, hn::Abs(hn::Sub(refs[j], center)));
+    sum = hn::Add(sum, vector_get(refs, j));
+    maximum = hn::Max(maximum, hn::Abs(hn::Sub(vector_get(refs, j), center)));
   }
   const auto average = hn::Mul(sum, hn::Set(d, 0.25));
   const auto da = hn::Abs(hn::Sub(average, center));
   const auto twice = hn::Add(center, center);
-  const auto qv = hn::Abs(hn::Sub(hn::Add(refs[0], refs[1]), twice));
-  const auto qh = hn::Abs(hn::Sub(hn::Add(refs[2], refs[3]), twice));
-  const V c[4] = {response(d, da, hn::Set(d, thresholds[0])), response(d, maximum, hn::Set(d, thresholds[1])),
-                  response(d, qv, hn::Set(d, thresholds[2])), response(d, qh, hn::Set(d, thresholds[2]))};
+  const auto qv = hn::Abs(hn::Sub(hn::Add(hn::Get4<0>(refs), hn::Get4<1>(refs)), twice));
+  const auto qh = hn::Abs(hn::Sub(hn::Add(hn::Get4<2>(refs), hn::Get4<3>(refs)), twice));
+  const auto c =
+      hn::Create4(D{}, response(d, da, hn::Set(d, thresholds[0])), response(d, maximum, hn::Set(d, thresholds[1])),
+                  response(d, qv, hn::Set(d, thresholds[2])), response(d, qh, hn::Set(d, thresholds[2])));
   const auto f = weight(d, c);
   return hn::IfThenElse(hn::Eq(f, hn::Zero(d)), center,
                         hn::Floor(hn::Add(hn::MulAdd(hn::Sub(average, center), f, center), hn::Set(d, 0.5))));
 }
 template <class DI>
-HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
-                                     const hn::VFromD<DI>* refs, const float* thresholds,
-                                     const float* slopes, const std::uint64_t* roots, float input_scale) {
+HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center, hn::Vec4<DI> refs, const float* thresholds,
+                                      const float* slopes, const std::uint64_t* roots, float input_scale) {
   const hn::Rebind<float, DI> d;
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0f);
   const auto s = hn::ConvertTo(d, center);
   // Keep exact 16-bit sums and differences in int32 until the responses
   // need floats. The largest magnitude is 4 * 65535, well within int32.
-  hn::VFromD<DI> signed_delta[4];
-  for (int j = 0; j < 4; ++j) signed_delta[j] = hn::Sub(refs[j], center);
-  const auto vertical_delta = hn::Add(signed_delta[0], signed_delta[1]);
-  const auto horizontal_delta = hn::Add(signed_delta[2], signed_delta[3]);
-  const auto maximum = hn::Max(hn::Max(hn::Abs(signed_delta[0]), hn::Abs(signed_delta[1])),
-                               hn::Max(hn::Abs(signed_delta[2]), hn::Abs(signed_delta[3])));
+  auto signed_delta = zero_vectors(DI{});
+  for (int j = 0; j < 4; ++j)
+    signed_delta = vector_set(signed_delta, j, hn::Sub(vector_get(refs, j), center));
+  const auto vertical_delta = hn::Add(hn::Get4<0>(signed_delta), hn::Get4<1>(signed_delta));
+  const auto horizontal_delta = hn::Add(hn::Get4<2>(signed_delta), hn::Get4<3>(signed_delta));
+  const auto maximum = hn::Max(hn::Max(hn::Abs(hn::Get4<0>(signed_delta)), hn::Abs(hn::Get4<1>(signed_delta))),
+                               hn::Max(hn::Abs(hn::Get4<2>(signed_delta)), hn::Abs(hn::Get4<3>(signed_delta))));
   const auto blend_delta = hn::Mul(hn::ConvertTo(d, hn::Add(vertical_delta, horizontal_delta)), hn::Set(d, 0.25f));
-  const hn::VFromD<decltype(d)> delta[4] = {
-      hn::Abs(blend_delta), hn::ConvertTo(d, maximum),
-      hn::ConvertTo(d, hn::Abs(vertical_delta)),
-      hn::ConvertTo(d, hn::Abs(horizontal_delta))};
-  hn::VFromD<decltype(d)> c[4];
+  const auto delta =
+      hn::Create4(decltype(d){}, hn::Abs(blend_delta), hn::ConvertTo(d, maximum),
+                  hn::ConvertTo(d, hn::Abs(vertical_delta)), hn::ConvertTo(d, hn::Abs(horizontal_delta)));
+  auto c = zero_vectors(decltype(d){});
   for (int j = 0; j < 4; ++j) {
     const int k = j < 2 ? j : 2;
     // Subtract before scaling: near the upper endpoint this difference is
     // exact, whereas 1 - delta / threshold loses relative accuracy.
-    c[j] = hn::Min(one, hn::Max(zero, hn::Mul(
-        hn::Sub(hn::Set(d, thresholds[k]), delta[j]), hn::Set(d, slopes[k]))));
+    c = vector_set(c, j,
+                   hn::Min(one, hn::Max(zero, hn::Mul(hn::Sub(hn::Set(d, thresholds[k]), vector_get(delta, j)),
+                                                      hn::Set(d, slopes[k])))));
   }
-  const auto product = hn::Mul(hn::Mul(c[0], c[2]), hn::Mul(c[1], c[3]));
+  const auto product = hn::Mul(hn::Mul(hn::Get4<0>(c), hn::Get4<2>(c)), hn::Mul(hn::Get4<1>(c), hn::Get4<3>(c)));
   // Integral thresholds in [1,65535] and quarter-integral differences make
   // every positive response >= 0.75/65535. Their product is normal binary32.
   const auto positive = hn::Gt(product, zero);
@@ -573,13 +619,14 @@ HWY_INLINE auto weighted_integer_fast(DI di, hn::VFromD<DI> center,
   return hn::ConvertInRangeTo(di, hn::Add(blended, hn::Set(d, 0.5f)));
 }
 template <class DI>
-HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, const hn::VFromD<DI>* refs, const double* thresholds) {
+HWY_INLINE auto weighted_integer(DI d, hn::VFromD<DI> center, hn::Vec4<DI> refs, const double* thresholds) {
   const D dd;
   const hn::Half<DI> half;
-  V low[4], high[4];
+  auto low = zero_vectors(D{});
+  auto high = zero_vectors(D{});
   for (int j = 0; j < 4; ++j) {
-    low[j] = hn::PromoteTo(dd, hn::LowerHalf(half, refs[j]));
-    high[j] = hn::PromoteTo(dd, hn::UpperHalf(half, refs[j]));
+    low = vector_set(low, j, hn::PromoteTo(dd, hn::LowerHalf(half, vector_get(refs, j))));
+    high = vector_set(high, j, hn::PromoteTo(dd, hn::UpperHalf(half, vector_get(refs, j))));
   }
   const auto lo = weighted_half(dd, hn::PromoteTo(dd, hn::LowerHalf(half, center)), low, thresholds);
   const auto hi = weighted_half(dd, hn::PromoteTo(dd, hn::UpperHalf(half, center)), high, thresholds);
@@ -607,7 +654,7 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
   const auto pair_limit = hn::Set(d, std::uint16_t(std::ceil(thresholds[0] / 128.0)));
   for (std::size_t x = 0; x < full; x += lanes) {
     const auto center = hn::PromoteTo(d, hn::LoadU(db, source + x));
-    hn::VFromD<decltype(d)> r[N];
+    auto r = zero_vectors(decltype(d){});
     auto sum = hn::Zero(d);
     if constexpr (Mode == 2 || WordGather) {
       if constexpr (WordGather) {
@@ -627,38 +674,39 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
         const auto v1 = hn::Mul(hn::ShiftRight<SY>(one), stride), v2 = hn::Mul(hn::ShiftRight<SY>(two), stride);
         const auto column = hn::Iota(di, static_cast<std::int32_t>(x));
         const auto row_start = hn::Set(di, static_cast<std::int32_t>(row.row_offset));
-        hn::VFromD<decltype(di)> columns[4], rows[4];
+        auto columns = zero_vectors(decltype(di){});
+        auto rows = zero_vectors(decltype(di){});
         if constexpr (Mode == 2) {
-          columns[0] = hn::Add(column, h1);
-          columns[1] = hn::Add(column, h2);
-          columns[2] = hn::Sub(column, h1);
-          columns[3] = hn::Sub(column, h2);
-          rows[0] = hn::Add(row_start, v2);
-          rows[1] = hn::Sub(row_start, v1);
-          rows[2] = hn::Sub(row_start, v2);
-          rows[3] = hn::Add(row_start, v1);
+          columns = hn::Set4<0>(columns, hn::Add(column, h1));
+          columns = hn::Set4<1>(columns, hn::Add(column, h2));
+          columns = hn::Set4<2>(columns, hn::Sub(column, h1));
+          columns = hn::Set4<3>(columns, hn::Sub(column, h2));
+          rows = hn::Set4<0>(rows, hn::Add(row_start, v2));
+          rows = hn::Set4<1>(rows, hn::Sub(row_start, v1));
+          rows = hn::Set4<2>(rows, hn::Sub(row_start, v2));
+          rows = hn::Set4<3>(rows, hn::Add(row_start, v1));
         } else {
-          columns[0] = column;
-          columns[1] = column;
-          columns[2] = hn::Add(column, h1);
-          columns[3] = hn::Sub(column, h1);
-          rows[0] = hn::Add(row_start, v1);
-          rows[1] = hn::Sub(row_start, v1);
-          rows[2] = row_start;
-          rows[3] = row_start;
+          columns = hn::Set4<0>(columns, column);
+          columns = hn::Set4<1>(columns, column);
+          columns = hn::Set4<2>(columns, hn::Add(column, h1));
+          columns = hn::Set4<3>(columns, hn::Sub(column, h1));
+          rows = hn::Set4<0>(rows, hn::Add(row_start, v1));
+          rows = hn::Set4<1>(rows, hn::Sub(row_start, v1));
+          rows = hn::Set4<2>(rows, row_start);
+          rows = hn::Set4<3>(rows, row_start);
         }
         for (int j = 0; j < N; ++j) {
           // Slide the final word inward within its visible row. Every load
           // covers four actual pixels, without requiring input padding.
-          const auto first = hn::Min(columns[j], hn::Set(di, static_cast<std::int32_t>(row.width - 4)));
-          const auto start = hn::Add(rows[j], first);
-          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(columns[j], first)));
+          const auto first = hn::Min(vector_get(columns, j), hn::Set(di, static_cast<std::int32_t>(row.width - 4)));
+          const auto start = hn::Add(vector_get(rows, j), first);
+          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(vector_get(columns, j), first)));
           const auto bits = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.base), start);
           const auto byte = HWY_IS_LITTLE_ENDIAN
                                 ? hn::And(hn::Shr(bits, shift), hn::Set(du, 255))
                                 : hn::And(hn::Shr(bits, hn::Sub(hn::Set(du, 24), shift)), hn::Set(du, 255));
-          r[j] = hn::DemoteTo(d, byte);
-          sum = hn::Add(sum, r[j]);
+          r = vector_set(r, j, hn::DemoteTo(d, byte));
+          sum = hn::Add(sum, vector_get(r, j));
         }
       } else {
         HWY_ALIGN std::uint8_t gathered[4][hn::MaxLanes(d)];
@@ -674,8 +722,8 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
           gathered[3][i] = pixel[-b];
         }
         for (int j = 0; j < 4; ++j) {
-          r[j] = hn::PromoteTo(d, hn::LoadU(db, gathered[j]));
-          sum = hn::Add(sum, r[j]);
+          r = vector_set(r, j, hn::PromoteTo(d, hn::LoadU(db, gathered[j])));
+          sum = hn::Add(sum, vector_get(r, j));
         }
       }
     } else if constexpr (Mode == 3) {
@@ -694,9 +742,10 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
           const auto left = hn::PromoteTo(d, hn::LoadU(db, source + x - lanes));
           const auto right = hn::PromoteTo(d, hn::LoadU(db, source + x + lanes));
           const auto index = hn::Iota(d, 0);
-          r[0] = hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h)));
-          r[1] = hn::TwoTablesLookupLanes(
-              left, center, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h)));
+          r = hn::Set4<0>(r, hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h))));
+          r = hn::Set4<1>(r, hn::TwoTablesLookupLanes(
+                                 left, center,
+                                 hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h))));
         } else {
           HWY_ALIGN std::uint8_t plus[hn::MaxLanes(d)], minus[hn::MaxLanes(d)];
           for (std::size_t i = 0; i < lanes; ++i) {
@@ -704,18 +753,18 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
             plus[i] = source[at + offset];
             minus[i] = source[at - offset];
           }
-          r[0] = hn::PromoteTo(d, hn::LoadU(db, plus));
-          r[1] = hn::PromoteTo(d, hn::LoadU(db, minus));
+          r = hn::Set4<0>(r, hn::PromoteTo(d, hn::LoadU(db, plus)));
+          r = hn::Set4<1>(r, hn::PromoteTo(d, hn::LoadU(db, minus)));
         }
       } else {
-        r[0] = hn::PromoteTo(d, hn::LoadU(db, row.collected[0] + x));
-        r[1] = hn::PromoteTo(d, hn::LoadU(db, row.collected[1] + x));
+        r = hn::Set4<0>(r, hn::PromoteTo(d, hn::LoadU(db, row.collected[0] + x)));
+        r = hn::Set4<1>(r, hn::PromoteTo(d, hn::LoadU(db, row.collected[1] + x)));
       }
-      sum = hn::Add(r[0], r[1]);
+      sum = hn::Add(hn::Get4<0>(r), hn::Get4<1>(r));
     } else {
       for (int j = 0; j < N; ++j) {
-        r[j] = hn::PromoteTo(d, hn::LoadU(db, row.collected[j] + x));
-        sum = hn::Add(sum, r[j]);
+        r = vector_set(r, j, hn::PromoteTo(d, hn::LoadU(db, row.collected[j] + x)));
+        sum = hn::Add(sum, vector_get(r, j));
       }
     }
     const auto scaled_center = hn::ShiftLeft<(N == 2 ? 1 : 2)>(center);
@@ -724,21 +773,25 @@ std::size_t byte_reference_samples(const ByteRow& input_row, const double* thres
     if constexpr (!Blur && Mode <= 3) {
       accepted = hn::Eq(center, center);
       for (int j = 0; j < N; ++j)
-        accepted = hn::And(accepted, hn::Lt(hn::Sub(hn::Max(r[j], center), hn::Min(r[j], center)), pixel_limit));
+        accepted =
+            hn::And(accepted,
+                    hn::Lt(hn::Sub(hn::Max(vector_get(r, j), center), hn::Min(vector_get(r, j), center)), pixel_limit));
     }
     if constexpr (Mode == 4) {
-      hn::VFromD<decltype(d)> pairs[2];
+      auto pairs = zero_vectors(decltype(d){});
       const auto twice = hn::ShiftLeft<1>(center);
       for (int j : {0, 2}) {
-        const auto pair = hn::Add(r[j], r[j + 1]);
+        const auto pair = hn::Add(vector_get(r, j), vector_get(r, j + 1));
         auto accept = hn::Lt(hn::Sub(hn::Max(pair, twice), hn::Min(pair, twice)), pair_limit);
         if constexpr (!Blur) {
-          accept = hn::And(hn::Lt(hn::Sub(hn::Max(r[j], center), hn::Min(r[j], center)), pixel_limit),
-                           hn::Lt(hn::Sub(hn::Max(r[j + 1], center), hn::Min(r[j + 1], center)), pixel_limit));
+          accept = hn::And(
+              hn::Lt(hn::Sub(hn::Max(vector_get(r, j), center), hn::Min(vector_get(r, j), center)), pixel_limit),
+              hn::Lt(hn::Sub(hn::Max(vector_get(r, j + 1), center), hn::Min(vector_get(r, j + 1), center)),
+                     pixel_limit));
         }
-        pairs[j / 2] = hn::IfThenElse(accept, pair, twice);
+        pairs = vector_set(pairs, j / 2, hn::IfThenElse(accept, pair, twice));
       }
-      sum = hn::Add(pairs[0], pairs[1]);
+      sum = hn::Add(hn::Get4<0>(pairs), hn::Get4<1>(pairs));
       accepted = hn::Eq(center, center);
     }
     auto value = hn::ShiftLeft<(N == 2 ? 7 : 6)>(hn::IfThenElse(accepted, sum, scaled_center));
@@ -839,7 +892,7 @@ std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresho
       hn::LoadInterleaved4(db, distances, first, second, a, b);
     }
     const auto d1 = hn::PromoteTo(d, first);
-    hn::VFromD<decltype(d)> refs[N];
+    auto refs = zero_vectors(decltype(d){});
     bool tabled = false;
     if constexpr (Mode == 3) {
       const auto h = hn::ShiftRight<SX>(d1);
@@ -851,15 +904,19 @@ std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresho
                    center = native_word_load(d, source, row.input_depth),
                    right = native_word_load(d, source + lanes * bytes, row.input_depth);
         const auto index = hn::Iota(d, 0);
-        refs[0] = hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h)));
-        refs[1] = hn::TwoTablesLookupLanes(
-            left, center, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h)));
+        refs = hn::Set4<0>(refs, hn::TwoTablesLookupLanes(center, right, hn::IndicesFromVec(d, hn::Add(index, h))));
+        refs =
+            hn::Set4<1>(refs, hn::TwoTablesLookupLanes(
+                                  left, center,
+                                  hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(d, std::uint16_t(lanes))), h))));
         tabled = true;
       }
     }
     if (!tabled) {
-      hn::VFromD<decltype(dh)> gathered[2][N];
+      auto gathered_low = zero_vectors(decltype(dh){});
+      auto gathered_high = zero_vectors(decltype(dh){});
       for (int part = 0; part < 2; ++part) {
+        auto gathered_part = zero_vectors(decltype(dh){});
         const auto dist1 = hn::PromoteTo(di, part == 0 ? hn::LowerHalf(dh, d1) : hn::UpperHalf(dh, d1));
         const auto h1 = hn::ShiftRight<SX>(dist1), v1 = hn::ShiftRight<SY>(dist1);
         const auto pos = hn::Iota(di, std::int32_t(x + part * half)), hlimit = hn::Min(pos, hn::Sub(last, pos));
@@ -871,32 +928,37 @@ std::size_t native_word_pairs(const IntegerRow& input_row, const double* thresho
         if (!hn::AllTrue(di, valid))
           throw std::logic_error("reference outside plane");
         const auto absolute = hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, std::int32_t(row.row_offset)));
-        hn::VFromD<decltype(di)> offsets[N];
+        auto offsets = zero_vectors(decltype(di){});
         const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
-        offsets[0] = hn::Add(absolute, off);
-        offsets[1] = hn::Sub(absolute, off);
+        offsets = hn::Set4<0>(offsets, hn::Add(absolute, off));
+        offsets = hn::Set4<1>(offsets, hn::Sub(absolute, off));
         for (int j = 0; j < N; ++j) {
           // Clamp the four-byte load, then extract the requested sample. This
           // includes the last visible sample without requiring source padding.
-          const auto start = hn::Min(offsets[j], hn::Set(di, std::int32_t(row.native_extent - 4)));
-          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(offsets[j], start)));
+          const auto start = hn::Min(vector_get(offsets, j), hn::Set(di, std::int32_t(row.native_extent - 4)));
+          const auto shift = hn::BitCast(du, hn::ShiftLeft<3>(hn::Sub(vector_get(offsets, j), start)));
           const auto words = hn::GatherOffset(du, reinterpret_cast<const std::uint32_t*>(row.native), start);
           const auto native_shift = HWY_IS_LITTLE_ENDIAN ? shift : hn::Sub(hn::Set(du, 32 - 8 * bytes), shift);
           const auto value = hn::And(hn::Shr(words, native_shift), hn::Set(du, bytes == 1 ? 255u : 65535u));
-          gathered[part][j] = hn::DemoteTo(dh, hn::ShiftLeftSame(hn::BitCast(di, value), 16 - row.input_depth));
+          gathered_part = vector_set(gathered_part, j,
+                                     hn::DemoteTo(dh, hn::ShiftLeftSame(hn::BitCast(di, value), 16 - row.input_depth)));
         }
+        if (part == 0)
+          gathered_low = gathered_part;
+        else
+          gathered_high = gathered_part;
       }
       for (int j = 0; j < N; ++j)
-        refs[j] = hn::Combine(d, gathered[1][j], gathered[0][j]);
+        refs = vector_set(refs, j, hn::Combine(d, vector_get(gathered_high, j), vector_get(gathered_low, j)));
     }
     const auto* source = row.native + row.row_offset + x * bytes;
     const auto center = native_word_load(d, source, row.input_depth);
-    auto mean = hn::AverageRound(refs[0], refs[1]);
+    auto mean = hn::AverageRound(hn::Get4<0>(refs), hn::Get4<1>(refs));
     auto accepted = hn::Lt(word_absdiff(mean, center), threshold);
     if constexpr (!Blur && Mode <= 3) {
       accepted = hn::Eq(center, center);
       for (int j = 0; j < N; ++j)
-        accepted = hn::And(accepted, hn::Lt(word_absdiff(refs[j], center), threshold));
+        accepted = hn::And(accepted, hn::Lt(word_absdiff(vector_get(refs, j), center), threshold));
     }
     auto value = hn::IfThenElse(accepted, mean, center);
     // Saturation to [0,65535] commutes with the final output clamp.
@@ -1027,7 +1089,7 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
     auto debanded = value;
     if constexpr (Mode != 0) {
       constexpr int N = Mode == 1 || Mode == 3 ? 2 : 4;
-      hn::VFromD<decltype(d)> refs[N];
+      auto refs = zero_vectors(decltype(d){});
       if constexpr (CachedOffsets) {
         static_assert(Mode == 6 && DirectNative && ValidatedDistances);
         const auto pos = hn::Add(index, hn::Set(di, std::int32_t(x)));
@@ -1035,14 +1097,14 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
             hn::Add(hn::Mul(pos, hn::Set(di, bytes)), hn::Set(di, relative_gather ? 0 : std::int32_t(row.row_offset)));
         const auto vertical = hn::LoadU(d, row.vertical_offsets + x);
         const auto horizontal = hn::LoadU(d, row.horizontal_offsets + x);
-        refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, vertical),
-                                                                             input_depth, bytes);
-        refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, vertical),
-                                                                             input_depth, bytes);
-        refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, horizontal),
-                                                                             input_depth, bytes);
-        refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, horizontal),
-                                                                             input_depth, bytes);
+        refs = hn::Set4<0>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                     d, row, hn::Add(absolute, vertical), input_depth, bytes));
+        refs = hn::Set4<1>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                     d, row, hn::Sub(absolute, vertical), input_depth, bytes));
+        refs = hn::Set4<2>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                     d, row, hn::Add(absolute, horizontal), input_depth, bytes));
+        refs = hn::Set4<3>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                     d, row, hn::Sub(absolute, horizontal), input_depth, bytes));
       } else {
         hn::VFromD<decltype(db)> first, second;
         if (SX == 0)
@@ -1073,18 +1135,21 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
                 hn::AllTrue(di, hn::Le(h1, hn::Set(di, std::int32_t(lanes))))) {
               const auto left = integer_center<DirectNative, FastWeights>(d, row, x - lanes, input_depth, bytes),
                          right = integer_center<DirectNative, FastWeights>(d, row, x + lanes, input_depth, bytes);
-              refs[0] = hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1)));
-              refs[1] = hn::TwoTablesLookupLanes(
-                  left, value, hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1)));
+              refs =
+                  hn::Set4<0>(refs, hn::TwoTablesLookupLanes(value, right, hn::IndicesFromVec(d, hn::Add(index, h1))));
+              refs = hn::Set4<1>(
+                  refs, hn::TwoTablesLookupLanes(
+                            left, value,
+                            hn::IndicesFromVec(d, hn::Sub(hn::Add(index, hn::Set(di, std::int32_t(lanes))), h1))));
               tabled = true;
             }
           }
           if (!tabled) {
             const auto off = Mode == 1 ? hn::Mul(v1, pitch) : hn::Mul(h1, hn::Set(di, bytes));
-            refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, off),
-                                                                                 input_depth, bytes);
-            refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, off),
-                                                                                 input_depth, bytes);
+            refs = hn::Set4<0>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                         d, row, hn::Add(absolute, off), input_depth, bytes));
+            refs = hn::Set4<1>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                         d, row, hn::Sub(absolute, off), input_depth, bytes));
           }
         } else if constexpr (Mode == 2) {
           const auto distance2 = hn::PromoteTo(di, second), h2 = hn::ShiftRightSame(distance2, SX),
@@ -1093,55 +1158,58 @@ std::size_t integer_samples(const IntegerRow& input_row, const double* threshold
             throw std::logic_error("reference outside plane");
           const auto a = hn::Add(hn::Mul(v2, pitch), hn::Mul(h1, hn::Set(di, bytes))),
                      b = hn::Sub(hn::Mul(h2, hn::Set(di, bytes)), hn::Mul(v1, pitch));
-          refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, a),
-                                                                               input_depth, bytes);
-          refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, b),
-                                                                               input_depth, bytes);
-          refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, a),
-                                                                               input_depth, bytes);
-          refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, b),
-                                                                               input_depth, bytes);
+          refs = hn::Set4<0>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Add(absolute, a), input_depth, bytes));
+          refs = hn::Set4<1>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Add(absolute, b), input_depth, bytes));
+          refs = hn::Set4<2>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Sub(absolute, a), input_depth, bytes));
+          refs = hn::Set4<3>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Sub(absolute, b), input_depth, bytes));
         }
         if constexpr (Mode >= 4) {
           const auto vertical = hn::Mul(v1, pitch);
-          refs[0] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Add(absolute, vertical),
-                                                                               input_depth, bytes);
-          refs[1] = integer_gather<DirectNative, FastWeights, relative_gather>(d, row, hn::Sub(absolute, vertical),
-                                                                               input_depth, bytes);
-          refs[2] = integer_gather<DirectNative, FastWeights, relative_gather>(
-              d, row, hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes);
-          refs[3] = integer_gather<DirectNative, FastWeights, relative_gather>(
-              d, row, hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes);
+          refs = hn::Set4<0>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Add(absolute, vertical), input_depth, bytes));
+          refs = hn::Set4<1>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Sub(absolute, vertical), input_depth, bytes));
+          refs = hn::Set4<2>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Add(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes));
+          refs = hn::Set4<3>(refs, integer_gather<DirectNative, FastWeights, relative_gather>(
+                                       d, row, hn::Sub(absolute, hn::Mul(h1, hn::Set(di, bytes))), input_depth, bytes));
         }
       }
       auto sum = hn::Zero(d);
       for (int j = 0; j < N; ++j)
-        sum = hn::Add(sum, refs[j]);
+        sum = hn::Add(sum, vector_get(refs, j));
       auto mean = hn::ShiftRight<(N == 4 ? 2 : 1)>(hn::Add(sum, hn::Set(d, N / 2)));
       auto accept = hn::Lt(hn::Abs(hn::Sub(mean, value)), limit);
       if constexpr (!Blur && Mode <= 3) {
         accept = hn::Eq(value, value);
         for (int j = 0; j < N; ++j)
-          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit));
+          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(vector_get(refs, j), value)), limit));
       }
       if constexpr (Mode == 4) {
-        hn::VFromD<decltype(d)> results[2];
+        auto results = zero_vectors(decltype(d){});
         for (int j : {0, 2}) {
-          const auto average = hn::ShiftRight<1>(hn::Add(hn::Add(refs[j], refs[j + 1]), hn::Set(d, 1)));
+          const auto average =
+              hn::ShiftRight<1>(hn::Add(hn::Add(vector_get(refs, j), vector_get(refs, j + 1)), hn::Set(d, 1)));
           auto accepted = hn::Lt(hn::Abs(hn::Sub(average, value)), limit);
           if constexpr (!Blur)
-            accepted = hn::And(hn::Lt(hn::Abs(hn::Sub(refs[j], value)), limit),
-                               hn::Lt(hn::Abs(hn::Sub(refs[j + 1], value)), limit));
-          results[j / 2] = hn::IfThenElse(accepted, average, value);
+            accepted = hn::And(hn::Lt(hn::Abs(hn::Sub(vector_get(refs, j), value)), limit),
+                               hn::Lt(hn::Abs(hn::Sub(vector_get(refs, j + 1), value)), limit));
+          results = vector_set(results, j / 2, hn::IfThenElse(accepted, average, value));
         }
-        mean = hn::ShiftRight<1>(hn::Add(hn::Add(results[0], results[1]), hn::Set(d, 1)));
+        mean = hn::ShiftRight<1>(hn::Add(hn::Add(hn::Get4<0>(results), hn::Get4<1>(results)), hn::Set(d, 1)));
         accept = hn::Eq(value, value);
       } else if constexpr (Mode == 5) {
         for (int j = 0; j < 4; ++j)
-          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(refs[j], value)), maximum_limit));
+          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(vector_get(refs, j), value)), maximum_limit));
         const auto twice = hn::Add(value, value);
         for (int j : {0, 2})
-          accept = hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(refs[j], refs[j + 1]), twice)), pair_limit));
+          accept =
+              hn::And(accept, hn::Lt(hn::Abs(hn::Sub(hn::Add(vector_get(refs, j), vector_get(refs, j + 1)), twice)),
+                                     pair_limit));
       }
       if constexpr (Mode == 6) {
         if constexpr (FastWeights)
@@ -1378,20 +1446,20 @@ HWY_INLINE V tenth_root_normal(D d, V x) {
   return hn::Mul(scale, hn::Min(upper, hn::Max(lower, root)));
 }
 
-HWY_INLINE V weight(D d, const V* c) {
+HWY_INLINE V weight(D d, hn::Vec4<D> c) {
 #if HWY_TARGET == HWY_AVX2
-  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
-  auto all_positive = hn::Gt(c[0], hn::Zero(d));
+  const auto product = hn::Mul(hn::Mul(hn::Get4<0>(c), hn::Get4<1>(c)), hn::Mul(hn::Get4<2>(c), hn::Get4<3>(c)));
+  auto all_positive = hn::Gt(hn::Get4<0>(c), hn::Zero(d));
   for (int j = 1; j < 4; ++j)
-    all_positive = hn::And(all_positive, hn::Gt(c[j], hn::Zero(d)));
+    all_positive = hn::And(all_positive, hn::Gt(vector_get(c, j), hn::Zero(d)));
   // Responses are in [0, 1], so a unit product identifies the unit endpoint.
   const auto all_one = hn::Eq(product, hn::Set(d, 1.0));
 #else
-  auto all_positive = hn::Gt(c[0], hn::Zero(d));
-  auto all_one = hn::Eq(c[0], hn::Set(d, 1.0));
+  auto all_positive = hn::Gt(hn::Get4<0>(c), hn::Zero(d));
+  auto all_one = hn::Eq(hn::Get4<0>(c), hn::Set(d, 1.0));
   for (int j = 1; j < 4; ++j) {
-    all_positive = hn::And(all_positive, hn::Gt(c[j], hn::Zero(d)));
-    all_one = hn::And(all_one, hn::Eq(c[j], hn::Set(d, 1.0)));
+    all_positive = hn::And(all_positive, hn::Gt(vector_get(c, j), hn::Zero(d)));
+    all_one = hn::And(all_one, hn::Eq(vector_get(c, j), hn::Set(d, 1.0)));
   }
 #endif
   // Each lane can independently be an exact zero or one endpoint.
@@ -1401,7 +1469,7 @@ HWY_INLINE V weight(D d, const V* c) {
   // product guarantees normal intermediate products because every response is
   // in [0, 1]. Preserve the logarithmic sum below for underflow/subnormal cases.
 #if HWY_TARGET != HWY_AVX2
-  const auto product = hn::Mul(hn::Mul(c[0], c[1]), hn::Mul(c[2], c[3]));
+  const auto product = hn::Mul(hn::Mul(hn::Get4<0>(c), hn::Get4<1>(c)), hn::Mul(hn::Get4<2>(c), hn::Get4<3>(c)));
 #endif
   if (hn::AllTrue(d, hn::Or(hn::Not(all_positive),
                            hn::Ge(product, hn::Set(d, std::numeric_limits<double>::min()))))) {
@@ -1410,11 +1478,11 @@ HWY_INLINE V weight(D d, const V* c) {
     return hn::IfThenElseZero(all_positive, result);
   }
   auto sum = hn::Zero(d);
-  auto positive = hn::Gt(c[0], hn::Zero(d));
+  auto positive = hn::Gt(hn::Get4<0>(c), hn::Zero(d));
   for (int j = 0; j < 4; ++j) {
-    positive = hn::And(positive, hn::Gt(c[j], hn::Zero(d)));
+    positive = hn::And(positive, hn::Gt(vector_get(c, j), hn::Zero(d)));
     // Avoid log(0), including inactive tail lanes. Exact endpoints are explicit.
-    const auto value = hn::IfThenElse(hn::Gt(c[j], hn::Zero(d)), c[j], hn::Set(d, 1.0));
+    const auto value = hn::IfThenElse(hn::Gt(vector_get(c, j), hn::Zero(d)), vector_get(c, j), hn::Set(d, 1.0));
     // Normalize subnormal responses before Highway Log, whose polynomial
     // expects a normal argument. The logarithm remains finite even when the
     // product of four responses would underflow.
@@ -1477,22 +1545,22 @@ HWY_INLINE M aligned(D d, V gx, V gy, V hx, V hy, double angle, V cosine, V sine
   }
   return hn::Or(bothzero, hn::And(nonzero, accept));
 }
-HWY_INLINE M aligned_prepared(D d, const DirectionCenter& g, V hx, V hy, double angle, V cosine, V sine) {
+HWY_INLINE M aligned_prepared(D d, V gx, V gy, V magnitude, V normalized_x, V normalized_y, M center_integral, V hx,
+                              V hy, double angle, V cosine, V sine) {
   const auto zero = hn::Zero(d), one = hn::Set(d, 1.0);
-  const auto gm = g.magnitude, hm = hn::Max(hn::Abs(hx), hn::Abs(hy));
-  auto gx = g.x, gy = g.y;
+  const auto gm = magnitude, hm = hn::Max(hn::Abs(hx), hn::Abs(hy));
   const auto bothzero = hn::And(hn::Eq(gm, zero), hn::Eq(hm, zero));
   const auto nonzero = hn::And(hn::Gt(gm, zero), hn::Gt(hm, zero));
   if (angle >= 0.5)
     return hn::Or(bothzero, nonzero);
-  auto integral = hn::And(g.integral, hn::Le(hm, hn::Set(d, 262140.0)));
+  auto integral = hn::And(center_integral, hn::Le(hm, hn::Set(d, 262140.0)));
   integral = hn::And(integral, hn::And(hn::Eq(hn::Trunc(hx), hx), hn::Eq(hn::Trunc(hy), hy)));
   // These bounded integer products and sums are exact in double. Their
   // normalization factors are one, so the four divisions have no effect.
   if (!hn::AllTrue(d, integral)) {
     const auto hs = hn::IfThenElse(hn::Or(integral, hn::Eq(hm, zero)), one, hm);
-    gx = hn::IfThenElse(integral, gx, g.normalized_x);
-    gy = hn::IfThenElse(integral, gy, g.normalized_y);
+    gx = hn::IfThenElse(integral, gx, normalized_x);
+    gy = hn::IfThenElse(integral, gy, normalized_y);
     hx = hn::Div(hx, hs);
     hy = hn::Div(hy, hs);
   }
@@ -1517,15 +1585,15 @@ void simple_row(const Row& row, double threshold) {
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto n = std::min(hn::Lanes(d), row.count - x);
     const auto center = load_row(d, row.center + x, n);
-    V refs[N];
+    auto refs = zero_vectors(D{});
     for (int j = 0; j < N; ++j)
-      refs[j] = load_row(d, row.refs[j] + x, n);
+      refs = vector_set(refs, j, load_row(d, row.refs[j] + x, n));
     const auto average = mean(d, refs, N, Integer);
     auto accepted = hn::Lt(hn::Abs(diff(d, average, center, Integer)), limit);
     if constexpr (!Blur) {
       accepted = hn::Eq(zero, zero);
       for (int j = 0; j < N; ++j)
-        accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, refs[j], center, Integer)), limit));
+        accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, vector_get(refs, j), center, Integer)), limit));
     }
     auto result =
         hn::Add(hn::IfThenElse(accepted, average, center),
@@ -1549,14 +1617,13 @@ void simple_row_dispatch(const Row& row, double threshold, bool integer, bool bl
       simple_row<N, false, false>(row, threshold);
   }
 }
-#if HWY_TARGET == HWY_AVX2
-HWY_INLINE V row_pass(D d, V s, const V* values, int n, double threshold, bool integer, bool blur) {
+HWY_INLINE V row_pass(D d, V s, hn::Vec4<D> values, int n, double threshold, bool integer, bool blur) {
   const auto a = mean(d, values, n, integer), zero = hn::Zero(d);
   auto accepted = hn::Lt(hn::Abs(diff(d, a, s, integer)), hn::Set(d, threshold));
   if (!blur) {
     accepted = hn::Eq(zero, zero);
     for (int j = 0; j < n; ++j)
-      accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, values[j], s, integer)), hn::Set(d, threshold)));
+      accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, vector_get(values, j), s, integer)), hn::Set(d, threshold)));
   }
   return hn::IfThenElse(accepted, a, s);
 }
@@ -1568,6 +1635,7 @@ HWY_INLINE V row_pair(D d, V s, V v, V w, bool integer) {
   }
   return hn::Abs(diff(d, sum, twice, integer));
 }
+#if HWY_TARGET == HWY_AVX2
 template <int Mode, bool Integer>
 void row_specialized(const Row& row, const double* thresholds, bool blur, double angle,
                      double boost) {
@@ -1594,20 +1662,23 @@ void row_specialized(const Row& row, const double* thresholds, bool blur, double
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto count = std::min(hn::Lanes(d), row.count - x);
     const auto s = load_row(d, row.center + x, count);
-    V r[4];
+    auto r = zero_vectors(D{});
     for (int j = 0; j < 4; ++j)
-      r[j] = load_row(d, row.refs[j] + x, count);
+      r = vector_set(r, j, load_row(d, row.refs[j] + x, count));
     auto result = s;
     if (mode == 4) {
-      const V results[2] = {row_pass(d, s, r, 2, thresholds[0], integer, blur), row_pass(d, s, r + 2, 2, thresholds[0], integer, blur)};
+      const auto results =
+          hn::Create4(D{}, row_pass(d, s, r, 2, thresholds[0], integer, blur),
+                      row_pass(d, s, vector_tail(r), 2, thresholds[0], integer, blur), hn::Zero(D{}), hn::Zero(D{}));
       result = mean(d, results, 2, integer);
     } else {
       const auto a = mean(d, r, 4, mode == 5 && integer);
       const auto da = hn::Abs(diff(d, a, s, integer));
       auto maximum = zero;
       for (int j = 0; j < 4; ++j)
-        maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, integer)));
-      const auto qv = row_pair(d, s, r[0], r[1], integer), qh = row_pair(d, s, r[2], r[3], integer);
+        maximum = hn::Max(maximum, hn::Abs(diff(d, vector_get(r, j), s, integer)));
+      const auto qv = row_pair(d, s, hn::Get4<0>(r), hn::Get4<1>(r), integer),
+                 qh = row_pair(d, s, hn::Get4<2>(r), hn::Get4<3>(r), integer);
       if (mode == 5) {
         auto accepted = hn::And(hn::Lt(da, hn::Set(d, thresholds[0])), hn::Lt(maximum, hn::Set(d, thresholds[1])));
         accepted =
@@ -1623,17 +1694,21 @@ void row_specialized(const Row& row, const double* thresholds, bool blur, double
                                                      load_row(d, row.gy[j] + x, count), angle, cosine, sine));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
-        V c[4];
+        auto c = zero_vectors(D{});
         if (!integer && mode == 6) {
-          c[0] = response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0]));
-          c[1] = response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1]));
-          c[2] = response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
-          c[3] = response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+          c = hn::Set4<0>(c,
+                          response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0])));
+          c = hn::Set4<1>(
+              c, response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1])));
+          c = hn::Set4<2>(c,
+                          response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2])));
+          c = hn::Set4<3>(c,
+                          response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2])));
         } else {
-          c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
-          c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
-          c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
-          c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+          c = hn::Set4<0>(c, response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))));
+          c = hn::Set4<1>(c, response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))));
+          c = hn::Set4<2>(c, response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))));
+          c = hn::Set4<3>(c, response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2]))));
         }
         const auto f = weight(d, c);
         // FMA in the integer blend is permitted; final integer error is tested.
@@ -1681,38 +1756,23 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
   for (std::size_t x = 0; x < row.count; x += hn::Lanes(d)) {
     const auto count = std::min(hn::Lanes(d), row.count - x);
     const auto s = load_row(d, row.center + x, count);
-    V r[4];
+    auto r = zero_vectors(D{});
     for (int j = 0; j < 4; ++j)
-      r[j] = load_row(d, row.refs[j] + x, count);
-    auto pass = [&](const V* values, int n) {
-      const auto a = mean(d, values, n, integer);
-      auto accepted = hn::Lt(hn::Abs(diff(d, a, s, integer)), hn::Set(d, thresholds[0]));
-      if (!blur) {
-        accepted = hn::Eq(zero, zero);
-        for (int j = 0; j < n; ++j)
-          accepted = hn::And(accepted, hn::Lt(hn::Abs(diff(d, values[j], s, integer)), hn::Set(d, thresholds[0])));
-      }
-      return hn::IfThenElse(accepted, a, s);
-    };
+      r = vector_set(r, j, load_row(d, row.refs[j] + x, count));
     auto result = s;
     if (mode == 4) {
-      const V results[2] = {pass(r, 2), pass(r + 2, 2)};
+      const auto results =
+          hn::Create4(D{}, row_pass(d, s, r, 2, thresholds[0], integer, blur),
+                      row_pass(d, s, vector_tail(r), 2, thresholds[0], integer, blur), hn::Zero(D{}), hn::Zero(D{}));
       result = mean(d, results, 2, integer);
     } else {
       const auto a = mean(d, r, 4, mode == 5 && integer);
       const auto da = hn::Abs(diff(d, a, s, integer));
       auto maximum = zero;
       for (int j = 0; j < 4; ++j)
-        maximum = hn::Max(maximum, hn::Abs(diff(d, r[j], s, integer)));
-      auto pair = [&](V v, V w) {
-        auto sum = hn::Add(v, w), twice = hn::Add(s, s);
-        if (!integer) {
-          sum = fp(d, sum);
-          twice = fp(d, twice);
-        }
-        return hn::Abs(diff(d, sum, twice, integer));
-      };
-      const auto qv = pair(r[0], r[1]), qh = pair(r[2], r[3]);
+        maximum = hn::Max(maximum, hn::Abs(diff(d, vector_get(r, j), s, integer)));
+      const auto qv = row_pair(d, s, hn::Get4<0>(r), hn::Get4<1>(r), integer),
+                 qh = row_pair(d, s, hn::Get4<2>(r), hn::Get4<3>(r), integer);
       if (mode == 5) {
         auto accepted = hn::And(hn::Lt(da, hn::Set(d, thresholds[0])), hn::Lt(maximum, hn::Set(d, thresholds[1])));
         accepted =
@@ -1728,17 +1788,21 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
                                                      load_row(d, row.gy[j] + x, count), angle, cosine, sine));
           k = hn::IfThenElse(directions, hn::Set(d, boost), one);
         }
-        V c[4];
+        auto c = zero_vectors(D{});
         if (!integer && mode == 6) {
-          c[0] = response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0]));
-          c[1] = response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1]));
-          c[2] = response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
-          c[3] = response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2]));
+          c = hn::Set4<0>(c,
+                          response_with_inverse(d, da, hn::Set(d, thresholds[0]), hn::Set(d, inverse_thresholds[0])));
+          c = hn::Set4<1>(
+              c, response_with_inverse(d, maximum, hn::Set(d, thresholds[1]), hn::Set(d, inverse_thresholds[1])));
+          c = hn::Set4<2>(c,
+                          response_with_inverse(d, qv, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2])));
+          c = hn::Set4<3>(c,
+                          response_with_inverse(d, qh, hn::Set(d, thresholds[2]), hn::Set(d, inverse_thresholds[2])));
         } else {
-          c[0] = response(d, da, hn::Mul(k, hn::Set(d, thresholds[0])));
-          c[1] = response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1])));
-          c[2] = response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2])));
-          c[3] = response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2])));
+          c = hn::Set4<0>(c, response(d, da, hn::Mul(k, hn::Set(d, thresholds[0]))));
+          c = hn::Set4<1>(c, response(d, maximum, hn::Mul(k, hn::Set(d, thresholds[1]))));
+          c = hn::Set4<2>(c, response(d, qv, hn::Mul(k, hn::Set(d, thresholds[2]))));
+          c = hn::Set4<3>(c, response(d, qh, hn::Mul(k, hn::Set(d, thresholds[2]))));
         }
         const auto f = weight(d, c);
         // FMA in the integer blend is permitted; final integer error is tested.
@@ -1759,48 +1823,51 @@ void row_target(const Row& row, int mode, const double* thresholds, bool integer
 using FD = hn::ScalableTag<float>;
 using FV = hn::VFromD<FD>;
 template <int N>
-HWY_INLINE FV float_mean(FD df, const FV* refs) {
+HWY_INLINE FV float_mean(FD df, hn::Vec4<FD> refs) {
   const D d;
   const hn::Half<FD> half;
   auto lo = hn::Zero(d), hi = hn::Zero(d);
   const auto scale = hn::Set(d, 1.0 / N);
   for (int j = 0; j < N; ++j) {
-    lo = hn::Add(lo, hn::Mul(hn::PromoteTo(d, hn::LowerHalf(half, refs[j])), scale));
-    hi = hn::Add(hi, hn::Mul(hn::PromoteTo(d, hn::UpperHalf(half, refs[j])), scale));
+    lo = hn::Add(lo, hn::Mul(hn::PromoteTo(d, hn::LowerHalf(half, vector_get(refs, j))), scale));
+    hi = hn::Add(hi, hn::Mul(hn::PromoteTo(d, hn::UpperHalf(half, vector_get(refs, j))), scale));
   }
   return hn::Combine(df, hn::DemoteTo(half, hi), hn::DemoteTo(half, lo));
 }
 template <int N, bool Blur>
-HWY_INLINE FV float_pass(FD df, FV center, const FV* refs, FV threshold) {
+HWY_INLINE FV float_pass(FD df, FV center, hn::Vec4<FD> refs, FV threshold) {
   const auto average = float_mean<N>(df, refs);
   auto accepted = hn::Lt(hn::Abs(hn::Sub(average, center)), threshold);
   if constexpr (!Blur) {
     accepted = hn::Eq(center, center);
     for (int j = 0; j < N; ++j)
-      accepted = hn::And(accepted, hn::Lt(hn::Abs(hn::Sub(refs[j], center)), threshold));
+      accepted = hn::And(accepted, hn::Lt(hn::Abs(hn::Sub(vector_get(refs, j), center)), threshold));
   }
   return hn::IfThenElse(accepted, average, center);
 }
-HWY_INLINE V float_weighted_half(D d, V center, V delta, V maximum, V qv, V qh, const V* t, const V* inverse) {
-  const V c[4] = {response_with_inverse(d, hn::Abs(delta), t[0], inverse[0]),
-                  response_with_inverse(d, maximum, t[1], inverse[1]), response_with_inverse(d, qv, t[2], inverse[2]),
-                  response_with_inverse(d, qh, t[2], inverse[2])};
+HWY_INLINE V float_weighted_half(D d, V center, V delta, V maximum, V qv, V qh, hn::Vec4<D> t, hn::Vec4<D> inverse) {
+  const auto c = hn::Create4(D{}, response_with_inverse(d, hn::Abs(delta), hn::Get4<0>(t), hn::Get4<0>(inverse)),
+                             response_with_inverse(d, maximum, hn::Get4<1>(t), hn::Get4<1>(inverse)),
+                             response_with_inverse(d, qv, hn::Get4<2>(t), hn::Get4<2>(inverse)),
+                             response_with_inverse(d, qh, hn::Get4<2>(t), hn::Get4<2>(inverse)));
   const auto f = weight(d, c);
   return hn::IfThenElse(hn::Eq(f, hn::Zero(d)), center, fp(d, hn::Add(center, fp(d, hn::Mul(delta, f)))));
 }
 template <class Index>
-HWY_INLINE M float_directions(D d, const FloatRow& row, std::size_t center, const Index* offsets, V cosine, V sine) {
+HWY_INLINE M float_directions(D d, const FloatRow& row, std::size_t center, Index offsets, V cosine, V sine) {
   const hn::Rebind<std::int64_t, D> di;
   const auto gx = hn::LoadU(d, row.gx + center), gy = hn::LoadU(d, row.gy + center);
   auto directions = hn::Eq(gx, gx);
-  DirectionCenter prepared{};
+  V magnitude = hn::Zero(d), normalized_x = hn::Zero(d), normalized_y = hn::Zero(d);
+  M center_integral = hn::Eq(magnitude, magnitude);
   if (!row.normalized_gradients)
-    prepared = prepare_direction(d, gx, gy);
+    prepare_direction(d, gx, gy, magnitude, normalized_x, normalized_y, center_integral);
   for (int j = 0; j < 4; ++j) {
-    const auto hx = hn::GatherIndex(d, row.gx, hn::PromoteTo(di, offsets[j])),
-               hy = hn::GatherIndex(d, row.gy, hn::PromoteTo(di, offsets[j]));
+    const auto hx = hn::GatherIndex(d, row.gx, hn::PromoteTo(di, vector_get(offsets, j))),
+               hy = hn::GatherIndex(d, row.gy, hn::PromoteTo(di, vector_get(offsets, j)));
     const auto accepted = row.normalized_gradients ? aligned_integer(d, gx, gy, hx, hy, row.angle, cosine, sine)
-                                                   : aligned_prepared(d, prepared, hx, hy, row.angle, cosine, sine);
+                                                   : aligned_prepared(d, gx, gy, magnitude, normalized_x, normalized_y,
+                                                                      center_integral, hx, hy, row.angle, cosine, sine);
     directions = hn::And(directions, accepted);
   }
   return directions;
@@ -1816,8 +1883,8 @@ HWY_INLINE V float_upper(FV value) {
   return hn::PromoteTo(d, hn::UpperHalf(half, value));
 }
 template <int Mode>
-HWY_INLINE FV float_blend(const FloatRow& row, std::size_t x, FV center, FV delta, FV maximum, FV qv, FV qh, const V* t,
-                          const V* inverse, const V* boosted_t, const V* boosted_inverse,
+HWY_INLINE FV float_blend(const FloatRow& row, std::size_t x, FV center, FV delta, FV maximum, FV qv, FV qh,
+                          hn::Vec4<D> t, hn::Vec4<D> inverse, hn::Vec4<D> boosted_t, hn::Vec4<D> boosted_inverse,
                           hn::VFromD<hn::Rebind<std::uint8_t, FD>> first, hn::VFromD<hn::Rebind<std::int32_t, FD>> h,
                           V cosine, V sine) {
   const D d;
@@ -1825,32 +1892,40 @@ HWY_INLINE FV float_blend(const FloatRow& row, std::size_t x, FV center, FV delt
   const hn::Half<FD> half;
   const hn::Rebind<std::int32_t, FD> di;
   const auto lane = hn::Iota(di, 0);
-  V lower_t[3], upper_t[3], lower_inverse[3], upper_inverse[3];
+  auto lower_t = zero_vectors(D{});
+  auto upper_t = zero_vectors(D{});
+  auto lower_inverse = zero_vectors(D{});
+  auto upper_inverse = zero_vectors(D{});
   for (int j = 0; j < 3; ++j) {
-    lower_t[j] = upper_t[j] = t[j];
-    lower_inverse[j] = upper_inverse[j] = inverse[j];
+    lower_t = vector_set(lower_t, j, vector_get(t, j));
+    upper_t = vector_set(upper_t, j, vector_get(t, j));
+    lower_inverse = vector_set(lower_inverse, j, vector_get(inverse, j));
+    upper_inverse = vector_set(upper_inverse, j, vector_get(inverse, j));
   }
   if constexpr (Mode == 7) {
     const auto grad_at =
         hn::Add(lane, hn::Set(di, static_cast<std::int32_t>((row.row_offset / row.stride) * row.width + x)));
     const auto grad_v = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_y),
                                 hn::Set(di, static_cast<std::int32_t>(row.width)));
-    const hn::VFromD<decltype(di)> offsets[4] = {hn::Add(grad_at, grad_v), hn::Sub(grad_at, grad_v),
-                                                 hn::Add(grad_at, h), hn::Sub(grad_at, h)};
+    const auto offsets = hn::Create4(decltype(di){}, hn::Add(grad_at, grad_v), hn::Sub(grad_at, grad_v),
+                                     hn::Add(grad_at, h), hn::Sub(grad_at, h));
     const hn::Half<decltype(di)> index_half;
-    hn::VFromD<decltype(index_half)> low_offsets[4], high_offsets[4];
+    auto low_offsets = zero_vectors(decltype(index_half){});
+    auto high_offsets = zero_vectors(decltype(index_half){});
     for (int j = 0; j < 4; ++j) {
-      low_offsets[j] = hn::LowerHalf(index_half, offsets[j]);
-      high_offsets[j] = hn::UpperHalf(index_half, offsets[j]);
+      low_offsets = vector_set(low_offsets, j, hn::LowerHalf(index_half, vector_get(offsets, j)));
+      high_offsets = vector_set(high_offsets, j, hn::UpperHalf(index_half, vector_get(offsets, j)));
     }
     const auto center_offset = (row.row_offset / row.stride) * row.width + x;
     const auto low_directions = float_directions(d, row, center_offset, low_offsets, cosine, sine);
     const auto high_directions = float_directions(d, row, center_offset + hn::Lanes(d), high_offsets, cosine, sine);
     for (int j = 0; j < 3; ++j) {
-      lower_t[j] = hn::IfThenElse(low_directions, boosted_t[j], t[j]);
-      upper_t[j] = hn::IfThenElse(high_directions, boosted_t[j], t[j]);
-      lower_inverse[j] = hn::IfThenElse(low_directions, boosted_inverse[j], inverse[j]);
-      upper_inverse[j] = hn::IfThenElse(high_directions, boosted_inverse[j], inverse[j]);
+      lower_t = vector_set(lower_t, j, hn::IfThenElse(low_directions, vector_get(boosted_t, j), vector_get(t, j)));
+      upper_t = vector_set(upper_t, j, hn::IfThenElse(high_directions, vector_get(boosted_t, j), vector_get(t, j)));
+      lower_inverse = vector_set(
+          lower_inverse, j, hn::IfThenElse(low_directions, vector_get(boosted_inverse, j), vector_get(inverse, j)));
+      upper_inverse = vector_set(
+          upper_inverse, j, hn::IfThenElse(high_directions, vector_get(boosted_inverse, j), vector_get(inverse, j)));
     }
   }
   const auto lo = float_weighted_half(d, float_lower(center), float_lower(delta), float_lower(maximum), float_lower(qv),
@@ -1869,8 +1944,11 @@ std::size_t bounded_float_row(const FloatRow& row, const double* thresholds) {
   const auto lanes = hn::Lanes(df), full = row.width / lanes * lanes;
   const auto lane = hn::Iota(di, 0), stride = hn::Set(di, static_cast<std::int32_t>(row.stride));
   const auto* distances = reinterpret_cast<const std::uint8_t*>(row.distances);
-  FV threshold[3];
-  V t[3], inverse[3], boosted_t[3], boosted_inverse[3];
+  auto threshold = zero_vectors(FD{});
+  auto t = zero_vectors(D{});
+  auto inverse = zero_vectors(D{});
+  auto boosted_t = zero_vectors(D{});
+  auto boosted_inverse = zero_vectors(D{});
   constexpr double pi = 3.1415926535897932384626433832795;
   const bool trig = Mode == 7 && row.angle != 0 && row.angle != 0.25 && row.angle < 0.5;
   const auto cosine = hn::Set(d, trig ? std::cos(pi * row.angle) : 0),
@@ -1880,13 +1958,13 @@ std::size_t bounded_float_row(const FloatRow& row, const double* thresholds) {
     float ceiling = static_cast<float>(thresholds[j]);
     if (double(ceiling) < thresholds[j])
       ceiling = std::nextafter(ceiling, std::numeric_limits<float>::infinity());
-    threshold[j] = hn::Set(df, ceiling);
-    t[j] = hn::Set(d, thresholds[j]);
-    inverse[j] = hn::Set(d, thresholds[j] == 0 ? 1 : 1 / thresholds[j]);
+    threshold = vector_set(threshold, j, hn::Set(df, ceiling));
+    t = vector_set(t, j, hn::Set(d, thresholds[j]));
+    inverse = vector_set(inverse, j, hn::Set(d, thresholds[j] == 0 ? 1 : 1 / thresholds[j]));
     if constexpr (Mode == 7) {
       const double t = thresholds[j] * row.boost;
-      boosted_t[j] = hn::Set(d, t);
-      boosted_inverse[j] = hn::Set(d, t == 0 ? 1 : 1 / t);
+      boosted_t = vector_set(boosted_t, j, hn::Set(d, t));
+      boosted_inverse = vector_set(boosted_inverse, j, hn::Set(d, t == 0 ? 1 : 1 / t));
     }
   }
   double reject_threshold = thresholds[1];
@@ -1911,44 +1989,46 @@ std::size_t bounded_float_row(const FloatRow& row, const double* thresholds) {
     const auto v = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_y), stride);
     const auto h = hn::ShiftRightSame(hn::PromoteTo(di, first), row.sub_x);
     const auto at = hn::Add(lane, hn::Set(di, static_cast<std::int32_t>(row.row_offset + x)));
-    FV refs[4];
+    auto refs = zero_vectors(FD{});
     if constexpr (Mode == 1 || Mode == 3) {
       const auto a = Mode == 1 ? v : h;
-      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, a));
-      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a)));
+      refs = hn::Set4<0>(refs, hn::GatherIndex(df, row.source, hn::Add(at, a)));
+      refs = hn::Set4<1>(refs, hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a))));
     } else if constexpr (Mode == 2) {
       const auto v2 = hn::Mul(hn::ShiftRightSame(hn::PromoteTo(di, second), row.sub_y), stride);
       const auto h2 = hn::ShiftRightSame(hn::PromoteTo(di, second), row.sub_x);
       const auto a = hn::Add(v2, h), b = hn::Sub(h2, v);
-      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, a));
-      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, b));
-      refs[2] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a)));
-      refs[3] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(b)));
+      refs = hn::Set4<0>(refs, hn::GatherIndex(df, row.source, hn::Add(at, a)));
+      refs = hn::Set4<1>(refs, hn::GatherIndex(df, row.source, hn::Add(at, b)));
+      refs = hn::Set4<2>(refs, hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(a))));
+      refs = hn::Set4<3>(refs, hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(b))));
     } else {
-      refs[0] = hn::GatherIndex(df, row.source, hn::Add(at, v));
-      refs[1] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(v)));
-      refs[2] = hn::GatherIndex(df, row.source, hn::Add(at, h));
-      refs[3] = hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(h)));
+      refs = hn::Set4<0>(refs, hn::GatherIndex(df, row.source, hn::Add(at, v)));
+      refs = hn::Set4<1>(refs, hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(v))));
+      refs = hn::Set4<2>(refs, hn::GatherIndex(df, row.source, hn::Add(at, h)));
+      refs = hn::Set4<3>(refs, hn::GatherIndex(df, row.source, hn::Add(at, hn::Neg(h))));
     }
     const auto center = hn::LoadU(df, row.source + row.row_offset + x);
     FV result;
     if constexpr (Mode <= 3)
-      result = float_pass<Mode == 2 ? 4 : 2, Blur>(df, center, refs, threshold[0]);
+      result = float_pass<Mode == 2 ? 4 : 2, Blur>(df, center, refs, hn::Get4<0>(threshold));
     else if constexpr (Mode == 4) {
-      const FV pair[2] = {float_pass<2, Blur>(df, center, refs, threshold[0]),
-                          float_pass<2, Blur>(df, center, refs + 2, threshold[0])};
+      const auto pair = hn::Create4(FD{}, float_pass<2, Blur>(df, center, refs, hn::Get4<0>(threshold)),
+                                    float_pass<2, Blur>(df, center, vector_tail(refs), hn::Get4<0>(threshold)),
+                                    hn::Zero(FD{}), hn::Zero(FD{}));
       result = float_mean<2>(df, pair);
     } else {
       const auto average = float_mean<4>(df, refs), delta = hn::Sub(average, center);
       auto maximum = hn::Zero(df);
       for (int j = 0; j < 4; ++j)
-        maximum = hn::Max(maximum, hn::Abs(hn::Sub(refs[j], center)));
+        maximum = hn::Max(maximum, hn::Abs(hn::Sub(vector_get(refs, j), center)));
       const auto twice = hn::Add(center, center);
-      const auto qv = hn::Abs(hn::Sub(hn::Add(refs[0], refs[1]), twice)),
-                 qh = hn::Abs(hn::Sub(hn::Add(refs[2], refs[3]), twice));
+      const auto qv = hn::Abs(hn::Sub(hn::Add(hn::Get4<0>(refs), hn::Get4<1>(refs)), twice)),
+                 qh = hn::Abs(hn::Sub(hn::Add(hn::Get4<2>(refs), hn::Get4<3>(refs)), twice));
       if constexpr (Mode == 5) {
-        const auto accepted = hn::And(hn::And(hn::Lt(hn::Abs(delta), threshold[0]), hn::Lt(maximum, threshold[1])),
-                                      hn::And(hn::Lt(qv, threshold[2]), hn::Lt(qh, threshold[2])));
+        const auto accepted =
+            hn::And(hn::And(hn::Lt(hn::Abs(delta), hn::Get4<0>(threshold)), hn::Lt(maximum, hn::Get4<1>(threshold))),
+                    hn::And(hn::Lt(qv, hn::Get4<2>(threshold)), hn::Lt(qh, hn::Get4<2>(threshold))));
         result = hn::IfThenElse(accepted, average, center);
       } else {
 
@@ -2007,8 +2087,8 @@ void weights_target(const double* c[4], double* output, std::size_t count) {
   const D d;
   for (std::size_t x = 0; x < count; x += hn::Lanes(d)) {
     const auto n = std::min(hn::Lanes(d), count - x);
-    const V values[4] = {load_row(d, c[0] + x, n), load_row(d, c[1] + x, n), load_row(d, c[2] + x, n),
-                         load_row(d, c[3] + x, n)};
+    const auto values = hn::Create4(D{}, load_row(d, c[0] + x, n), load_row(d, c[1] + x, n), load_row(d, c[2] + x, n),
+                                    load_row(d, c[3] + x, n));
     store_row(d, weight(d, values), output + x, n);
   }
 }

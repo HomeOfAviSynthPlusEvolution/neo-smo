@@ -174,8 +174,10 @@ if(BUILD_TESTING)
     foreach(test f3kdb f3kdb_io)
       add_executable(neo_smo_${test}_${backend}_differential_tests tests/unit/${test}.cpp)
       target_link_libraries(neo_smo_${test}_${backend}_differential_tests PRIVATE ${f3kdb_test_library})
+      # Allow sanitizer overhead inside the wrapper, below CTest's outer timeout.
       add_test(NAME core.${test}.${backend}.differential COMMAND "${Python3_EXECUTABLE}"
-        "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" "$<TARGET_FILE:neo_smo_${test}_${backend}_differential_tests>")
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/isolated.py" --timeout 120
+        "$<TARGET_FILE:neo_smo_${test}_${backend}_differential_tests>")
       set_tests_properties(core.${test}.${backend}.differential PROPERTIES LABELS "spec" RUN_SERIAL TRUE TIMEOUT 180)
     endforeach()
   endforeach()

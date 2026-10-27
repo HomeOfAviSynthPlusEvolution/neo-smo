@@ -1,4 +1,5 @@
 """Run a test command with inherited Windows crash UI suppression and a timeout."""
+import argparse
 import ctypes
 import os
 import subprocess
@@ -33,4 +34,10 @@ def run(command, timeout=60):
 
 
 if __name__ == "__main__":
-    sys.exit(1 if run(sys.argv[1:]) else 0)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--timeout", type=float, default=60)
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    if args.timeout <= 0 or not args.command:
+        parser.error("a positive timeout and a command are required")
+    sys.exit(1 if run(args.command, timeout=args.timeout) else 0)
