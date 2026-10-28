@@ -89,15 +89,15 @@ void float_run(bool half, int w, int r) {
 void run(int bits, int w, int h, int r, int t) {
   const int bytes = bits == 8 ? 1 : 2, ss = w * bytes + 3, ds = w * bytes + 7;
   const unsigned max = (1u << bits) - 1, threshold = t * max / 255;
-  std::vector<std::uint8_t> input(ss * h + 2, 0xa5), output(ds * h + 2, 0xcc);
+  std::vector<std::uint8_t> input(static_cast<std::size_t>(ss) * h + 2, 0xa5), output(static_cast<std::size_t>(ds) * h + 2, 0xcc);
   auto* src = input.data() + 1;
   auto* dst = output.data() + 1;
-  std::vector<unsigned> values(w * h);
+  std::vector<unsigned> values(static_cast<std::size_t>(w) * h);
   for (int y = 0; y < h; ++y)
     for (int x = 0; x < w; ++x) {
       // Small differences exercise t=1 in high depths; alternating maxima stress sums.
       unsigned v = (x + y) % 5 == 0 ? max : (max / 2 + (x * 7 + y * 3) % 19);
-      values[y * w + x] = v;
+      values[static_cast<std::size_t>(y) * w + x] = v;
       store(src + y * ss + x * bytes, v, bytes);
     }
   const auto original = input;
@@ -105,12 +105,12 @@ void run(int bits, int w, int h, int r, int t) {
   for (int y = 0; y < h; ++y)
     for (int x = 0; x < w; ++x) {
       // Independent absolute-coordinate reference; reject positions outside the image.
-      unsigned sum = 2 * values[y * w + x], count = 2;
+      unsigned sum = 2 * values[static_cast<std::size_t>(y) * w + x], count = 2;
       for (int yy = 0; yy < h; ++yy)
         for (int xx = 0; xx < w; ++xx) {
           if (std::abs(yy - y) > r || std::abs(xx - x) > r)
             continue;
-          const unsigned v = values[yy * w + xx], c = values[y * w + x];
+          const unsigned v = values[static_cast<std::size_t>(yy) * w + xx], c = values[static_cast<std::size_t>(y) * w + x];
           if ((v > c ? v - c : c - v) < threshold) {
             sum += v;
             ++count;

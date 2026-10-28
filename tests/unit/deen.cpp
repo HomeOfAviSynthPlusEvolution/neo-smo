@@ -201,7 +201,7 @@ void constant_integer_rounding(const std::string& mode) {
     std::array<std::vector<T>, 3> input;
     std::array<DeenPlane, 3> frames{};
     for (int f = 0; f < count; ++f) {
-      input[f].resize(width * side);
+      input[f].resize(static_cast<std::size_t>(width) * side);
       frames[f] = {reinterpret_cast<const std::uint8_t*>(input[f].data()),
                    width * static_cast<std::ptrdiff_t>(sizeof(T)),
                    width,
@@ -215,7 +215,7 @@ void constant_integer_rounding(const std::string& mode) {
         for (int y = 0; y < side; ++y)
           for (int x = 0; x < side; ++x) {
             const int value = std::min(remaining, peak);
-            input[f][y * width + tile * side + x] = static_cast<T>(value);
+            input[f][static_cast<std::size_t>(y) * width + tile * side + x] = static_cast<T>(value);
             remaining -= value;
           }
     }
@@ -223,10 +223,10 @@ void constant_integer_rounding(const std::string& mode) {
     o.mode = mode;
     o.radius = radius;
     o.spatial_y = o.temporal_y = 255;
-    std::vector<T> output(width * side);
+    std::vector<T> output(static_cast<std::size_t>(width) * side);
     deen_process(Deen(o), false, temporal, frames, reinterpret_cast<std::uint8_t*>(output.data()), width * sizeof(T));
     for (std::size_t tile = 0; tile < sums.size(); ++tile)
-      check(output[radius * width + tile * side + radius] == (sums[tile] + divisor / 2) / divisor,
+      check(output[static_cast<std::size_t>(radius) * width + tile * side + radius] == (sums[tile] + divisor / 2) / divisor,
             "fixed integer mean rounding boundary");
   }
 }
